@@ -22,7 +22,8 @@
   пишет скорость и курс, посадку и наклон делает общая система. Враги — `src/enemy.rs`.
 - Мини-карта — `src/minimap.rs`: новой сущности с меткой добавь запрос в `update_markers`.
 - Волны — `src/waves.rs`: угроза `Threat`, директор волн, все числа баланса в `waves::balance`.
-  Врага ставит сообщение `SpawnEnemy { angle }` из `src/enemy.rs`, начало волны — `WaveStarted { number }`.
+  Врага ставит сообщение `SpawnEnemy { place }` из `src/enemy.rs`, десантную капсулу — `DropCapsule { angle }`
+  из `src/capsule.rs`, начало волны — `WaveStarted { number }`.
 - Выбранное оружие — ресурс `CurrentWeapon` из `src/weapons.rs`. Каждое оружие перед выстрелом по
   левой кнопке мыши проверяет, что выбрано именно оно.
 - Пули — сообщением `FireBullet { origin, direction, team, damage }` из `src/bullet.rs`; прямая

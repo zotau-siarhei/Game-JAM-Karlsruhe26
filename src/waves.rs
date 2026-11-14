@@ -7,7 +7,8 @@ use std::f32::consts::TAU;
 use bevy::prelude::*;
 
 use crate::combat::{Health, Team};
-use crate::enemy::{Enemy, SpawnEnemy};
+use crate::capsule::DropCapsule;
+use crate::enemy::{Enemy, SpawnEnemy, SpawnPlace};
 use crate::explosion::Explosion;
 use crate::rover::Rover;
 use crate::run::{GameState, RunScoped, RunStarted};
@@ -37,6 +38,17 @@ pub mod balance {
 
     /// Разброс врагов вокруг направления волны, рад.
     pub const DIRECTION_SPREAD: f32 = 25.0 * std::f32::consts::PI / 180.0;
+
+    /// С какой угрозы враги начинают прибывать в десантных капсулах.
+    pub const CAPSULE_THREAT: f32 = 1.0;
+
+    /// Доля врагов волны, прибывающих в капсулах.
+    pub const CAPSULE_SHARE: f32 = 0.3;
+
+    /// Прибывает ли враг в капсуле: `roll` — случайное число от 0 до 1.
+    pub fn uses_capsule(threat: f32, roll: f32) -> bool {
+        threat >= CAPSULE_THREAT && roll < CAPSULE_SHARE
+    }
 
     /// Угроза: минуты забега плюс разрушения.
     pub fn threat(seconds: f32, destruction: f32) -> f32 {
@@ -194,6 +206,7 @@ fn direct_waves(
     enemies: Query<(), With<Enemy>>,
     mut started: MessageWriter<WaveStarted>,
     mut spawn: MessageWriter<SpawnEnemy>,
+    mut capsules: MessageWriter<DropCapsule>,
 ) {
     if !rover.iter().any(|health| !health.is_dead()) {
         return;
@@ -224,7 +237,13 @@ fn direct_waves(
             *timer -= dt;
             if *timer <= 0.0 && enemies.iter().count() < balance::MAX_ALIVE {
                 if let Some(angle) = queue.pop() {
-                    spawn.write(SpawnEnemy { angle });
+                    if balance::uses_capsule(threat.value(), dice.range(0.0, 1.0)) {
+                        capsules.write(DropCapsule { angle });
+                    } else {
+                        spawn.write(SpawnEnemy {
+                            place: SpawnPlace::Edge { angle },
+                        });
+                    }
                     *timer = balance::SPAWN_GAP;
                 }
             }
@@ -312,6 +331,13 @@ mod tests {
         let mut by_house = Threat::default();
         by_house.add_destruction(balance::HOUSE_WEIGHT);
         assert!(by_house.value() > by_time.value());
+    }
+
+    #[test]
+    fn capsules_come_only_after_the_threat_grows() {
+        assert!(!balance::uses_capsule(0.5, 0.0));
+        assert!(balance::uses_capsule(1.0, 0.1));
+        assert!(!balance::uses_capsule(3.0, 0.9));
     }
 
     #[test]

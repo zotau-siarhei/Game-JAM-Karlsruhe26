@@ -7,6 +7,7 @@ mod audio_events;
 mod buildings;
 mod bullet;
 mod camera;
+mod capsule;
 mod combat;
 mod craters;
 mod enemy;
@@ -71,6 +72,7 @@ fn main() {
             bullet::BulletPlugin,
             enemy::EnemyPlugin,
             waves::WavesPlugin,
+            capsule::CapsulePlugin,
             weapons::WeaponsPlugin,
             run::RunPlugin,
             repair::RepairPlugin,

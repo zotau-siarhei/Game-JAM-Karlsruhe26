@@ -124,10 +124,19 @@ struct EnemyWeapons {
     burst_timer: f32,
 }
 
-/// Просьба поставить врага за кадром в направлении `angle` от лунохода, рад.
+/// Просьба поставить врага.
 #[derive(Message, Debug, Clone, Copy)]
 pub struct SpawnEnemy {
-    pub angle: f32,
+    pub place: SpawnPlace,
+}
+
+/// Где появляется враг.
+#[derive(Debug, Clone, Copy)]
+pub enum SpawnPlace {
+    /// За кадром, в направлении `angle` от лунохода, рад.
+    Edge { angle: f32 },
+    /// В заданной точке: высота берётся с рельефа.
+    Point(Vec3),
 }
 
 /// Общие меши и материалы врагов: одинаковые враги рисуются одним пакетом.
@@ -155,7 +164,7 @@ fn create_enemy_assets(
 }
 
 /// Точка на окружности радиуса `distance` вокруг `center` по углу `angle`.
-fn ring_point(center: Vec3, angle: f32, distance: f32) -> Vec3 {
+pub fn ring_point(center: Vec3, angle: f32, distance: f32) -> Vec3 {
     center + Vec3::new(angle.cos(), 0.0, angle.sin()) * distance
 }
 
@@ -175,23 +184,28 @@ fn spawn_enemies(
         return;
     }
     for request in requests.read() {
-        spawn_enemy(&mut commands, &mut dice, &assets, &terrain, rover.translation, request.angle);
+        let position = match request.place {
+            SpawnPlace::Edge { angle } => {
+                let distance = dice.range(SPAWN_RING.0, SPAWN_RING.1);
+                ring_point(rover.translation, angle, distance)
+            }
+            SpawnPlace::Point(point) => point,
+        };
+        spawn_enemy(&mut commands, &mut dice, &assets, &terrain, position, rover.translation);
     }
 }
 
-/// Создаёт таран-стрелка на кольце появления в направлении `angle` от точки `center`.
+/// Создаёт таран-стрелка в точке `position` носом к точке `target`.
 fn spawn_enemy(
     commands: &mut Commands,
     dice: &mut Dice,
     assets: &EnemyAssets,
     terrain: &Terrain,
-    center: Vec3,
-    angle: f32,
+    mut position: Vec3,
+    target: Vec3,
 ) {
-    let distance = dice.range(SPAWN_RING.0, SPAWN_RING.1);
-    let mut position = ring_point(center, angle, distance);
     position.y = terrain.height_at(position.x, position.z) + RIDE_HEIGHT;
-    let heading = vehicle::heading_towards(center - position);
+    let heading = vehicle::heading_towards(target - position);
 
     commands
         .spawn((
