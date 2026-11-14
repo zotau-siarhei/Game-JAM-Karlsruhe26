@@ -181,10 +181,12 @@ fn move_bullets(
             into_ground = true;
         }
         // Дома, валуны и деревья тоже останавливают пулю.
-        if let Some((_, wall)) = obstacles::segment_hit(from, to, &obstacles) {
-            to = wall;
+        let mut wall_hit = None;
+        if let Some((wall, point)) = obstacles::segment_hit(from, to, &obstacles) {
+            to = point;
             stop = true;
             into_ground = false;
+            wall_hit = Some(wall);
         }
 
         let hit = targets
@@ -204,6 +206,13 @@ fn move_bullets(
             });
             stop = true;
             into_ground = false;
+        } else if let Some(wall) = wall_hit {
+            // Препятствие со здоровьем (дом) получает урон, валун пулю просто глотает.
+            damage.write(Damage {
+                target: wall,
+                amount: bullet.damage,
+                source_team: bullet.team,
+            });
         }
 
         // Пуля ушла в землю: короткая вспышка цвета пули показывает, куда она попала.

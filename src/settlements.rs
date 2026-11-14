@@ -117,7 +117,6 @@ pub enum HouseStatus {
     #[allow(dead_code)]
     /// Провалился в кратер: положение и крен дома.
     Sunk(Transform),
-    #[allow(dead_code)]
     Destroyed,
 }
 
@@ -133,8 +132,6 @@ pub struct HouseState {
     pub wall_color: usize,
     /// Индекс цвета крыши в палитре, от 0 до [`ROOF_COLORS`].
     pub roof_color: usize,
-    // Прочность читает урон по домам (задача 3.2).
-    #[allow(dead_code)]
     pub health: f32,
     pub status: HouseStatus,
 }
@@ -254,14 +251,11 @@ impl Settlements {
         })
     }
 
-    #[allow(dead_code)]
     /// Дом по адресу, если его регион уже сгенерирован.
     pub fn house(&self, id: HouseId) -> Option<&HouseState> {
         self.regions.get(&id.region)?.houses.get(id.index)
     }
 
-    // Пишут урон и провал (задачи 3.2 и 6.1).
-    #[allow(dead_code)]
     pub fn house_mut(&mut self, id: HouseId) -> Option<&mut HouseState> {
         self.regions.get_mut(&id.region)?.houses.get_mut(id.index)
     }

@@ -5,6 +5,8 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
+use crate::combat::{Damage, Died, Health, Team, blast_damage};
+use crate::explosion::Explosion;
 use crate::obstacles::{Obstacle, Shape};
 use crate::rover::Rover;
 use crate::run::{RunScoped, RunStarted};
@@ -61,15 +63,77 @@ impl Plugin for BuildingsPlugin {
                 (forget_spawned_houses, stream_houses)
                     .chain()
                     .after(crate::settlements::reset_settlements),
+            )
+            .add_message::<BuildingDestroyed>()
+            .add_systems(
+                Update,
+                (
+                    blast_houses,
+                    react_to_hits,
+                    destroy_houses,
+                    wobble_houses,
+                    darken_damaged_houses,
+                )
+                    .chain()
+                    .after(stream_houses),
             );
     }
 }
 
 /// Сущность дома и адрес его состояния в [`Settlements`].
-// Адрес читают урон и провал дома (задачи 3.2 и 6.1).
-#[allow(dead_code)]
 #[derive(Component, Debug, Clone, Copy)]
 pub struct House(pub HouseId);
+
+/// Множитель урона взрыва по дому: дома хрупкие, мортира у стены сносит дом с одного попадания.
+const HOUSE_BLAST_MULTIPLIER: f32 = 4.0;
+
+/// Сколько длится вздрагивание при попадании, с.
+const WOBBLE_SECONDS: f32 = 0.25;
+
+/// Наибольший наклон при вздрагивании, рад.
+const WOBBLE_ANGLE: f32 = 0.04;
+
+/// Кто разрушил дом.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DestroyCause {
+    Player,
+    Enemy,
+    // Провал в кратер появится в задаче 6.1.
+    #[allow(dead_code)]
+    Collapse,
+}
+
+/// Дом разрушен. Отправляется ровно один раз на дом: на него подпишутся тревога, жители и ящики.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct BuildingDestroyed {
+    // Читают тревога, жители и ящики из следующих изменений.
+    #[allow(dead_code)]
+    pub position: Vec3,
+    #[allow(dead_code)]
+    pub cause: DestroyCause,
+}
+
+/// Чей был последний урон по дому: он и считается разрушителем.
+#[derive(Component, Debug, Clone, Copy)]
+struct LastHit(Team);
+
+/// Дом вздрагивает после попадания.
+#[derive(Component, Debug, Clone, Copy)]
+struct Wobble {
+    /// Положение дома в покое.
+    rest: Transform,
+    remaining: f32,
+    /// Ось наклона в плане.
+    axis: Vec3,
+}
+
+/// Стена дома: её материал темнеет после половины прочности.
+#[derive(Component, Debug, Clone, Copy)]
+struct HouseWalls {
+    entity: Entity,
+    color: usize,
+    darkened: bool,
+}
 
 /// Дома, у которых сейчас есть сущность.
 #[derive(Resource, Default)]
@@ -83,6 +147,10 @@ struct HouseAssets {
     /// Треугольная призма: основание 1 по X на высоте 0, конёк на высоте 1, длина 1 по Z.
     prism: Handle<Mesh>,
     walls: Vec<Handle<StandardMaterial>>,
+    /// Закопчённые стены повреждённого дома.
+    damaged_walls: Vec<Handle<StandardMaterial>>,
+    /// Руины: фундамент и груды обломков.
+    ruin: Handle<StandardMaterial>,
     roofs: Vec<Handle<StandardMaterial>>,
     trim: Handle<StandardMaterial>,
 }
@@ -108,6 +176,11 @@ fn create_house_assets(
         cube: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
         prism: meshes.add(Extrusion::new(triangle, 1.0)),
         walls: WALL_PALETTE.iter().map(|&c| matte(&mut materials, c)).collect(),
+        damaged_walls: WALL_PALETTE
+            .iter()
+            .map(|&c| matte(&mut materials, c.mix(&Color::srgb(0.15, 0.12, 0.1), 0.55)))
+            .collect(),
+        ruin: matte(&mut materials, Color::srgb(0.32, 0.29, 0.27)),
         roofs: ROOF_PALETTE.iter().map(|&c| matte(&mut materials, c)).collect(),
         trim: matte(&mut materials, TRIM_COLOR),
     });
@@ -163,13 +236,14 @@ fn stream_houses(
             let houses = settlements.region(region, &terrain).houses.clone();
             for (index, house) in houses.iter().enumerate() {
                 let id = HouseId { region, index };
-                if spawned.0.contains_key(&id)
-                    || house.status == HouseStatus::Destroyed
-                    || !loaded(house)
-                {
+                if spawned.0.contains_key(&id) || !loaded(house) {
                     continue;
                 }
-                let entity = spawn_house(&mut commands, &assets, &terrain, id, house);
+                let entity = if house.status == HouseStatus::Destroyed {
+                    spawn_ruin(&mut commands, &assets, &terrain, house)
+                } else {
+                    spawn_house(&mut commands, &assets, &terrain, id, house)
+                };
                 spawned.0.insert(id, entity);
             }
         }
@@ -259,21 +333,211 @@ fn spawn_house(
         Transform::from_xyz(0.0, 0.9, half.y + 0.03).with_scale(Vec3::new(1.0, 1.8, 0.1)),
     ));
 
+    let max = house.kind.max_health();
+    let mut entity = commands.spawn((
+        House(id),
+        RunScoped,
+        transform,
+        Visibility::default(),
+        Obstacle {
+            shape: Shape::Rect(footprint),
+            top: transform.translation.y + wall_h + TWO_STORY_ROOF_HEIGHT,
+        },
+        Health {
+            current: house.health.min(max),
+            max,
+        },
+    ));
+    let mut walls = None;
+    entity.with_children(|parent| {
+        for (i, (mesh, material, t)) in parts.into_iter().enumerate() {
+            let child = parent.spawn((Mesh3d(mesh), MeshMaterial3d(material), t)).id();
+            if i == 0 {
+                walls = Some(child);
+            }
+        }
+    });
+    if let Some(walls) = walls {
+        entity.insert(HouseWalls {
+            entity: walls,
+            color: house.wall_color,
+            darkened: false,
+        });
+    }
+    entity.id()
+}
+
+/// Руины на месте разрушенного дома: плоский фундамент и груды обломков цветов дома.
+fn spawn_ruin(
+    commands: &mut Commands,
+    assets: &HouseAssets,
+    terrain: &Terrain,
+    house: &HouseState,
+) -> Entity {
+    let footprint = house.footprint();
+    let size = footprint.half * 2.0;
+    let base = terrain.height_at(house.position.x, house.position.y);
+    let wall = assets.walls[house.wall_color].clone();
+    let roof = assets.roofs[house.roof_color].clone();
+    // Груды обломков по углам и в центре: позиция, размер, материал.
+    let heaps = [
+        (Vec3::new(-0.3, 0.4, -0.25), Vec3::new(0.45, 0.8, 0.4), wall.clone()),
+        (Vec3::new(0.3, 0.3, 0.3), Vec3::new(0.4, 0.6, 0.35), roof.clone()),
+        (Vec3::new(0.25, 0.25, -0.3), Vec3::new(0.3, 0.5, 0.3), wall),
+        (Vec3::new(-0.2, 0.2, 0.3), Vec3::new(0.35, 0.4, 0.3), roof),
+    ];
     commands
         .spawn((
-            House(id),
             RunScoped,
-            transform,
+            Transform::from_xyz(house.position.x, base, house.position.y)
+                .with_rotation(Quat::from_rotation_y(house.yaw)),
             Visibility::default(),
-            Obstacle {
-                shape: Shape::Rect(footprint),
-                top: transform.translation.y + wall_h + TWO_STORY_ROOF_HEIGHT,
-            },
         ))
         .with_children(|parent| {
-            for (mesh, material, t) in parts {
-                parent.spawn((Mesh3d(mesh), MeshMaterial3d(material), t));
+            parent.spawn((
+                Mesh3d(assets.cube.clone()),
+                MeshMaterial3d(assets.ruin.clone()),
+                Transform::from_xyz(0.0, -0.3, 0.0).with_scale(Vec3::new(size.x + 0.6, 0.9, size.y + 0.6)),
+            ));
+            for (i, (offset, scale, material)) in heaps.into_iter().enumerate() {
+                parent.spawn((
+                    Mesh3d(assets.cube.clone()),
+                    MeshMaterial3d(material),
+                    Transform::from_translation(offset * Vec3::new(size.x, 1.0, size.y))
+                        .with_rotation(Quat::from_euler(EulerRot::XYZ, 0.3 * i as f32, 0.7 * i as f32, 0.2))
+                        .with_scale(scale * Vec3::new(size.x, 1.5, size.y)),
+                ));
             }
         })
         .id()
+}
+
+/// Взрыв ранит дом по расстоянию до ближайшей точки его стены, а не до центра.
+fn blast_houses(
+    mut explosions: MessageReader<Explosion>,
+    settlements: Res<Settlements>,
+    houses: Query<(Entity, &House, &Health)>,
+    mut damage: MessageWriter<Damage>,
+) {
+    for explosion in explosions.read() {
+        let center = Vec2::new(explosion.position.x, explosion.position.z);
+        for (entity, house, health) in &houses {
+            let Some(state) = settlements.house(house.0) else {
+                continue;
+            };
+            if health.is_dead() {
+                continue;
+            }
+            let distance = state.footprint().distance(center);
+            let amount = blast_damage(explosion.power, explosion.radius, distance, false)
+                * HOUSE_BLAST_MULTIPLIER;
+            if amount > 0.0 {
+                damage.write(Damage {
+                    target: entity,
+                    amount,
+                    source_team: explosion.source_team,
+                });
+            }
+        }
+    }
+}
+
+/// Попадание: дом вздрагивает, запоминает стрелявшего, прочность пишется в хранилище.
+fn react_to_hits(
+    mut commands: Commands,
+    mut damages: MessageReader<Damage>,
+    mut settlements: ResMut<Settlements>,
+    houses: Query<(&House, &Transform, &Health, Option<&Wobble>)>,
+) {
+    for hit in damages.read() {
+        let Ok((house, transform, health, wobble)) = houses.get(hit.target) else {
+            continue;
+        };
+        if let Some(state) = settlements.house_mut(house.0) {
+            // Сообщение урона применяется в этом же кадре: пишем прочность с запасом на него.
+            state.health = (health.current - hit.amount).max(0.0);
+        }
+        let rest = wobble.map_or(*transform, |w| w.rest);
+        let angle = (hit.target.index() as f32 * 1.7 + health.current).sin() * std::f32::consts::PI;
+        commands.entity(hit.target).try_insert((
+            LastHit(hit.source_team),
+            Wobble {
+                rest,
+                remaining: WOBBLE_SECONDS,
+                axis: Vec3::new(angle.cos(), 0.0, angle.sin()),
+            },
+        ));
+    }
+}
+
+/// Дом с кончившейся прочностью сменяется руинами. Событие разрушения — один раз на дом.
+fn destroy_houses(
+    mut commands: Commands,
+    mut died: MessageReader<Died>,
+    mut settlements: ResMut<Settlements>,
+    mut spawned: ResMut<SpawnedHouses>,
+    mut destroyed: MessageWriter<BuildingDestroyed>,
+    assets: Res<HouseAssets>,
+    terrain: Res<Terrain>,
+    houses: Query<(&House, &Transform, Option<&LastHit>, Option<&Wobble>)>,
+) {
+    for death in died.read() {
+        let Ok((house, transform, last_hit, wobble)) = houses.get(death.entity) else {
+            continue;
+        };
+        let Some(state) = settlements.house_mut(house.0) else {
+            continue;
+        };
+        if !matches!(state.status, HouseStatus::Intact | HouseStatus::Sunk(_)) {
+            continue;
+        }
+        state.status = HouseStatus::Destroyed;
+        state.health = 0.0;
+        let state = state.clone();
+        commands.entity(death.entity).try_despawn();
+        let ruin = spawn_ruin(&mut commands, &assets, &terrain, &state);
+        spawned.0.insert(house.0, ruin);
+        let cause = match last_hit.map(|h| h.0) {
+            Some(Team::Enemy) => DestroyCause::Enemy,
+            _ => DestroyCause::Player,
+        };
+        let position = wobble.map_or(transform.translation, |w| w.rest.translation);
+        destroyed.write(BuildingDestroyed { position, cause });
+    }
+}
+
+/// Короткое затухающее покачивание дома после попадания.
+fn wobble_houses(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut houses: Query<(Entity, &mut Transform, &mut Wobble)>,
+) {
+    for (entity, mut transform, mut wobble) in &mut houses {
+        wobble.remaining -= time.delta_secs();
+        if wobble.remaining <= 0.0 {
+            *transform = wobble.rest;
+            commands.entity(entity).remove::<Wobble>();
+            continue;
+        }
+        let t = wobble.remaining / WOBBLE_SECONDS;
+        let angle = WOBBLE_ANGLE * t * (t * 40.0).sin();
+        transform.rotation = Quat::from_axis_angle(wobble.axis, angle) * wobble.rest.rotation;
+    }
+}
+
+/// После половины прочности стены дома темнеют, как закопчённые.
+fn darken_damaged_houses(
+    assets: Res<HouseAssets>,
+    mut houses: Query<(&Health, &mut HouseWalls), Changed<Health>>,
+    mut materials: Query<&mut MeshMaterial3d<StandardMaterial>>,
+) {
+    for (health, mut walls) in &mut houses {
+        if walls.darkened || health.fraction() > 0.5 {
+            continue;
+        }
+        if let Ok(mut material) = materials.get_mut(walls.entity) {
+            material.0 = assets.damaged_walls[walls.color].clone();
+            walls.darkened = true;
+        }
+    }
 }
