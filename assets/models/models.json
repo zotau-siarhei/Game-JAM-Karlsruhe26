@@ -1,0 +1,92 @@
+{
+  "models": [
+    {
+      "id": "rover_body",
+      "file": "rover_body.glb",
+      "scale": 0.8,
+      "rotation_y": 3.14159,
+      "offset_y": 0.616,
+      "budget": 15000
+    },
+    {
+      "id": "rover_track",
+      "file": "rover_track.glb",
+      "scale": 0.8,
+      "rotation_y": 0.0,
+      "offset_y": 0.344,
+      "budget": 1500
+    },
+    {
+      "id": "enemy_rammer",
+      "file": "enemy_rammer.glb",
+      "scale": 1.263,
+      "rotation_y": 3.14159,
+      "offset_y": 0.72,
+      "budget": 5000
+    },
+    {
+      "id": "enemy_mortar",
+      "file": "enemy_mortar.glb",
+      "scale": 1.368,
+      "rotation_y": 3.14159,
+      "offset_y": 1.218,
+      "budget": 5000
+    },
+    {
+      "id": "enemy_rocket_robot",
+      "file": "enemy_rocket_robot.glb",
+      "scale": 1.263,
+      "rotation_y": 3.14159,
+      "offset_y": 1.2,
+      "budget": 5000
+    },
+    {
+      "id": "resident",
+      "file": "resident.glb",
+      "scale": 0.579,
+      "rotation_y": 0.0,
+      "offset_y": 0.55,
+      "budget": 800
+    },
+    {
+      "id": "house_small",
+      "file": "house_small.glb",
+      "scale": 3.158,
+      "rotation_y": 0.0,
+      "offset_y": 2.305,
+      "budget": 4000
+    },
+    {
+      "id": "tree_1",
+      "file": "tree_1.glb",
+      "scale": 2.632,
+      "rotation_y": 0.0,
+      "offset_y": 2.5,
+      "budget": 1500
+    },
+    {
+      "id": "boulder",
+      "file": "boulder.glb",
+      "scale": 0.947,
+      "rotation_y": 0.0,
+      "offset_y": 0.9,
+      "budget": 1500
+    },
+    {
+      "id": "crystal",
+      "file": "crystal.glb",
+      "scale": 0.737,
+      "rotation_y": 0.0,
+      "offset_y": 0.656,
+      "budget": 1500
+    },
+    {
+      "id": "crystal_2",
+      "file": "crystal_2.glb",
+      "scale": 0.737,
+      "rotation_y": 0.0,
+      "offset_y": 0.7,
+      "budget": 1500
+    }
+  ]
+}
