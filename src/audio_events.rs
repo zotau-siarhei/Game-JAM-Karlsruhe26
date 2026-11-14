@@ -25,7 +25,10 @@ pub struct AudioEventsPlugin;
 
 impl Plugin for AudioEventsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(GameState::Menu), menu_music).add_systems(
+        app.add_systems(OnEnter(GameState::Menu), menu_music)
+            .add_systems(OnEnter(GameState::Paused), |mut music: ResMut<MusicState>| music.paused = true)
+            .add_systems(OnExit(GameState::Paused), |mut music: ResMut<MusicState>| music.paused = false)
+            .add_systems(
             Update,
             (
                 announce_run_start,

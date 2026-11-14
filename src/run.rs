@@ -1,6 +1,7 @@
 //! Забег и экраны вокруг него: меню, гибель лунохода, экран конца забега и рестарт.
 //!
-//! Игра открывается в меню: планета летит под камерой, забега нет. Новый забег объявляется
+//! Игра открывается в меню: планета летит под камерой, забега нет. Пауза останавливает
+//! виртуальное время: всё, что считает по `Time`, замирает само. Новый забег объявляется
 //! сообщением [`RunStarted`]: каждый модуль, который что-то хранит на весь забег, сбрасывает это
 //! по сообщению. Конец забега — сообщение [`RunEnded`]: его отправляют рестарт и выход в меню,
 //! вместе с ним удаляются сущности с [`RunScoped`] и заменяется рельеф.
@@ -8,6 +9,7 @@
 use bevy::app::AppExit;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
+use bevy::window::WindowFocused;
 
 use crate::combat::{Died, Health, SurvivalTime, Team, ROVER_MAX_HEALTH};
 use crate::explosion::Explosion;
@@ -36,6 +38,7 @@ impl Plugin for RunPlugin {
         app.init_state::<GameState>()
             .init_resource::<Death>()
             .init_resource::<RunResult>()
+            .init_resource::<PauseChoice>()
             .insert_resource(RecordsTable::load())
             .add_message::<RunStarted>()
             .add_message::<RunEnded>()
@@ -48,11 +51,17 @@ impl Plugin for RunPlugin {
                         .chain()
                         .after(rover::drive_rover)
                         .run_if(in_state(GameState::Playing)),
+                    pause_on_escape_or_blur.run_if(in_state(GameState::Playing)),
+                    (pause_input, highlight_pause_choice)
+                        .chain()
+                        .run_if(in_state(GameState::Paused)),
                     game_over_input.run_if(in_state(GameState::GameOver)),
                 ),
             )
             .add_systems(OnEnter(GameState::Menu), show_menu)
             .add_systems(OnExit(GameState::Menu), hide_screen::<MenuScreen>)
+            .add_systems(OnEnter(GameState::Paused), (stop_time, show_pause))
+            .add_systems(OnExit(GameState::Paused), (resume_time, hide_screen::<PauseScreen>))
             .add_systems(OnEnter(GameState::GameOver), (record_result, show_game_over).chain())
             .add_systems(OnExit(GameState::GameOver), hide_screen::<GameOverScreen>);
     }
@@ -66,8 +75,6 @@ pub enum GameState {
     Menu,
     /// Идёт забег.
     Playing,
-    // Пауза появится в задаче 2.1.
-    #[allow(dead_code)]
     /// Забег остановлен, показан экран паузы.
     Paused,
     /// Луноход погиб, показан экран конца забега.
@@ -191,6 +198,12 @@ impl RunWorld<'_, '_> {
         let seed = self.reset();
         self.started.write(RunStarted { seed });
         // Нажатие, которое начало забег, не стреляет: кнопка считается отпущенной до нового нажатия.
+        self.mouse.reset_all();
+        self.next.set(GameState::Playing);
+    }
+
+    /// Продолжение после паузы. Кнопка мыши, зажатая на паузе, не стреляет.
+    fn resume(&mut self) {
         self.mouse.reset_all();
         self.next.set(GameState::Playing);
     }
@@ -389,6 +402,95 @@ fn show_game_over(mut commands: Commands, result: Res<RunResult>, records: Res<R
         });
 }
 
+/// Пункты экрана паузы по порядку и их клавиши-подсказки.
+const PAUSE_ITEMS: [(&str, KeyCode); 3] = [
+    ("CONTINUE - ESC", KeyCode::Escape),
+    ("RESTART - R", KeyCode::KeyR),
+    ("MENU - M", KeyCode::KeyM),
+];
+
+/// Корень экрана паузы.
+#[derive(Component)]
+struct PauseScreen;
+
+/// Пункт экрана паузы с его номером.
+#[derive(Component)]
+struct PauseItem(usize);
+
+/// Выбранный пункт экрана паузы.
+#[derive(Resource, Default)]
+struct PauseChoice(usize);
+
+/// Номер пункта после шага вверх или вниз: список замкнут в кольцо.
+fn moved_choice(current: usize, step: i32) -> usize {
+    (current as i32 + step).rem_euclid(PAUSE_ITEMS.len() as i32) as usize
+}
+
+/// Забег встаёт на паузу по Esc и когда окно теряет фокус.
+fn pause_on_escape_or_blur(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut focus: MessageReader<WindowFocused>,
+    mut next: ResMut<NextState<GameState>>,
+) {
+    let blurred = focus.read().any(|change| !change.focused);
+    if blurred || keys.just_pressed(KeyCode::Escape) {
+        next.set(GameState::Paused);
+    }
+}
+
+fn stop_time(mut time: ResMut<Time<Virtual>>, mut choice: ResMut<PauseChoice>) {
+    time.pause();
+    choice.0 = 0;
+}
+
+fn resume_time(mut time: ResMut<Time<Virtual>>) {
+    time.unpause();
+}
+
+fn show_pause(mut commands: Commands) {
+    commands
+        .spawn((PauseScreen, screen_root(0.62)))
+        .with_children(|screen| {
+            screen.spawn(screen_line("PAUSED", 56.0, TITLE_COLOR));
+            screen.spawn(screen_line("", 10.0, Color::NONE));
+            for (index, (label, _)) in PAUSE_ITEMS.iter().enumerate() {
+                screen.spawn((PauseItem(index), screen_line(*label, 30.0, HINT_COLOR)));
+            }
+            screen.spawn(screen_line("", 10.0, Color::NONE));
+            screen.spawn(screen_line("UP, DOWN AND ENTER TO CHOOSE", 18.0, HINT_COLOR));
+        });
+}
+
+/// Пауза: стрелки и Enter выбирают пункт, клавиша-подсказка срабатывает сразу.
+fn pause_input(keys: Res<ButtonInput<KeyCode>>, mut choice: ResMut<PauseChoice>, mut world: RunWorld) {
+    if keys.any_just_pressed([KeyCode::ArrowUp, KeyCode::KeyW]) {
+        choice.0 = moved_choice(choice.0, -1);
+    }
+    if keys.any_just_pressed([KeyCode::ArrowDown, KeyCode::KeyS]) {
+        choice.0 = moved_choice(choice.0, 1);
+    }
+    let by_hint = PAUSE_ITEMS.iter().position(|(_, key)| keys.just_pressed(*key));
+    let by_enter = keys
+        .any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter])
+        .then_some(choice.0);
+    match by_hint.or(by_enter) {
+        Some(0) => world.resume(),
+        Some(1) => world.start_run(),
+        Some(2) => world.open_menu(),
+        _ => {}
+    }
+}
+
+/// Выбранный пункт паузы белый, остальные серые.
+fn highlight_pause_choice(choice: Res<PauseChoice>, mut items: Query<(&PauseItem, &mut TextColor)>) {
+    for (item, mut color) in &mut items {
+        let wanted = if item.0 == choice.0 { Color::WHITE } else { HINT_COLOR };
+        if color.0 != wanted {
+            color.0 = wanted;
+        }
+    }
+}
+
 /// Конец забега: Enter начинает новый забег, Esc возвращает в меню.
 fn game_over_input(keys: Res<ButtonInput<KeyCode>>, mut world: RunWorld) {
     if keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter]) {
@@ -414,6 +516,13 @@ mod tests {
         );
         assert_eq!(result_lines(5.0, None, Some(187.25)).1, "BEST 3:07.2");
         assert_eq!(result_lines(5.0, None, None).1, "");
+    }
+
+    #[test]
+    fn pause_choice_wraps_around() {
+        assert_eq!(moved_choice(0, 1), 1);
+        assert_eq!(moved_choice(2, 1), 0);
+        assert_eq!(moved_choice(0, -1), 2);
     }
 
     #[test]
