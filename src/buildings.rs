@@ -7,6 +7,7 @@ use bevy::prelude::*;
 
 use crate::combat::{Damage, Died, Health, Team, blast_damage};
 use crate::collapse::CollapseHouse;
+use crate::subsidence::Collapsing;
 use crate::explosion::Explosion;
 use crate::obstacles::{Obstacle, Shape};
 use crate::rover::Rover;
@@ -99,8 +100,6 @@ const WOBBLE_ANGLE: f32 = 0.04;
 pub enum DestroyCause {
     Player,
     Enemy,
-    // Провал в кратер появится в задаче 6.1.
-    #[allow(dead_code)]
     Collapse,
 }
 
@@ -486,11 +485,18 @@ fn destroy_houses(
     mut destroyed: MessageWriter<BuildingDestroyed>,
     assets: Res<HouseAssets>,
     terrain: Res<Terrain>,
-    houses: Query<(&House, &Transform, Option<&LastHit>, Option<&Wobble>, Option<&BlastFrom>)>,
+    houses: Query<(
+        &House,
+        &Transform,
+        Option<&LastHit>,
+        Option<&Wobble>,
+        Option<&BlastFrom>,
+        Has<Collapsing>,
+    )>,
     mut collapse: MessageWriter<CollapseHouse>,
 ) {
     for death in died.read() {
-        let Ok((house, transform, last_hit, wobble, blast)) = houses.get(death.entity) else {
+        let Ok((house, transform, last_hit, wobble, blast, collapsing)) = houses.get(death.entity) else {
             continue;
         };
         let Some(state) = settlements.house_mut(house.0) else {
@@ -506,6 +512,7 @@ fn destroy_houses(
         let ruin = spawn_ruin(&mut commands, &assets, &terrain, &state);
         spawned.0.insert(house.0, ruin);
         let cause = match last_hit.map(|h| h.0) {
+            _ if collapsing => DestroyCause::Collapse,
             Some(Team::Enemy) => DestroyCause::Enemy,
             _ => DestroyCause::Player,
         };

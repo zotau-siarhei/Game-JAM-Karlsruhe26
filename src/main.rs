@@ -29,6 +29,7 @@ mod rover_look;
 mod run;
 mod settlements;
 mod sound;
+mod subsidence;
 mod sound_list;
 mod terrain;
 mod vehicle;
@@ -56,6 +57,16 @@ fn main() {
             }),
             ..default()
         }))
+        // Посёлки, объекты поверхности и разрушение.
+        .add_plugins((
+            settlements::SettlementsPlugin,
+            buildings::BuildingsPlugin,
+            props::PropsPlugin,
+            obstacles::ObstaclesPlugin,
+            debris::DebrisPlugin,
+            collapse::CollapsePlugin,
+            subsidence::SubsidencePlugin,
+        ))
         .add_plugins((
             TerrainPlugin,
             RoverPlugin,
@@ -66,12 +77,6 @@ fn main() {
             explosion_fx::ExplosionFxPlugin,
             mortar::MortarPlugin,
             craters::CratersPlugin,
-            settlements::SettlementsPlugin,
-            buildings::BuildingsPlugin,
-            props::PropsPlugin,
-            obstacles::ObstaclesPlugin,
-            debris::DebrisPlugin,
-            collapse::CollapsePlugin,
         ))
         .add_plugins((
             combat::CombatPlugin,

@@ -113,8 +113,6 @@ impl HouseKind {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum HouseStatus {
     Intact,
-    // Провал в кратер и разрушение появятся в задачах 3.2 и 6.1.
-    #[allow(dead_code)]
     /// Провалился в кратер: положение и крен дома.
     Sunk(Transform),
     Destroyed,

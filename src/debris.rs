@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 
+use crate::explosion::Explosion;
 use crate::run::{RunScoped, RunStarted};
 use crate::terrain::{Terrain, VisibleChunks, chunk_coord_at};
 
@@ -44,7 +45,7 @@ impl Plugin for DebrisPlugin {
             .add_systems(Startup, create_debris_assets)
             .add_systems(
                 Update,
-                (reset_debris, spawn_debris, fly_debris, burn_out, stream_debris).chain(),
+                (reset_debris, wake_debris, spawn_debris, fly_debris, burn_out, stream_debris).chain(),
             );
     }
 }
@@ -191,6 +192,58 @@ fn spawn_debris(
     }
 }
 
+/// Докуда от взрыва в долях радиуса подпрыгивают уснувшие обломки.
+const WAKE_REACH: f32 = 1.8;
+
+/// Взрыв будит уснувшие обломки рядом: они подпрыгивают от центра и падают в новый кратер.
+fn wake_debris(
+    mut commands: Commands,
+    mut explosions: MessageReader<Explosion>,
+    mut store: ResMut<DebrisStore>,
+    mut requests: MessageWriter<SpawnDebris>,
+) {
+    let store = &mut *store;
+    for explosion in explosions.read() {
+        let reach = explosion.radius * WAKE_REACH;
+        let c = explosion.position;
+        let low = chunk_coord_at(c.x - reach, c.z - reach);
+        let high = chunk_coord_at(c.x + reach, c.z + reach);
+        for cz in low.y..=high.y {
+            for cx in low.x..=high.x {
+                let chunk = IVec2::new(cx, cz);
+                let Some(pieces) = store.chunks.get_mut(&chunk) else {
+                    continue;
+                };
+                let mut shown = store.shown.get_mut(&chunk);
+                let mut i = 0;
+                while i < pieces.len() {
+                    let p = pieces[i].transform.translation;
+                    let offset = (p - c).with_y(0.0);
+                    let d = offset.length();
+                    if d > reach {
+                        i += 1;
+                        continue;
+                    }
+                    let piece = pieces.remove(i);
+                    if let Some(entities) = shown.as_mut() {
+                        if i < entities.len() {
+                            commands.entity(entities.remove(i)).try_despawn();
+                        }
+                    }
+                    let k = 1.0 - d / reach;
+                    requests.write(SpawnDebris {
+                        position: p + Vec3::Y * 0.2,
+                        velocity: offset.normalize_or(Vec3::X) * 6.0 * k + Vec3::Y * (2.0 + 7.0 * k),
+                        size: piece.transform.scale,
+                        color: piece.color,
+                        burning: false,
+                    });
+                }
+            }
+        }
+    }
+}
+
 /// Баллистика, отскоки и засыпание. Уснувший обломок пишется в хранилище.
 fn fly_debris(
     mut commands: Commands,
@@ -228,12 +281,23 @@ fn fly_debris(
             let (_, yaw, _) = transform.rotation.to_euler(EulerRot::YXZ);
             transform.rotation = Quat::from_rotation_arc(Vec3::Y, up) * Quat::from_rotation_y(yaw);
             let chunk = chunk_coord_at(transform.translation.x, transform.translation.z);
-            store.chunks.entry(chunk).or_default().push(DebrisPiece {
+            let stored = store.chunks.entry(chunk).or_default();
+            let had_pieces = !stored.is_empty();
+            stored.push(DebrisPiece {
                 transform: *transform,
                 color: piece.color,
             });
-            store.shown.entry(chunk).or_default().push(entity);
-            commands.entity(entity).remove::<Flying>();
+            // Списки обломков участка и их сущностей идут в одном порядке.
+            if let Some(shown) = store.shown.get_mut(&chunk) {
+                shown.push(entity);
+                commands.entity(entity).remove::<Flying>();
+            } else if !had_pieces {
+                store.shown.insert(chunk, vec![entity]);
+                commands.entity(entity).remove::<Flying>();
+            } else {
+                // Остальные обломки участка не в сцене: этот появится вместе с ними.
+                commands.entity(entity).despawn();
+            }
         }
     }
 }
