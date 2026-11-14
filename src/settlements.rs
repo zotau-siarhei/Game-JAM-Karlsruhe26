@@ -352,6 +352,11 @@ fn place_houses(
         if !is_flat_enough(&footprint, terrain) {
             continue;
         }
+        // Дома не стоят на путях.
+        let rail = terrain.lines().nearest(footprint.center).distance;
+        if rail < crate::railway::TRACK_BAND + footprint.half.length() {
+            continue;
+        }
         houses.push(house);
     }
     RegionState { houses }

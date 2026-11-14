@@ -37,6 +37,8 @@ pub struct HeightGenerator {
     mountains: Fbm<Perlin>,
     /// Пятна оттенка травы.
     tint: Perlin,
+    /// Железная дорога: насыпи и выемки вдоль путей.
+    lines: crate::railway::Lines,
 }
 
 impl HeightGenerator {
@@ -51,16 +53,34 @@ impl HeightGenerator {
                 .set_octaves(2)
                 .set_frequency(MOUNTAINS_FREQUENCY),
             tint: Perlin::new(seed.wrapping_add(TINT_SEED_OFFSET)),
+            lines: crate::railway::Lines::new(seed),
         }
     }
 
     /// Высота нетронутой поверхности в точке мира, м.
+    ///
+    /// У железной дороги рельеф выровнен до уровня путей: насыпи и выемки, под горами туннели.
     pub fn height(&self, x: f32, z: f32) -> f32 {
+        self.lines
+            .corrected_height(x, z, |x, z| self.raw_height(x, z), |x, z| self.hills_height(x, z))
+    }
+
+    /// Нетронутая поверхность без путей, м.
+    pub fn raw_height(&self, x: f32, z: f32) -> f32 {
         let p = [x as f64, z as f64];
-        let hills = self.hills.get(p) as f32 * HILLS_AMPLITUDE;
         // Горы: только положительная часть шума, возведённая в квадрат, чтобы между горами была равнина.
         let m = (self.mountains.get(p) as f32).max(0.0);
-        hills + m * m * MOUNTAINS_HEIGHT * 2.0
+        self.hills_height(x, z) + m * m * MOUNTAINS_HEIGHT * 2.0
+    }
+
+    /// Холмистая часть рельефа без гор, м: по ней строится уровень путей.
+    pub fn hills_height(&self, x: f32, z: f32) -> f32 {
+        self.hills.get([x as f64, z as f64]) as f32 * HILLS_AMPLITUDE
+    }
+
+    /// Линии железной дороги забега.
+    pub fn lines(&self) -> &crate::railway::Lines {
+        &self.lines
     }
 
     /// Оттенок травы в точке мира, примерно от -1 до 1.

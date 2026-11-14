@@ -272,6 +272,9 @@ fn generate_chunk(
             if p.length() < START_CLEAR {
                 continue;
             }
+            if terrain.lines().nearest(p).distance < crate::railway::TRACK_BAND {
+                continue;
+            }
             if houses
                 .iter()
                 .any(|h| h.footprint().distance(p) < HOUSE_MARGIN)

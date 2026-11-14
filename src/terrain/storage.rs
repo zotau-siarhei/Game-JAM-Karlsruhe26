@@ -158,6 +158,23 @@ impl Terrain {
         self.seed
     }
 
+    /// Линии железной дороги забега.
+    pub fn lines(&self) -> &crate::railway::Lines {
+        self.generator.lines()
+    }
+
+    /// Уровень путей на линии в параметре `s`.
+    pub fn track_level(&self, line: crate::railway::LineId, s: f32) -> f32 {
+        self.generator
+            .lines()
+            .level(line, s, |x, z| self.generator.hills_height(x, z))
+    }
+
+    /// Нетронутая высота без путей: по ней видно, где над путями гора.
+    pub fn raw_height(&self, x: f32, z: f32) -> f32 {
+        self.generator.raw_height(x, z)
+    }
+
     /// Данные участка, генерирует его при первом обращении.
     pub fn chunk(&mut self, coord: IVec2) -> &ChunkData {
         self.chunk_mut(coord)

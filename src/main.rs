@@ -26,6 +26,7 @@ mod obstacles;
 mod music;
 mod pickups;
 mod props;
+mod railway;
 mod records;
 mod repair;
 mod rockets;
