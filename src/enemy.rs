@@ -8,6 +8,7 @@ use bevy::prelude::*;
 use crate::bullet::{self, FireBullet};
 use crate::combat::{Collider, Damage, Died, Health, Team};
 use crate::rover::{self, Rover};
+use crate::run::{RunScoped, RunStarted};
 use crate::sound_list::Dice;
 use crate::terrain::Terrain;
 use crate::vehicle::{self, GroundVehicle};
@@ -93,6 +94,7 @@ impl Plugin for EnemyPlugin {
             .add_systems(
                 Update,
                 (
+                    reset_spawning,
                     spawn_enemies,
                     chase_rover,
                     vehicle::move_ground_vehicles,
@@ -167,6 +169,13 @@ fn create_enemy_assets(
     });
 }
 
+/// Новый забег: отсчёт до первого врага начинается заново.
+fn reset_spawning(mut started: MessageReader<RunStarted>, mut timer: ResMut<SpawnTimer>) {
+    if started.read().count() > 0 {
+        *timer = SpawnTimer::default();
+    }
+}
+
 /// Точка на окружности радиуса `distance` вокруг `center` по углу `angle`.
 fn ring_point(center: Vec3, angle: f32, distance: f32) -> Vec3 {
     center + Vec3::new(angle.cos(), 0.0, angle.sin()) * distance
@@ -208,6 +217,7 @@ fn spawn_enemies(
     let entity = commands
         .spawn((
             Enemy,
+            RunScoped,
             Health::new(ENEMY_HEALTH),
             Team::Enemy,
             Collider {

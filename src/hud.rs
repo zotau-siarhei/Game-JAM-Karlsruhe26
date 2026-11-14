@@ -148,7 +148,7 @@ fn health_color(fraction: f32) -> Color {
 }
 
 /// Время в виде `минуты:секунды.десятые`.
-fn format_time(seconds: f32) -> String {
+pub fn format_time(seconds: f32) -> String {
     let tenths = (seconds.max(0.0) * 10.0).floor() as u32;
     format!("{}:{:02}.{}", tenths / 600, tenths / 10 % 60, tenths % 10)
 }

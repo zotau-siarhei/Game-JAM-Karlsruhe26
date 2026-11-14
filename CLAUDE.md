@@ -11,6 +11,9 @@
 - `openspec/changes/` — изменения в работе: `proposal.md`, `design.md`, `tasks.md` и дельты спецификаций.
 - `assets/voice/`, `assets/sfx/`, `assets/music/` — реплики, звуки и музыка: список JSON и mp3 рядом.
   Формат и соглашение о вариантах — в `assets/voice/README.md`.
+- Забег — `src/run.rs`: состояния `GameState::{Playing, GameOver}`, рестарт по Enter. Сущность, которая
+  живёт один забег, получает компонент `RunScoped`. Ресурс, который хранит что-то на забег,
+  сбрасывается по сообщению `RunStarted { seed }`.
 - Урон — только сообщением `Damage { target, amount, source_team }` из `src/combat.rs`; здоровье
   напрямую не менять. Гибель приходит сообщением `Died`. Время забега — ресурс `SurvivalTime`.
 - Всё, что ездит по рельефу, кроме лунохода, получает `GroundVehicle` из `src/vehicle.rs`: управление

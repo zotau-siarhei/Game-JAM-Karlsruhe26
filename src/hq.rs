@@ -80,8 +80,6 @@ pub struct HqMemory {
 }
 
 impl HqMemory {
-    // Сброс вызывается при новом забеге, когда появятся экраны.
-    #[allow(dead_code)]
     /// Забывает всё сказанное. Вызывается при новом забеге.
     pub fn reset(&mut self) {
         *self = Self::default();

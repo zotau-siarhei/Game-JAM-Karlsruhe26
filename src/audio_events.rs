@@ -6,13 +6,11 @@ use bevy::prelude::*;
 use crate::bullet::FireBullet;
 use crate::combat::{Damage, Died, Health};
 use crate::enemy::{Enemy, EnemySpawned};
-use crate::hq::VoiceCue;
+use crate::hq::{HqMemory, VoiceCue};
 use crate::music::{MusicState, Track};
 use crate::rover::Rover;
+use crate::run::RunStarted;
 use crate::sound::PlaySound;
-
-/// Через сколько секунд после запуска звучит приветствие штаба.
-const RUN_START_DELAY: f32 = 1.5;
 
 /// Доля здоровья, ниже которой урон считается критическим.
 const CRITICAL_HEALTH: f32 = 0.3;
@@ -39,17 +37,17 @@ impl Plugin for AudioEventsPlugin {
     }
 }
 
-/// Приветствие штаба и музыка забега вскоре после запуска.
+/// Новый забег: штаб забывает сказанное, приветствует экипаж, звучит музыка передышки.
 fn announce_run_start(
-    time: Res<Time>,
-    mut done: Local<bool>,
+    mut started: MessageReader<RunStarted>,
+    mut memory: ResMut<HqMemory>,
     mut cues: MessageWriter<VoiceCue>,
     mut music: ResMut<MusicState>,
 ) {
-    if *done || time.elapsed_secs() < RUN_START_DELAY {
+    if started.read().count() == 0 {
         return;
     }
-    *done = true;
+    memory.reset();
     cues.write(VoiceCue::new("run_start"));
     music.track = Track::Lull;
 }
@@ -96,6 +94,7 @@ fn voice_rover_death(
 
 /// Первые враги — реплика о волне; гибель врага — звук и редкий комментарий лунохода.
 fn voice_enemies(
+    mut started: MessageReader<RunStarted>,
     mut spawned: MessageReader<EnemySpawned>,
     mut died: MessageReader<Died>,
     enemies: Query<&Transform, With<Enemy>>,
@@ -103,6 +102,9 @@ fn voice_enemies(
     mut sounds: MessageWriter<PlaySound>,
     mut cues: MessageWriter<VoiceCue>,
 ) {
+    if started.read().count() > 0 {
+        *announced = false;
+    }
     if spawned.read().count() > 0 && !*announced {
         *announced = true;
         cues.write(VoiceCue::new("wave_start"));
@@ -123,7 +125,7 @@ fn music_follows_enemies(
 ) {
     let alive = rover.iter().any(|health| !health.is_dead());
     let wanted = match (alive, enemies.is_empty(), music.track) {
-        (false, _, _) | (_, _, Track::Silence) => return,
+        (false, _, _) | (_, _, Track::Silence | Track::GameOver) => return,
         (true, false, _) => Track::Combat,
         (true, true, _) => Track::Lull,
     };

@@ -9,6 +9,7 @@
 use bevy::prelude::*;
 
 use crate::combat::{Collider, Damage, Health, Team};
+use crate::run::RunScoped;
 use crate::terrain::Terrain;
 
 /// Скорость пули, м/с.
@@ -98,6 +99,7 @@ fn spawn_bullets(
             Team::Enemy => assets.enemy.clone(),
         };
         commands.spawn((
+            RunScoped,
             Bullet {
                 velocity: direction * BULLET_SPEED,
                 remaining: BULLET_RANGE,

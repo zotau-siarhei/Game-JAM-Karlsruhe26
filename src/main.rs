@@ -15,6 +15,7 @@ mod mortar;
 mod music;
 mod records;
 mod rover;
+mod run;
 mod sound;
 mod sound_list;
 mod terrain;
@@ -56,6 +57,7 @@ fn main() {
             bullet::BulletPlugin,
             enemy::EnemyPlugin,
             weapons::WeaponsPlugin,
+            run::RunPlugin,
         ))
         .add_plugins((
             voice::VoicePlugin,
