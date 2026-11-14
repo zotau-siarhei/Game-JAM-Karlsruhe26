@@ -7,6 +7,7 @@ use bevy::prelude::*;
 
 use crate::bullet::{self, FireBullet};
 use crate::combat::{Collider, Damage, Died, Health, Team};
+use crate::explosion::Explosion;
 use crate::rover::{self, Rover};
 use crate::run::{RunScoped, RunStarted};
 use crate::sound_list::Dice;
@@ -75,6 +76,9 @@ const BULLET_DAMAGE: f32 = 4.0;
 
 /// Высота дула над центром корпуса, м.
 const MUZZLE_HEIGHT: f32 = 0.5;
+
+/// Взрыв при гибели врага: радиус, м, и мощность. Мощность ниже порога кратера.
+const DEATH_BLAST: (f32, f32) = (2.5, 0.25);
 
 /// Цвет корпуса врага.
 const HULL_COLOR: Color = Color::srgb(0.72, 0.16, 0.12);
@@ -433,14 +437,21 @@ fn remove_far_enemies(
     }
 }
 
-/// Убирает погибших врагов.
+/// Погибший враг взрывается и исчезает.
 fn remove_dead_enemies(
     mut commands: Commands,
     mut died: MessageReader<Died>,
-    enemies: Query<(), With<Enemy>>,
+    enemies: Query<&Transform, With<Enemy>>,
+    mut explosions: MessageWriter<Explosion>,
 ) {
     for message in died.read() {
-        if enemies.contains(message.entity) {
+        if let Ok(transform) = enemies.get(message.entity) {
+            explosions.write(Explosion {
+                position: transform.translation,
+                radius: DEATH_BLAST.0,
+                power: DEATH_BLAST.1,
+                source_team: Team::Enemy,
+            });
             commands.entity(message.entity).try_despawn();
         }
     }

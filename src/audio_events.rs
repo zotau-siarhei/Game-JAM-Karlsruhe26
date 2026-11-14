@@ -6,6 +6,7 @@ use bevy::prelude::*;
 use crate::bullet::FireBullet;
 use crate::combat::{Damage, Died, Health};
 use crate::enemy::{Enemy, EnemySpawned};
+use crate::explosion::Explosion;
 use crate::hq::{HqMemory, VoiceCue};
 use crate::music::{MusicState, Track};
 use crate::rover::Rover;
@@ -31,6 +32,7 @@ impl Plugin for AudioEventsPlugin {
                 voice_rover_death,
                 voice_enemies,
                 sound_shots,
+                sound_explosions,
                 music_follows_enemies,
             ),
         );
@@ -138,5 +140,35 @@ fn music_follows_enemies(
 fn sound_shots(mut shots: MessageReader<FireBullet>, mut sounds: MessageWriter<PlaySound>) {
     for shot in shots.read() {
         sounds.write(PlaySound::at("mg_fire", shot.origin));
+    }
+}
+
+/// Идентификатор звука взрыва по его мощности: хлопок, взрыв или раскатистый грохот.
+fn explosion_sound(power: f32) -> &'static str {
+    if power < 0.5 {
+        "explosion_small"
+    } else if power > 1.5 {
+        "explosion_big"
+    } else {
+        "explosion"
+    }
+}
+
+/// Взрыв — звук по мощности в месте взрыва.
+fn sound_explosions(mut explosions: MessageReader<Explosion>, mut sounds: MessageWriter<PlaySound>) {
+    for explosion in explosions.read() {
+        sounds.write(PlaySound::at(explosion_sound(explosion.power), explosion.position));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explosion_sound_matches_power() {
+        assert_eq!(explosion_sound(0.25), "explosion_small");
+        assert_eq!(explosion_sound(1.0), "explosion");
+        assert_eq!(explosion_sound(2.5), "explosion_big");
     }
 }

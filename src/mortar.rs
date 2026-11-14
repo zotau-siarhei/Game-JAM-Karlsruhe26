@@ -9,7 +9,7 @@ use bevy::camera::visibility::NoFrustumCulling;
 use bevy::prelude::*;
 
 use crate::aim::{self, AimPoint};
-use crate::combat::Health;
+use crate::combat::{Health, Team};
 use crate::explosion::Explosion;
 use crate::rover::Rover;
 use crate::terrain::Terrain;
@@ -308,6 +308,7 @@ fn fly_shells(
                 position,
                 radius: EXPLOSION_RADIUS,
                 power: EXPLOSION_POWER,
+                source_team: Team::Player,
             });
             commands.entity(entity).despawn();
             commands.entity(shell.marker).despawn();

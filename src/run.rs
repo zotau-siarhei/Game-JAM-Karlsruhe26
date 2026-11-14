@@ -6,7 +6,8 @@
 
 use bevy::prelude::*;
 
-use crate::combat::{Died, Health, SurvivalTime, ROVER_MAX_HEALTH};
+use crate::combat::{Died, Health, SurvivalTime, Team, ROVER_MAX_HEALTH};
+use crate::explosion::Explosion;
 use crate::hud::format_time;
 use crate::records::{self, Records};
 use crate::rover::{self, Rover, RoverMotion};
@@ -14,6 +15,9 @@ use crate::terrain::{ChunkMesh, RunSeed, Terrain, VisibleChunks};
 
 /// Сколько секунд после гибели до экрана конца забега.
 const GAME_OVER_DELAY: f32 = 1.0;
+
+/// Взрыв при гибели лунохода: радиус, м, и мощность.
+const DEATH_BLAST: (f32, f32) = (9.0, 2.5);
 
 /// Высота центра корпуса лунохода над поверхностью при возвращении на старт, м.
 const ROVER_RIDE_HEIGHT: f32 = 0.5;
@@ -108,13 +112,14 @@ fn announce_first_run(seed: Option<Res<RunSeed>>, mut started: MessageWriter<Run
     });
 }
 
-/// Гибель лунохода: он исчезает, через секунду показывается экран конца забега.
+/// Гибель лунохода: крупный взрыв, луноход исчезает, через секунду экран конца забега.
 fn watch_rover_death(
     time: Res<Time>,
     mut died: MessageReader<Died>,
     mut death: ResMut<Death>,
     mut rover: Query<(Entity, &Transform, &mut Visibility), With<Rover>>,
     mut next: ResMut<NextState<GameState>>,
+    mut explosions: MessageWriter<Explosion>,
 ) {
     let Some((entity, transform, mut visibility)) = rover.iter_mut().next() else {
         return;
@@ -123,6 +128,12 @@ fn watch_rover_death(
         death.countdown = Some(GAME_OVER_DELAY);
         death.position = transform.translation;
         *visibility = Visibility::Hidden;
+        explosions.write(Explosion {
+            position: transform.translation,
+            radius: DEATH_BLAST.0,
+            power: DEATH_BLAST.1,
+            source_team: Team::Player,
+        });
     }
     if let Some(countdown) = death.countdown.as_mut() {
         *countdown -= time.delta_secs();

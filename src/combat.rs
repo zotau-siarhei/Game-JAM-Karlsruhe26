@@ -13,6 +13,7 @@
 
 use bevy::prelude::*;
 
+use crate::explosion::Explosion;
 use crate::rover::Rover;
 
 /// Здоровье лунохода.
@@ -20,6 +21,12 @@ pub const ROVER_MAX_HEALTH: f32 = 100.0;
 
 /// Радиус коллайдера лунохода, м.
 pub const ROVER_COLLIDER_RADIUS: f32 = 1.2;
+
+/// Урон в центре взрыва мощностью 1: снаряд мортиры.
+pub const EXPLOSION_DAMAGE: f32 = 100.0;
+
+/// Доля урона от взрыва своей команды: свой выстрел ранит слабо и не убивает.
+pub const FRIENDLY_FIRE: f32 = 0.15;
 
 /// Сколько секунд корпус светится после попадания.
 const FLASH_SECONDS: f32 = 0.12;
@@ -35,7 +42,14 @@ impl Plugin for CombatPlugin {
             .add_systems(Startup, create_flash_material)
             .add_systems(
                 Update,
-                (equip_rover, apply_damage, update_flash, count_survival_time).chain(),
+                (
+                    equip_rover,
+                    explosion_damage,
+                    apply_damage,
+                    update_flash,
+                    count_survival_time,
+                )
+                    .chain(),
             );
     }
 }
@@ -106,7 +120,7 @@ pub struct Damage {
     pub target: Entity,
     /// Сколько здоровья отнять.
     pub amount: f32,
-    // Команду источника прочитает ослабление своего урона от взрывов.
+    // Команду источника прочитают тревога и счёт убийств.
     #[allow(dead_code)]
     /// Чья атака.
     pub source_team: Team,
@@ -153,6 +167,47 @@ fn equip_rover(mut commands: Commands, rovers: Query<Entity, Added<Rover>>) {
                 radius: ROVER_COLLIDER_RADIUS,
             },
         ));
+    }
+}
+
+/// Урон взрыва мощностью `power` и радиусом `radius` на расстоянии `distance` от центра.
+///
+/// Спадает к краю как `(1 - d/R)²`. Своей команде достаётся [`FRIENDLY_FIRE`] от урона.
+pub fn blast_damage(power: f32, radius: f32, distance: f32, friendly: bool) -> f32 {
+    if radius <= 0.0 || distance >= radius {
+        return 0.0;
+    }
+    let falloff = 1.0 - (distance / radius).max(0.0);
+    let damage = EXPLOSION_DAMAGE * power * falloff * falloff;
+    if friendly { damage * FRIENDLY_FIRE } else { damage }
+}
+
+/// Взрыв ранит всех со здоровьем в своём радиусе.
+fn explosion_damage(
+    mut explosions: MessageReader<Explosion>,
+    targets: Query<(Entity, &GlobalTransform, &Team, &Health)>,
+    mut damage: MessageWriter<Damage>,
+) {
+    for explosion in explosions.read() {
+        for (target, transform, team, health) in &targets {
+            if health.is_dead() {
+                continue;
+            }
+            let distance = transform.translation().distance(explosion.position);
+            let amount = blast_damage(
+                explosion.power,
+                explosion.radius,
+                distance,
+                *team == explosion.source_team,
+            );
+            if amount > 0.0 {
+                damage.write(Damage {
+                    target,
+                    amount,
+                    source_team: explosion.source_team,
+                });
+            }
+        }
     }
 }
 
@@ -250,6 +305,56 @@ mod tests {
         health.damage(60.0);
         health.heal(50.0);
         assert!(health.is_dead());
+    }
+
+    #[test]
+    fn blast_is_stronger_in_the_centre_than_at_the_edge() {
+        let centre = blast_damage(1.0, 5.0, 0.0, false);
+        let middle = blast_damage(1.0, 5.0, 2.5, false);
+        let edge = blast_damage(1.0, 5.0, 4.9, false);
+        assert!(centre > middle && middle > edge && edge > 0.0);
+        assert_eq!(blast_damage(1.0, 5.0, 5.0, false), 0.0);
+        assert_eq!(blast_damage(1.0, 5.0, 12.0, false), 0.0);
+        // Мощный взрыв бьёт сильнее.
+        assert!(blast_damage(2.0, 5.0, 1.0, false) > blast_damage(1.0, 5.0, 1.0, false));
+    }
+
+    #[test]
+    fn own_mortar_shell_under_the_wheels_takes_less_than_a_fifth_of_health() {
+        // Взрыв мортиры: мощность 1, радиус 5, центр под луноходом.
+        let own = blast_damage(1.0, 5.0, 0.0, true);
+        assert!(own > 0.0);
+        assert!(own < ROVER_MAX_HEALTH * 0.2, "{own}");
+        // Тот же взрыв убивает таран-стрелка с 30 здоровья на расстоянии до двух метров.
+        assert!(blast_damage(1.0, 5.0, 2.0, false) >= 30.0);
+    }
+
+    #[test]
+    fn explosion_damages_everyone_in_radius_and_spares_its_own_team() {
+        let mut app = app_with_damage();
+        app.add_message::<Explosion>()
+            .add_systems(Update, explosion_damage.before(apply_damage));
+        let spawn = |app: &mut App, x: f32, team: Team| {
+            app.world_mut()
+                .spawn((GlobalTransform::from_xyz(x, 0.0, 0.0), team, Health::new(100.0)))
+                .id()
+        };
+        let near_enemy = spawn(&mut app, 1.0, Team::Enemy);
+        let far_enemy = spawn(&mut app, 20.0, Team::Enemy);
+        let player = spawn(&mut app, 1.0, Team::Player);
+        app.world_mut().write_message(Explosion {
+            position: Vec3::ZERO,
+            radius: 5.0,
+            power: 1.0,
+            source_team: Team::Player,
+        });
+        app.update();
+        let health = |app: &App, entity| app.world().get::<Health>(entity).unwrap().current;
+        assert!(health(&app, near_enemy) < 50.0);
+        assert_eq!(health(&app, far_enemy), 100.0);
+        // Своя команда ранена, но гораздо слабее.
+        assert!(health(&app, player) < 100.0);
+        assert!(health(&app, player) > 85.0);
     }
 
     /// Приложение с одной системой урона.

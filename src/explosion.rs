@@ -3,11 +3,13 @@
 //!
 //! ```ignore
 //! fn on_hit(mut explosions: MessageWriter<Explosion>) {
-//!     explosions.write(Explosion { position, radius: 5.0, power: 1.0 });
+//!     explosions.write(Explosion { position, radius: 5.0, power: 1.0, source_team: Team::Player });
 //! }
 //! ```
 
 use bevy::prelude::*;
+
+use crate::combat::Team;
 
 /// Взрыв в точке мира.
 #[derive(Message, Clone, Copy, Debug)]
@@ -18,6 +20,8 @@ pub struct Explosion {
     pub radius: f32,
     /// Мощность: 1 — снаряд мортиры, от неё масштабируются кратер, эффекты и тряска.
     pub power: f32,
+    /// Чей взрыв: своей команде он наносит лишь малую часть урона.
+    pub source_team: Team,
 }
 
 /// Плагин взрывов: регистрирует сообщение и пишет взрывы в лог.
