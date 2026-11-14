@@ -70,7 +70,6 @@ pub struct VisibleChunks {
 
 impl VisibleChunks {
     /// Сущность меша участка, если участок сейчас в сцене.
-    #[allow(dead_code, reason = "для кратеров: пометить участок ChunkDirty")]
     pub fn entity(&self, coord: IVec2) -> Option<Entity> {
         self.entities.get(&coord).copied()
     }
@@ -159,7 +158,7 @@ fn stream_chunks(
 }
 
 /// Пересобирает меши участков, помеченных `ChunkDirty`.
-fn rebuild_dirty_chunks(
+pub fn rebuild_dirty_chunks(
     mut commands: Commands,
     mut terrain: ResMut<Terrain>,
     mut meshes: ResMut<Assets<Mesh>>,

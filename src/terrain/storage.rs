@@ -30,6 +30,15 @@ const GRASS_TINT_STRENGTH: f32 = 0.12;
 /// Шаг, на котором считается нормаль в точке мира, м.
 const NORMAL_STEP: f32 = 1.0;
 
+/// Внешний край вала кратера в долях радиуса чаши.
+const CRATER_RIM_EXTENT: f32 = 1.3;
+
+/// Цвет разрушенной земли в кратере.
+const CRATER_BROWN: Color = Color::srgb(0.36, 0.23, 0.12);
+
+/// Насколько пятна шума меняют яркость земли в кратере.
+const CRATER_TINT_STRENGTH: f32 = 0.18;
+
 /// Состояние одного участка: высоты и цвета вершин сетки `CHUNK_VERTS` × `CHUNK_VERTS`.
 ///
 /// Вершина `(ix, iz)` стоит в точке мира `(origin.x + ix, height, origin.y + iz)`, где
@@ -99,6 +108,24 @@ fn split_vertex(vx: i32, vz: i32) -> (IVec2, usize, usize) {
         vx.rem_euclid(CHUNK_SIZE) as usize,
         vz.rem_euclid(CHUNK_SIZE) as usize,
     )
+}
+
+/// Все участки, где хранится вершина мировой сетки `(vx, vz)`, с локальными индексами в них.
+///
+/// Вершина на границе участков хранится и в соседе как его крайняя (индекс `CHUNK_SIZE`):
+/// всего от одного до четырёх участков.
+fn vertex_owners(vx: i32, vz: i32) -> impl Iterator<Item = (IVec2, usize, usize)> {
+    let (coord, ix, iz) = split_vertex(vx, vz);
+    let last = CHUNK_SIZE as usize;
+    let xs = [(0, ix), (-1, last)];
+    let zs = [(0, iz), (-1, last)];
+    let x_count = if ix == 0 { 2 } else { 1 };
+    let z_count = if iz == 0 { 2 } else { 1 };
+    zs.into_iter().take(z_count).flat_map(move |(dz, lz)| {
+        xs.into_iter()
+            .take(x_count)
+            .map(move |(dx, lx)| (coord + IVec2::new(dx, dz), lx, lz))
+    })
 }
 
 /// Рельеф забега: все участки, к которым обращались, живут до конца забега.
@@ -191,6 +218,56 @@ impl Terrain {
         near + (far - near) * tz
     }
 
+    /// Вырывает кратер с центром в точке мира `(center.x, center.z)` и возвращает участки,
+    /// данные которых изменились.
+    ///
+    /// К высоте каждой вершины в радиусе `radius · CRATER_RIM_EXTENT` прибавляется профиль:
+    /// чаша `-depth · (1 - (d/R)²)` внутри `R` и вал `+rim · sin²` между `R` и краем вала.
+    /// Профиль вычитается из текущих высот, поэтому повторный взрыв углубляет кратер без предела.
+    /// Цвет вершин смешивается с коричневым: внутри чаши полностью, на валу с плавным переходом
+    /// к исходному цвету. Общие вершины на границах пишутся во все участки, где они хранятся.
+    pub fn apply_crater(&mut self, center: Vec3, radius: f32, depth: f32, rim: f32) -> Vec<IVec2> {
+        let mut changed = Vec::new();
+        if radius <= 0.0 {
+            return changed;
+        }
+        let outer = radius * CRATER_RIM_EXTENT;
+        let (x0, x1) = ((center.x - outer).floor() as i32, (center.x + outer).ceil() as i32);
+        let (z0, z1) = ((center.z - outer).floor() as i32, (center.z + outer).ceil() as i32);
+        let brown = CRATER_BROWN.to_linear();
+        for vz in z0..=z1 {
+            for vx in x0..=x1 {
+                let d = Vec2::new(vx as f32 - center.x, vz as f32 - center.z).length();
+                if d >= outer {
+                    continue;
+                }
+                let (delta, scorch) = if d < radius {
+                    (-depth * (1.0 - (d / radius).powi(2)), 1.0)
+                } else {
+                    let t = (d - radius) / (outer - radius);
+                    let s = (t * std::f32::consts::PI).sin();
+                    (rim * s * s, 1.0 - t * t * (3.0 - 2.0 * t))
+                };
+                let variation = 1.0 + self.generator.tint(vx as f32, vz as f32) * CRATER_TINT_STRENGTH;
+                let target = brown * variation;
+                for (coord, ix, iz) in vertex_owners(vx, vz) {
+                    let chunk = self.chunk_mut(coord);
+                    let i = ChunkData::index(ix, iz);
+                    chunk.heights[i] += delta;
+                    let c = &mut chunk.colors[i];
+                    // Смешение только в сторону коричневого: повторный взрыв зелень не вернёт.
+                    c[0] += (target.red - c[0]) * scorch;
+                    c[1] += (target.green - c[1]) * scorch;
+                    c[2] += (target.blue - c[2]) * scorch;
+                    if !changed.contains(&coord) {
+                        changed.push(coord);
+                    }
+                }
+            }
+        }
+        changed
+    }
+
     /// Нормаль поверхности в точке мира по разности высот вокруг неё.
     pub fn normal_at(&self, x: f32, z: f32) -> Vec3 {
         let dx = self.height_at(x + NORMAL_STEP, z) - self.height_at(x - NORMAL_STEP, z);
@@ -263,6 +340,69 @@ mod tests {
         let right = terrain.chunk(IVec2::X).clone();
         for iz in 0..CHUNK_VERTS {
             assert_eq!(left.height(CHUNK_VERTS - 1, iz), right.height(0, iz));
+        }
+    }
+
+    #[test]
+    fn repeated_explosion_deepens_center() {
+        let mut terrain = Terrain::new(7);
+        let center = Vec3::new(10.0, 0.0, 10.0);
+        let mut previous = terrain.height_at(center.x, center.z);
+        for _ in 0..10 {
+            terrain.apply_crater(center, 5.0, 2.5, 0.6);
+            let h = terrain.height_at(center.x, center.z);
+            assert!(h < previous - 2.0, "центр не углубился: {h} после {previous}");
+            previous = h;
+        }
+    }
+
+    #[test]
+    fn crater_heights_match_on_shared_border() {
+        let mut terrain = Terrain::new(2);
+        // Центр на углу четырёх участков: кратер задевает все четыре.
+        let changed = terrain.apply_crater(Vec3::new(32.0, 0.0, 32.0), 5.0, 2.5, 0.6);
+        assert_eq!(changed.len(), 4);
+        let n = CHUNK_VERTS - 1;
+        let pairs = [
+            (IVec2::new(0, 0), IVec2::new(1, 0)),
+            (IVec2::new(0, 1), IVec2::new(1, 1)),
+        ];
+        for (left, right) in pairs {
+            let (l, r) = (terrain.chunk(left).clone(), terrain.chunk(right).clone());
+            for iz in 0..CHUNK_VERTS {
+                assert_eq!(l.height(n, iz), r.height(0, iz));
+                assert_eq!(l.colors[ChunkData::index(n, iz)], r.colors[ChunkData::index(0, iz)]);
+            }
+        }
+        let (bottom, top) = (terrain.chunk(IVec2::new(1, 0)).clone(), terrain.chunk(IVec2::ONE).clone());
+        for ix in 0..CHUNK_VERTS {
+            assert_eq!(bottom.height(ix, n), top.height(ix, 0));
+        }
+        // Угловая вершина одна на четыре участка и опущена на полную глубину.
+        let pristine = HeightGenerator::new(2).height(32.0, 32.0);
+        assert!((terrain.vertex_height(32, 32) - (pristine - 2.5)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn crater_has_rim_and_brown_bowl() {
+        let mut terrain = Terrain::new(4);
+        let before = terrain.clone_heights_around(50, 50);
+        terrain.apply_crater(Vec3::new(50.0, 0.0, 50.0), 5.0, 2.5, 0.6);
+        let after = terrain.clone_heights_around(50, 50);
+        // Вал: на расстоянии 6 м от центра земля поднялась.
+        assert!(after[1] > before[1] + 0.3);
+        // Дальше вала рельеф не тронут.
+        assert_eq!(after[2], before[2]);
+        let brown = CRATER_BROWN.to_linear();
+        let (coord, ix, iz) = split_vertex(50, 50);
+        let c = terrain.chunk(coord).colors[ChunkData::index(ix, iz)];
+        assert!(c[0] > c[1] && (c[0] - brown.red).abs() < 0.1, "центр не коричневый: {c:?}");
+    }
+
+    impl Terrain {
+        /// Высоты в центре, в 6 и в 8 м от него по X.
+        fn clone_heights_around(&self, vx: i32, vz: i32) -> [f32; 3] {
+            [0, 6, 8].map(|d| self.vertex_height(vx + d, vz))
         }
     }
 

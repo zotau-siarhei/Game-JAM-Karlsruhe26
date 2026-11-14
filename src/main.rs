@@ -7,6 +7,7 @@ mod audio_events;
 mod bullet;
 mod camera;
 mod combat;
+mod craters;
 mod enemy;
 mod explosion;
 mod hq;
@@ -50,6 +51,7 @@ fn main() {
             aim::AimPlugin,
             explosion::ExplosionPlugin,
             mortar::MortarPlugin,
+            craters::CratersPlugin,
         ))
         .add_plugins((
             combat::CombatPlugin,
