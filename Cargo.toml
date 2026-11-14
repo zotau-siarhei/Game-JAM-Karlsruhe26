@@ -7,7 +7,8 @@ description = "Game Jam Karlsruhe 2026: луноход на неизвестно
 publish = false
 
 [dependencies]
-bevy = "0.20.1"
+# mp3 нужен для реплик штаба из ElevenLabs.
+bevy = { version = "0.20.1", features = ["mp3"] }
 # GPU-частицы: взрывы, дым, искры.
 bevy_hanabi = "0.20"
 # Тряска камеры при взрывах.
@@ -16,6 +17,9 @@ bevy_trauma_shake = "0.9"
 noise = "0.9"
 # HTTP-запросы к ElevenLabs.
 ehttp = "0.7"
+# Чтение списка реплик штаба из JSON.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 # Быстрые инкрементальные сборки: свой код почти без оптимизаций, зависимости с полными.
 [profile.dev]

@@ -1,0 +1,11 @@
+{
+  "lines": [
+    { "id": "run_start", "event": "Старт забега", "text": "", "file": "run_start.mp3" },
+    { "id": "first_crater", "event": "Первый кратер", "text": "", "file": "first_crater.mp3" },
+    { "id": "house_destroyed", "event": "Разрушен дом", "text": "", "file": "house_destroyed.mp3" },
+    { "id": "alarm_rising", "event": "Рост тревоги", "text": "", "file": "alarm_rising.mp3" },
+    { "id": "boss_appears", "event": "Появление босса", "text": "", "file": "boss_appears.mp3" },
+    { "id": "train_derailed", "event": "Сход поезда с рельсов", "text": "", "file": "train_derailed.mp3" },
+    { "id": "death", "event": "Смерть лунохода", "text": "", "file": "death.mp3" }
+  ]
+}

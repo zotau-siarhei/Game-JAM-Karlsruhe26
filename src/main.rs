@@ -2,6 +2,8 @@
 //!
 //! Пока это заглушка: окно, поверхность планеты, луноход-кубик, свет и камера.
 
+mod voice;
+
 use bevy::prelude::*;
 
 /// Цвет неба над планетой.
@@ -30,6 +32,7 @@ fn main() {
             }),
             ..default()
         }))
+        .add_plugins(voice::VoicePlugin)
         .add_systems(Startup, setup)
         .run();
 }

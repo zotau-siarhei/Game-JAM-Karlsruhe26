@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lunokhod: реплики штаба</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f5f1; --panel: #ffffff; --text: #1c1d21; --muted: #6b6f7a;
+    --line: #dcdad2; --accent: #2f7d4f; --warn: #b4551a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161b; --panel: #1c1f26; --text: #e8e9ec; --muted: #9096a3;
+      --line: #2c3039; --accent: #5fc487; --warn: #e89a5b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px 16px 48px; background: var(--bg); color: var(--text);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 1100px; margin: 0 auto; }
+  h1 { margin: 0 0 4px; font-size: 22px; }
+  .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 12px 0 16px; }
+  #summary { color: var(--muted); }
+  button {
+    font: inherit; color: inherit; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 12px; cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: 0.4; cursor: default; }
+  button.play { min-width: 44px; }
+  button.playing { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+  .scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: 9px 12px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+  tr:last-child td { border-bottom: 0; }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); white-space: nowrap; }
+  td.id, td.file { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 13px; white-space: nowrap; }
+  td.text { min-width: 280px; }
+  .empty { color: var(--muted); }
+  .missing { color: var(--warn); }
+  a { color: var(--accent); }
+  .state { display: block; font-family: system-ui, sans-serif; font-size: 12px; color: var(--muted); }
+  #notice {
+    display: none; margin: 0 0 16px; padding: 12px 14px; border: 1px solid var(--warn);
+    border-radius: 8px; background: var(--panel);
+  }
+  #notice code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Реплики штаба</h1>
+  <div class="bar">
+    <button id="reload">Обновить</button>
+    <span id="summary"></span>
+  </div>
+
+  <div id="notice">
+    <p id="notice-text" style="margin: 0 0 8px"></p>
+    <p style="margin: 0 0 8px">Запусти из корня репозитория
+      <code>python3 -m http.server 8000 --directory assets/voice</code>
+      и открой <code>http://localhost:8000/preview.html</code>.</p>
+    <p style="margin: 0">Или выбери файл вручную: <input type="file" id="pick" accept=".json,application/json"></p>
+  </div>
+
+  <div class="scroll">
+    <table>
+      <thead>
+        <tr><th></th><th>id</th><th>Событие</th><th>Текст</th><th>Файл</th></tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+</main>
+
+<script>
+  const MANIFEST = 'lines.json';
+  const rows = document.getElementById('rows');
+  const summary = document.getElementById('summary');
+  const notice = document.getElementById('notice');
+  const noticeText = document.getElementById('notice-text');
+
+  // Реплика, которая звучит сейчас: звук и её кнопка.
+  let current = null;
+
+  function stopCurrent() {
+    if (!current) return;
+    current.audio.pause();
+    current.audio.currentTime = 0;
+    current.button.textContent = '▶';
+    current.button.classList.remove('playing');
+    current = null;
+  }
+
+  function cell(className, text, fallback) {
+    const td = document.createElement('td');
+    td.className = className;
+    if (text) {
+      td.textContent = text;
+    } else {
+      td.textContent = fallback;
+      td.classList.add('empty');
+    }
+    return td;
+  }
+
+  function formatDuration(seconds) {
+    return Number.isFinite(seconds) ? seconds.toFixed(1) + ' с' : '';
+  }
+
+  function render(lines) {
+    stopCurrent();
+    rows.replaceChildren();
+    let withSound = 0;
+    const seen = new Set();
+    const duplicates = new Set();
+
+    const updateSummary = () => {
+      let text = `Реплик: ${lines.length}, со звуком: ${withSound}`;
+      if (duplicates.size) text += `. Повторяются id: ${[...duplicates].join(', ')}`;
+      summary.textContent = text;
+    };
+
+    for (const line of lines) {
+      if (seen.has(line.id)) duplicates.add(line.id);
+      seen.add(line.id);
+
+      const tr = document.createElement('tr');
+      const button = document.createElement('button');
+      button.className = 'play';
+      button.textContent = '▶';
+      button.disabled = true;
+      button.title = 'Нет звукового файла';
+
+      const fileCell = cell('file', line.file, 'не задан');
+      const state = document.createElement('span');
+      state.className = 'state';
+      fileCell.append(state);
+
+      if (line.file) {
+        // Метка времени не даёт браузеру отдать старую запись после перезаписи файла.
+        const audio = new Audio(`${encodeURIComponent(line.file)}?t=${Date.now()}`);
+        audio.preload = 'metadata';
+        audio.addEventListener('loadedmetadata', () => {
+          button.disabled = false;
+          button.title = 'Проиграть';
+          state.textContent = formatDuration(audio.duration);
+          // Имя существующего файла становится ссылкой на него.
+          const link = document.createElement('a');
+          link.href = encodeURIComponent(line.file);
+          link.target = '_blank';
+          link.textContent = line.file;
+          fileCell.firstChild.replaceWith(link);
+          withSound += 1;
+          updateSummary();
+        });
+        audio.addEventListener('error', () => {
+          state.textContent = 'файла нет в assets/voice';
+          state.classList.add('missing');
+        });
+        audio.addEventListener('ended', () => {
+          if (current && current.audio === audio) stopCurrent();
+        });
+        button.addEventListener('click', () => {
+          const wasPlaying = current && current.audio === audio;
+          stopCurrent();
+          if (wasPlaying) return;
+          current = { audio, button };
+          button.textContent = '■';
+          button.classList.add('playing');
+          audio.play().catch(() => stopCurrent());
+        });
+      }
+
+      const playCell = document.createElement('td');
+      playCell.append(button);
+      tr.append(
+        playCell,
+        cell('id', line.id, 'нет id'),
+        cell('event', line.event, '—'),
+        cell('text', line.text, 'текст не написан'),
+        fileCell,
+      );
+      rows.append(tr);
+    }
+    updateSummary();
+  }
+
+  function show(json) {
+    const data = JSON.parse(json);
+    if (!data || !Array.isArray(data.lines)) throw new Error('в файле нет списка "lines"');
+    notice.style.display = 'none';
+    render(data.lines);
+  }
+
+  function fail(message) {
+    noticeText.textContent = message;
+    notice.style.display = 'block';
+  }
+
+  async function load() {
+    let json;
+    try {
+      const response = await fetch(MANIFEST, { cache: 'no-store' });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      json = await response.text();
+    } catch (error) {
+      fail(`Не удалось загрузить ${MANIFEST}: ${error.message}. Страницу нужно открывать через локальный сервер, а не как файл.`);
+      return;
+    }
+    try {
+      show(json);
+    } catch (error) {
+      fail(`Ошибка в ${MANIFEST}: ${error.message}`);
+    }
+  }
+
+  document.getElementById('reload').addEventListener('click', load);
+  document.getElementById('pick').addEventListener('change', async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    try {
+      show(await file.text());
+    } catch (error) {
+      fail(`Ошибка в ${file.name}: ${error.message}`);
+    }
+  });
+
+  load();
+</script>
+</body>
+</html>
