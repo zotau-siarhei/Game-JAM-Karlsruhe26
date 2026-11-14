@@ -8,7 +8,7 @@ use bevy::prelude::*;
 
 use crate::combat::{Health, Team};
 use crate::capsule::DropCapsule;
-use crate::enemy::{Enemy, SpawnEnemy, SpawnPlace};
+use crate::enemy::{Enemy, EnemyKind, SpawnEnemy, SpawnPlace};
 use crate::explosion::Explosion;
 use crate::rover::Rover;
 use crate::run::{GameState, RunScoped, RunStarted};
@@ -49,6 +49,9 @@ pub mod balance {
     pub fn uses_capsule(threat: f32, roll: f32) -> bool {
         threat >= CAPSULE_THREAT && roll < CAPSULE_SHARE
     }
+
+    /// С какой угрозы в волнах появляются мортирщики.
+    pub const MORTAR_THREAT: f32 = 0.8;
 
     /// Угроза: минуты забега плюс разрушения.
     pub fn threat(seconds: f32, destruction: f32) -> f32 {
@@ -110,15 +113,13 @@ impl Threat {
     }
 }
 
-/// Тип врага. Пока есть только таран-стрелок: остальные добавятся со своими задачами.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EnemyKind {
-    RamShooter,
-}
-
 /// Типы, доступные при угрозе `threat`, и их стоимость в очках бюджета.
-fn available_kinds(_threat: f32) -> Vec<(EnemyKind, u32)> {
-    vec![(EnemyKind::RamShooter, 1)]
+fn available_kinds(threat: f32) -> Vec<(EnemyKind, u32)> {
+    let mut kinds = vec![(EnemyKind::RamShooter, 1)];
+    if threat >= balance::MORTAR_THREAT {
+        kinds.push((EnemyKind::Mortar, 2));
+    }
+    kinds
 }
 
 /// Состав волны: случайные покупки из доступных типов, пока хватает бюджета.
@@ -157,7 +158,7 @@ enum Phase {
     /// Сколько секунд осталось до следующей волны.
     Lull(f32),
     /// Направления врагов, которые ещё не появились, и время до следующего.
-    Spawning { queue: Vec<f32>, timer: f32 },
+    Spawning { queue: Vec<(f32, EnemyKind)>, timer: f32 },
 }
 
 impl Default for Director {
@@ -224,9 +225,10 @@ fn direct_waves(
             let directions: Vec<f32> = (0..1 + dice.below(3)).map(|_| dice.range(0.0, TAU)).collect();
             let queue = wave
                 .iter()
-                .map(|_| {
+                .map(|kind| {
                     let direction = directions[dice.below(directions.len())];
-                    direction + dice.range(-balance::DIRECTION_SPREAD, balance::DIRECTION_SPREAD)
+                    let spread = dice.range(-balance::DIRECTION_SPREAD, balance::DIRECTION_SPREAD);
+                    (direction + spread, *kind)
                 })
                 .collect();
             director.wave += 1;
@@ -236,12 +238,13 @@ fn direct_waves(
         Phase::Spawning { queue, timer } => {
             *timer -= dt;
             if *timer <= 0.0 && enemies.iter().count() < balance::MAX_ALIVE {
-                if let Some(angle) = queue.pop() {
+                if let Some((angle, kind)) = queue.pop() {
                     if balance::uses_capsule(threat.value(), dice.range(0.0, 1.0)) {
-                        capsules.write(DropCapsule { angle });
+                        capsules.write(DropCapsule { angle, kind });
                     } else {
                         spawn.write(SpawnEnemy {
                             place: SpawnPlace::Edge { angle },
+                            kind,
                         });
                     }
                     *timer = balance::SPAWN_GAP;
@@ -338,6 +341,16 @@ mod tests {
         assert!(!balance::uses_capsule(0.5, 0.0));
         assert!(balance::uses_capsule(1.0, 0.1));
         assert!(!balance::uses_capsule(3.0, 0.9));
+    }
+
+    #[test]
+    fn mortarmen_join_after_the_threat_grows() {
+        assert!(!buy_wave(0.5, |limit| limit - 1).contains(&EnemyKind::Mortar));
+        let later = buy_wave(1.0, |limit| limit - 1);
+        assert!(later.contains(&EnemyKind::Mortar));
+        // Бюджет 7 очков: мортирщик стоит два, таран-стрелок одно.
+        let cost: u32 = later.iter().map(|kind| if *kind == EnemyKind::Mortar { 2 } else { 1 }).sum();
+        assert_eq!(cost, 7);
     }
 
     #[test]

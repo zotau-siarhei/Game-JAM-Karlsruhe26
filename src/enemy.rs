@@ -1,6 +1,8 @@
 //! Враги. Первый тип — таран-стрелок: появляется за кадром, едет прямо на луноход,
 //! стреляет очередями при прямой видимости и таранит вплотную.
 //!
+//! Второй тип — мортирщик: держит дистанцию и накрывает луноход навесным огнём.
+//!
 //! Когда и сколько врагов появляется, решает директор волн в `src/waves.rs`: он просит
 //! поставить врага сообщением [`SpawnEnemy`].
 
@@ -9,7 +11,8 @@ use bevy::prelude::*;
 use crate::bullet::{self, FireBullet};
 use crate::combat::{Collider, Damage, Died, Health, Team};
 use crate::explosion::Explosion;
-use crate::rover::{self, Rover};
+use crate::mortar::{self, FireShell};
+use crate::rover::{self, Rover, RoverMotion};
 use crate::run::{GameState, RunScoped};
 use crate::sound_list::Dice;
 use crate::terrain::Terrain;
@@ -81,6 +84,27 @@ const HULL_COLOR: Color = Color::srgb(0.72, 0.16, 0.12);
 /// Цвет колёс и тарана врага.
 const DARK_COLOR: Color = Color::srgb(0.1, 0.1, 0.12);
 
+/// Здоровье мортирщика.
+const MORTAR_HEALTH: f32 = 40.0;
+
+/// Скорость мортирщика, м/с.
+const MORTAR_SPEED: f32 = 7.0;
+
+/// Ближе этого расстояния до лунохода мортирщик отступает, дальше второго — подъезжает, м.
+const MORTAR_BAND: (f32, f32) = (22.0, 34.0);
+
+/// Перезарядка мортиры врага, с.
+const MORTAR_RELOAD: f32 = 3.0;
+
+/// Мощность взрыва вражеского снаряда: прямое попадание отнимает около трети здоровья.
+const MORTAR_POWER: f32 = 0.35;
+
+/// Разброс точки прицеливания мортирщика, м.
+const MORTAR_SCATTER: f32 = 3.0;
+
+/// Цвет корпуса мортирщика.
+const MORTAR_COLOR: Color = Color::srgb(0.5, 0.2, 0.62);
+
 /// Подключает врагов.
 pub struct EnemyPlugin;
 
@@ -94,10 +118,12 @@ impl Plugin for EnemyPlugin {
                 (
                     spawn_enemies.run_if(in_state(GameState::Playing)),
                     chase_rover,
+                    drive_mortarmen,
                     vehicle::move_ground_vehicles,
                     separate_enemies,
                     ram_rover,
                     shoot_rover,
+                    fire_mortarmen,
                     remove_far_enemies,
                     remove_dead_enemies,
                 )
@@ -110,6 +136,39 @@ impl Plugin for EnemyPlugin {
 /// Враг.
 #[derive(Component)]
 pub struct Enemy;
+
+/// Тип врага.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnemyKind {
+    /// Едет на луноход, стреляет очередями и таранит.
+    RamShooter,
+    /// Держит дистанцию и стреляет из мортиры.
+    Mortar,
+}
+
+/// Мортирщик: время до следующего выстрела, с.
+#[derive(Component)]
+struct Mortarman {
+    reload: f32,
+}
+
+/// Что мортирщик делает на расстоянии `distance` от лунохода.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MortarMove {
+    Approach,
+    Hold,
+    Retreat,
+}
+
+fn mortar_move(distance: f32) -> MortarMove {
+    if distance < MORTAR_BAND.0 {
+        MortarMove::Retreat
+    } else if distance > MORTAR_BAND.1 {
+        MortarMove::Approach
+    } else {
+        MortarMove::Hold
+    }
+}
 
 /// Оружие врага: таран и пулемёт.
 #[derive(Component, Debug)]
@@ -128,6 +187,7 @@ struct EnemyWeapons {
 #[derive(Message, Debug, Clone, Copy)]
 pub struct SpawnEnemy {
     pub place: SpawnPlace,
+    pub kind: EnemyKind,
 }
 
 /// Где появляется враг.
@@ -145,7 +205,9 @@ struct EnemyAssets {
     hull: Handle<Mesh>,
     wheel: Handle<Mesh>,
     ram: Handle<Mesh>,
+    barrel: Handle<Mesh>,
     hull_material: Handle<StandardMaterial>,
+    mortar_material: Handle<StandardMaterial>,
     dark_material: Handle<StandardMaterial>,
 }
 
@@ -158,7 +220,9 @@ fn create_enemy_assets(
         hull: meshes.add(Cuboid::from_size(HULL_SIZE)),
         wheel: meshes.add(Cylinder::new(WHEEL_RADIUS, 0.28)),
         ram: meshes.add(Cuboid::new(HULL_SIZE.x + 0.5, 0.35, 0.35)),
+        barrel: meshes.add(Cylinder::new(0.28, 1.5)),
         hull_material: materials.add(HULL_COLOR),
+        mortar_material: materials.add(MORTAR_COLOR),
         dark_material: materials.add(DARK_COLOR),
     });
 }
@@ -191,11 +255,11 @@ fn spawn_enemies(
             }
             SpawnPlace::Point(point) => point,
         };
-        spawn_enemy(&mut commands, &mut dice, &assets, &terrain, position, rover.translation);
+        spawn_enemy(&mut commands, &mut dice, &assets, &terrain, position, rover.translation, request.kind);
     }
 }
 
-/// Создаёт таран-стрелка в точке `position` носом к точке `target`.
+/// Создаёт врага типа `kind` в точке `position` носом к точке `target`.
 fn spawn_enemy(
     commands: &mut Commands,
     dice: &mut Dice,
@@ -203,32 +267,41 @@ fn spawn_enemy(
     terrain: &Terrain,
     mut position: Vec3,
     target: Vec3,
+    kind: EnemyKind,
 ) {
     position.y = terrain.height_at(position.x, position.z) + RIDE_HEIGHT;
     let heading = vehicle::heading_towards(target - position);
 
-    commands
-        .spawn((
-            Enemy,
-            RunScoped,
-            Health::new(ENEMY_HEALTH),
-            Team::Enemy,
-            Collider {
-                radius: ENEMY_RADIUS,
-            },
-            GroundVehicle::new(heading, RIDE_HEIGHT, Vec2::new(HULL_SIZE.x, HULL_SIZE.z) * 0.5),
-            EnemyWeapons {
-                ram_cooldown: 0.0,
-                // Разная задержка, чтобы враги не стреляли залпом.
-                reload: dice.range(0.3, RELOAD),
-                burst_left: 0,
-                burst_timer: 0.0,
-            },
-            Mesh3d(assets.hull.clone()),
-            MeshMaterial3d(assets.hull_material.clone()),
-            Transform::from_translation(position).with_rotation(Quat::from_rotation_y(heading)),
-        ))
-        .with_children(|parent| {
+    let (health, material) = match kind {
+        EnemyKind::RamShooter => (ENEMY_HEALTH, assets.hull_material.clone()),
+        EnemyKind::Mortar => (MORTAR_HEALTH, assets.mortar_material.clone()),
+    };
+    let mut enemy = commands.spawn((
+        Enemy,
+        RunScoped,
+        Health::new(health),
+        Team::Enemy,
+        Collider {
+            radius: ENEMY_RADIUS,
+        },
+        GroundVehicle::new(heading, RIDE_HEIGHT, Vec2::new(HULL_SIZE.x, HULL_SIZE.z) * 0.5),
+        Mesh3d(assets.hull.clone()),
+        MeshMaterial3d(material),
+        Transform::from_translation(position).with_rotation(Quat::from_rotation_y(heading)),
+    ));
+    match kind {
+        EnemyKind::RamShooter => enemy.insert(EnemyWeapons {
+            ram_cooldown: 0.0,
+            // Разная задержка, чтобы враги не стреляли залпом.
+            reload: dice.range(0.3, RELOAD),
+            burst_left: 0,
+            burst_timer: 0.0,
+        }),
+        EnemyKind::Mortar => enemy.insert(Mortarman {
+            reload: dice.range(1.0, MORTAR_RELOAD),
+        }),
+    };
+    enemy.with_children(|parent| {
             for (side, along) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
                 parent.spawn((
                     Mesh3d(assets.wheel.clone()),
@@ -241,12 +314,21 @@ fn spawn_enemy(
                     .with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
                 ));
             }
-            // Таран на носу: видно, куда враг едет.
-            parent.spawn((
-                Mesh3d(assets.ram.clone()),
-                MeshMaterial3d(assets.dark_material.clone()),
-                Transform::from_xyz(0.0, -0.1, -HULL_SIZE.z * 0.5 - 0.15),
-            ));
+            match kind {
+                // Таран на носу: видно, куда враг едет.
+                EnemyKind::RamShooter => parent.spawn((
+                    Mesh3d(assets.ram.clone()),
+                    MeshMaterial3d(assets.dark_material.clone()),
+                    Transform::from_xyz(0.0, -0.1, -HULL_SIZE.z * 0.5 - 0.15),
+                )),
+                // Ствол мортиры смотрит вверх и вперёд.
+                EnemyKind::Mortar => parent.spawn((
+                    Mesh3d(assets.barrel.clone()),
+                    MeshMaterial3d(assets.dark_material.clone()),
+                    Transform::from_xyz(0.0, HULL_SIZE.y * 0.5 + 0.45, -0.2)
+                        .with_rotation(Quat::from_rotation_x(-0.5)),
+                )),
+            };
         });
 }
 
@@ -254,7 +336,7 @@ fn spawn_enemy(
 fn chase_rover(
     time: Res<Time>,
     rover: Query<(&Transform, &Health), With<Rover>>,
-    mut enemies: Query<(&Transform, &mut GroundVehicle), With<Enemy>>,
+    mut enemies: Query<(&Transform, &mut GroundVehicle), (With<Enemy>, Without<Mortarman>)>,
 ) {
     let target = rover
         .iter()
@@ -270,6 +352,74 @@ fn chase_rover(
         let to_target = target - transform.translation;
         vehicle.heading = vehicle::steer(vehicle.heading, vehicle::heading_towards(to_target), max_turn);
         vehicle.speed = ENEMY_SPEED;
+    }
+}
+
+/// Мортирщик подъезжает на дальность выстрела, встаёт и отступает, если луноход слишком близко.
+fn drive_mortarmen(
+    time: Res<Time>,
+    rover: Query<(&Transform, &Health), With<Rover>>,
+    mut enemies: Query<(&Transform, &mut GroundVehicle), With<Mortarman>>,
+) {
+    let target = rover
+        .iter()
+        .next()
+        .filter(|(_, health)| !health.is_dead())
+        .map(|(transform, _)| transform.translation);
+    let max_turn = ENEMY_TURN_SPEED * time.delta_secs();
+    for (transform, mut vehicle) in &mut enemies {
+        let Some(target) = target else {
+            vehicle.speed = 0.0;
+            continue;
+        };
+        let to_target = target - transform.translation;
+        let (direction, speed) = match mortar_move(to_target.length()) {
+            MortarMove::Approach => (to_target, MORTAR_SPEED),
+            MortarMove::Hold => (to_target, 0.0),
+            MortarMove::Retreat => (-to_target, MORTAR_SPEED),
+        };
+        vehicle.heading = vehicle::steer(vehicle.heading, vehicle::heading_towards(direction), max_turn);
+        vehicle.speed = speed;
+    }
+}
+
+/// Точка, куда мортирщик целится: туда, где луноход окажется к падению снаряда.
+fn lead_target(rover: Vec3, velocity: Vec3) -> Vec3 {
+    rover + velocity * mortar::FLIGHT_TIME
+}
+
+/// Стоящий мортирщик раз в несколько секунд стреляет с упреждением и разбросом.
+fn fire_mortarmen(
+    time: Res<Time>,
+    mut dice: ResMut<Dice>,
+    rover: Query<(&Transform, &RoverMotion, &Health), (With<Rover>, Without<Enemy>)>,
+    mut enemies: Query<(&Transform, &GroundVehicle, &mut Mortarman)>,
+    mut shots: MessageWriter<FireShell>,
+) {
+    let Some((rover, motion, health)) = rover.iter().next() else {
+        return;
+    };
+    if health.is_dead() {
+        return;
+    }
+    let velocity = vehicle::forward_of(motion.heading) * motion.speed;
+    for (transform, vehicle, mut mortarman) in &mut enemies {
+        mortarman.reload -= time.delta_secs();
+        if mortarman.reload > 0.0 || vehicle.speed != 0.0 {
+            continue;
+        }
+        mortarman.reload = MORTAR_RELOAD;
+        let scatter = Vec3::new(
+            dice.range(-MORTAR_SCATTER, MORTAR_SCATTER),
+            0.0,
+            dice.range(-MORTAR_SCATTER, MORTAR_SCATTER),
+        );
+        shots.write(FireShell {
+            origin: transform.translation + Vec3::Y * 1.4,
+            target: lead_target(rover.translation, velocity) + scatter,
+            team: Team::Enemy,
+            power: MORTAR_POWER,
+        });
     }
 }
 
@@ -524,5 +674,21 @@ mod tests {
         // Машины в одной точке всё равно расходятся.
         let push = overlap_push(Vec3::ZERO, Vec3::ZERO, 2.4).unwrap();
         assert!((push.length() - 2.4).abs() < 1e-4);
+    }
+
+    #[test]
+    fn mortarman_keeps_its_distance() {
+        assert_eq!(mortar_move(50.0), MortarMove::Approach);
+        assert_eq!(mortar_move(28.0), MortarMove::Hold);
+        assert_eq!(mortar_move(10.0), MortarMove::Retreat);
+    }
+
+    #[test]
+    fn mortarman_leads_a_moving_rover() {
+        let rover = Vec3::new(5.0, 0.0, 5.0);
+        assert_eq!(lead_target(rover, Vec3::ZERO), rover);
+        let ahead = lead_target(rover, Vec3::new(10.0, 0.0, 0.0));
+        assert!((ahead.x - (5.0 + 10.0 * mortar::FLIGHT_TIME)).abs() < 1e-4);
+        assert_eq!(ahead.z, 5.0);
     }
 }

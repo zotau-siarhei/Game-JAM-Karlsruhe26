@@ -8,7 +8,7 @@ use std::f32::consts::FRAC_PI_2;
 use bevy::prelude::*;
 
 use crate::combat::Team;
-use crate::enemy::{self, SpawnEnemy, SpawnPlace};
+use crate::enemy::{self, EnemyKind, SpawnEnemy, SpawnPlace};
 use crate::explosion::Explosion;
 use crate::rover::Rover;
 use crate::run::RunScoped;
@@ -58,6 +58,7 @@ impl Plugin for CapsulePlugin {
 #[derive(Message, Debug, Clone, Copy)]
 pub struct DropCapsule {
     pub angle: f32,
+    pub kind: EnemyKind,
 }
 
 /// Капсула от отметки до выезда врага. Сущность стоит в точке падения на земле.
@@ -66,6 +67,8 @@ struct Capsule {
     /// Сколько секунд прошло с появления отметки.
     age: f32,
     landed: bool,
+    /// Кто выедет из капсулы.
+    kind: EnemyKind,
     ring: Entity,
     body: Entity,
     trail: Entity,
@@ -166,6 +169,7 @@ fn mark_landings(
                 Capsule {
                     age: 0.0,
                     landed: false,
+                    kind: request.kind,
                     ring,
                     body,
                     trail,
@@ -215,6 +219,7 @@ fn drop_capsules(
         } else if falling >= FALL_SECONDS + OPEN_SECONDS {
             spawn.write(SpawnEnemy {
                 place: SpawnPlace::Point(transform.translation),
+                kind: capsule.kind,
             });
             commands
                 .entity(entity)

@@ -6,6 +6,7 @@ use bevy::prelude::*;
 use crate::bullet::FireBullet;
 use crate::combat::{Damage, Died, Health};
 use crate::enemy::Enemy;
+use crate::mortar::FireShell;
 use crate::waves::{Threat, WaveStarted};
 use crate::explosion::Explosion;
 use crate::hq::{HqMemory, VoiceCue, HqTone};
@@ -37,6 +38,7 @@ impl Plugin for AudioEventsPlugin {
                 voice_rover_death,
                 voice_enemies,
                 sound_shots,
+                sound_enemy_mortars,
                 sound_explosions,
                 voice_repair,
                 music_follows_enemies.run_if(in_state(GameState::Playing)),
@@ -163,6 +165,13 @@ fn music_follows_enemies(
 fn sound_shots(mut shots: MessageReader<FireBullet>, mut sounds: MessageWriter<PlaySound>) {
     for shot in shots.read() {
         sounds.write(PlaySound::at("mg_fire", shot.origin));
+    }
+}
+
+/// Выстрел вражеской мортиры слышен там, где стоит мортирщик.
+fn sound_enemy_mortars(mut shots: MessageReader<FireShell>, mut sounds: MessageWriter<PlaySound>) {
+    for shot in shots.read() {
+        sounds.write(PlaySound::at("mortar_fire", shot.origin));
     }
 }
 

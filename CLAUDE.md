@@ -26,6 +26,7 @@
   из `src/capsule.rs`, начало волны — `WaveStarted { number }`.
 - Выбранное оружие — ресурс `CurrentWeapon` из `src/weapons.rs`. Каждое оружие перед выстрелом по
   левой кнопке мыши проверяет, что выбрано именно оно.
+- Снаряд мортиры не от игрока — сообщением `FireShell { origin, target, team, power }` из `src/mortar.rs`.
 - Пули — сообщением `FireBullet { origin, direction, team, damage }` из `src/bullet.rs`; прямая
   видимость над рельефом — `bullet::has_line_of_sight`.
 - Озвучка игровых событий собрана в `src/audio_events.rs`: новое событие озвучивается там.

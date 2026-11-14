@@ -17,7 +17,7 @@ use crate::terrain::Terrain;
 use crate::weapons::CurrentWeapon;
 
 /// Время полёта снаряда до точки прицела, с.
-const FLIGHT_TIME: f32 = 1.2;
+pub const FLIGHT_TIME: f32 = 1.2;
 
 /// Ускорение свободного падения для снаряда, м/с². Высота дуги над хордой — g·T²/8, около 11 м:
 /// снаряд перелетает обычные холмы.
@@ -156,6 +156,19 @@ struct Shell {
     elapsed: f32,
     /// Отметка точки падения этого снаряда.
     marker: Entity,
+    /// Чей снаряд: от этого зависит, кого взрыв щадит.
+    team: Team,
+    /// Мощность взрыва.
+    power: f32,
+}
+
+/// Просьба выстрелить снарядом мортиры из точки `origin` в точку `target`: так стреляют враги.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct FireShell {
+    pub origin: Vec3,
+    pub target: Vec3,
+    pub team: Team,
+    pub power: f32,
 }
 
 /// Отметка будущей точки падения на земле.
@@ -186,11 +199,13 @@ pub struct MortarPlugin;
 impl Plugin for MortarPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Mortar>()
+            .add_message::<FireShell>()
             .add_systems(Startup, create_assets)
             .add_systems(
                 Update,
                 (
                     fire.after(aim::update_aim_point).run_if(in_state(GameState::Playing)),
+                    launch_requested_shells,
                     fly_shells,
                     update_impact_markers,
                     fade_muzzle_flash,
@@ -248,9 +263,44 @@ fn fire(
         return;
     }
     let muzzle = rover.transform_point(MUZZLE_OFFSET);
-    let path = Trajectory::aimed(muzzle, aim.position);
-    let impact = predict_impact(&terrain, &path);
+    spawn_shell(
+        &mut commands,
+        &assets,
+        &mut meshes,
+        &terrain,
+        FireShell {
+            origin: muzzle,
+            target: aim.position,
+            team: Team::Player,
+            power: EXPLOSION_POWER,
+        },
+    );
+    commands.spawn((
+        MuzzleFlash::default(),
+        Mesh3d(assets.flash_mesh.clone()),
+        MeshMaterial3d(assets.flash_material.clone()),
+        Transform::from_translation(muzzle).with_scale(Vec3::splat(FLASH_RADIUS)),
+        PointLight {
+            color: FLASH_COLOR,
+            intensity: FLASH_INTENSITY,
+            range: 20.0,
+            shadow_maps_enabled: false,
+            ..default()
+        },
+        RunScoped,
+    ));
+}
 
+/// Создаёт снаряд и отметку его точки падения.
+fn spawn_shell(
+    commands: &mut Commands,
+    assets: &MortarAssets,
+    meshes: &mut Assets<Mesh>,
+    terrain: &Terrain,
+    shot: FireShell,
+) {
+    let path = Trajectory::aimed(shot.origin, shot.target);
+    let impact = predict_impact(terrain, &path);
     let marker = commands
         .spawn((
             ImpactMarker { position: impact },
@@ -267,26 +317,27 @@ fn fire(
             path,
             elapsed: 0.0,
             marker,
+            team: shot.team,
+            power: shot.power,
         },
         Mesh3d(assets.shell_mesh.clone()),
         MeshMaterial3d(assets.shell_material.clone()),
-        Transform::from_translation(muzzle),
+        Transform::from_translation(shot.origin),
         RunScoped,
     ));
-    commands.spawn((
-        MuzzleFlash::default(),
-        Mesh3d(assets.flash_mesh.clone()),
-        MeshMaterial3d(assets.flash_material.clone()),
-        Transform::from_translation(muzzle).with_scale(Vec3::splat(FLASH_RADIUS)),
-        PointLight {
-            color: FLASH_COLOR,
-            intensity: FLASH_INTENSITY,
-            range: 20.0,
-            shadow_maps_enabled: false,
-            ..default()
-        },
-        RunScoped,
-    ));
+}
+
+/// Выпускает снаряды, о которых попросили сообщением [`FireShell`].
+fn launch_requested_shells(
+    mut commands: Commands,
+    mut shots: MessageReader<FireShell>,
+    terrain: Res<Terrain>,
+    assets: Res<MortarAssets>,
+    mut meshes: ResMut<Assets<Mesh>>,
+) {
+    for shot in shots.read() {
+        spawn_shell(&mut commands, &assets, &mut meshes, &terrain, *shot);
+    }
 }
 
 /// Двигает снаряды по траектории и взрывает их при первом касании поверхности.
@@ -311,8 +362,8 @@ fn fly_shells(
             explosions.write(Explosion {
                 position,
                 radius: EXPLOSION_RADIUS,
-                power: EXPLOSION_POWER,
-                source_team: Team::Player,
+                power: shell.power,
+                source_team: shell.team,
             });
             commands.entity(entity).despawn();
             commands.entity(shell.marker).despawn();
