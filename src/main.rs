@@ -32,6 +32,7 @@ mod settlements;
 mod sound;
 mod subsidence;
 mod sound_list;
+mod steering;
 mod terrain;
 mod vehicle;
 mod weapons;

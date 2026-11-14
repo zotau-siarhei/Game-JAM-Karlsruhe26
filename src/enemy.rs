@@ -8,13 +8,15 @@
 
 use bevy::prelude::*;
 
-use crate::bullet::{self, FireBullet};
+use crate::bullet::FireBullet;
 use crate::combat::{Collider, Damage, Died, Health, Team};
 use crate::explosion::Explosion;
 use crate::mortar::{self, FireShell};
+use crate::obstacles::Obstacle;
 use crate::rover::{self, Rover, RoverMotion};
 use crate::run::{GameState, RunScoped};
 use crate::sound_list::Dice;
+use crate::steering::{self, Steering};
 use crate::terrain::Terrain;
 use crate::vehicle::{self, GroundVehicle};
 
@@ -119,6 +121,7 @@ impl Plugin for EnemyPlugin {
                     spawn_enemies.run_if(in_state(GameState::Playing)),
                     chase_rover,
                     drive_mortarmen,
+                    steering::steer_vehicles,
                     vehicle::move_ground_vehicles,
                     separate_enemies,
                     ram_rover,
@@ -285,6 +288,7 @@ fn spawn_enemy(
             radius: ENEMY_RADIUS,
         },
         GroundVehicle::new(heading, RIDE_HEIGHT, Vec2::new(HULL_SIZE.x, HULL_SIZE.z) * 0.5),
+        Steering::new(heading, ENEMY_TURN_SPEED),
         Mesh3d(assets.hull.clone()),
         MeshMaterial3d(material),
         Transform::from_translation(position).with_rotation(Quat::from_rotation_y(heading)),
@@ -332,44 +336,39 @@ fn spawn_enemy(
         });
 }
 
-/// Поворачивает врагов к луноходу и ведёт их вперёд. Когда луноход погиб, враги встают.
+/// Направляет врагов на луноход; объезд препятствий — в `steering`. Когда луноход погиб, враги встают.
 fn chase_rover(
-    time: Res<Time>,
     rover: Query<(&Transform, &Health), With<Rover>>,
-    mut enemies: Query<(&Transform, &mut GroundVehicle), (With<Enemy>, Without<Mortarman>)>,
+    mut enemies: Query<(&Transform, &mut Steering), (With<Enemy>, Without<Mortarman>)>,
 ) {
     let target = rover
         .iter()
         .next()
         .filter(|(_, health)| !health.is_dead())
         .map(|(transform, _)| transform.translation);
-    let max_turn = ENEMY_TURN_SPEED * time.delta_secs();
-    for (transform, mut vehicle) in &mut enemies {
+    for (transform, mut steering) in &mut enemies {
         let Some(target) = target else {
-            vehicle.speed = 0.0;
+            steering.speed = 0.0;
             continue;
         };
-        let to_target = target - transform.translation;
-        vehicle.heading = vehicle::steer(vehicle.heading, vehicle::heading_towards(to_target), max_turn);
-        vehicle.speed = ENEMY_SPEED;
+        steering.desired = vehicle::heading_towards(target - transform.translation);
+        steering.speed = ENEMY_SPEED;
     }
 }
 
 /// Мортирщик подъезжает на дальность выстрела, встаёт и отступает, если луноход слишком близко.
 fn drive_mortarmen(
-    time: Res<Time>,
     rover: Query<(&Transform, &Health), With<Rover>>,
-    mut enemies: Query<(&Transform, &mut GroundVehicle), With<Mortarman>>,
+    mut enemies: Query<(&Transform, &mut Steering), With<Mortarman>>,
 ) {
     let target = rover
         .iter()
         .next()
         .filter(|(_, health)| !health.is_dead())
         .map(|(transform, _)| transform.translation);
-    let max_turn = ENEMY_TURN_SPEED * time.delta_secs();
-    for (transform, mut vehicle) in &mut enemies {
+    for (transform, mut steering) in &mut enemies {
         let Some(target) = target else {
-            vehicle.speed = 0.0;
+            steering.speed = 0.0;
             continue;
         };
         let to_target = target - transform.translation;
@@ -378,8 +377,8 @@ fn drive_mortarmen(
             MortarMove::Hold => (to_target, 0.0),
             MortarMove::Retreat => (-to_target, MORTAR_SPEED),
         };
-        vehicle.heading = vehicle::steer(vehicle.heading, vehicle::heading_towards(direction), max_turn);
-        vehicle.speed = speed;
+        steering.desired = vehicle::heading_towards(direction);
+        steering.speed = speed;
     }
 }
 
@@ -524,10 +523,12 @@ impl EnemyWeapons {
     }
 }
 
-/// Стрельба: на средней дистанции и только когда между врагом и луноходом нет рельефа.
+/// Стрельба: на средней дистанции и только когда между врагом и луноходом нет рельефа,
+/// домов и крупных объектов.
 fn shoot_rover(
     time: Res<Time>,
     terrain: Res<Terrain>,
+    obstacles: Query<(Entity, &Obstacle)>,
     mut dice: ResMut<Dice>,
     rover: Query<(&Transform, &Health), (With<Rover>, Without<Enemy>)>,
     mut enemies: Query<(&Transform, &mut EnemyWeapons), With<Enemy>>,
@@ -545,7 +546,7 @@ fn shoot_rover(
     for (transform, mut weapons) in &mut enemies {
         let muzzle = transform.translation + Vec3::Y * MUZZLE_HEIGHT;
         let can_start = muzzle.distance(target) <= FIRE_RANGE
-            && bullet::has_line_of_sight(&terrain, muzzle, target);
+            && steering::has_los(&terrain, &obstacles, muzzle, target);
         if weapons.tick_gun(dt, can_start) == GunAction::Fire {
             let spread = Quat::from_rotation_y(dice.range(-SPREAD, SPREAD));
             bullets.write(FireBullet {
