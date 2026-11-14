@@ -9,6 +9,7 @@ mod bullet;
 mod camera;
 mod capsule;
 mod combat;
+mod debris;
 mod craters;
 mod enemy;
 mod explosion;
@@ -68,6 +69,7 @@ fn main() {
             buildings::BuildingsPlugin,
             props::PropsPlugin,
             obstacles::ObstaclesPlugin,
+            debris::DebrisPlugin,
         ))
         .add_plugins((
             combat::CombatPlugin,
