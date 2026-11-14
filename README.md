@@ -23,18 +23,6 @@ cargo run
 cargo run --features bevy/dynamic_linking
 ```
 
-## Сборка для браузера
-
-Нужен `wasm-bindgen-cli` той же версии, что и крейт `wasm-bindgen` в `Cargo.lock`:
-
-```sh
-cargo install wasm-bindgen-cli --version <версия из Cargo.lock>
-scripts/build-web.sh
-python3 -m http.server --directory web
-```
-
-Игра откроется на http://localhost:8000.
-
 ## OpenSpec
 
 Требования и изменения ведутся через [OpenSpec](https://github.com/Fission-AI/OpenSpec): контекст проекта лежит в `openspec/config.yaml`, спецификации — в `openspec/specs/`.

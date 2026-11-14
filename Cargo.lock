@@ -3719,7 +3719,6 @@ dependencies = [
  "bevy_hanabi",
  "bevy_trauma_shake",
  "ehttp",
- "getrandom 0.4.3",
  "noise",
 ]
 

@@ -26,8 +26,6 @@ fn main() {
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Lunokhod".into(),
-                // Игра одна и та же в окне и на странице: canvas растягивается на родительский элемент.
-                fit_canvas_to_parent: true,
                 ..default()
             }),
             ..default()
