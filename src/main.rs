@@ -23,6 +23,7 @@ mod props;
 mod records;
 mod repair;
 mod rover;
+mod rover_look;
 mod run;
 mod settlements;
 mod sound;
@@ -56,6 +57,7 @@ fn main() {
         .add_plugins((
             TerrainPlugin,
             RoverPlugin,
+            rover_look::RoverLookPlugin,
             CameraPlugin,
             aim::AimPlugin,
             explosion::ExplosionPlugin,

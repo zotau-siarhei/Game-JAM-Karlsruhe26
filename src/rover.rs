@@ -6,23 +6,8 @@ use crate::run::GameState;
 
 use crate::terrain::Terrain;
 
-/// Цвет корпуса лунохода.
-const ROVER_COLOR: Color = Color::srgb(0.75, 0.78, 0.82);
-
-/// Цвет колёс и мачты.
-const WHEEL_COLOR: Color = Color::srgb(0.12, 0.12, 0.14);
-
-/// Размер корпуса: ширина, высота, длина, м.
-const HULL_SIZE: Vec3 = Vec3::new(1.2, 0.6, 1.8);
-
-/// Радиус колеса, м.
-const WHEEL_RADIUS: f32 = 0.3;
-
-/// Ширина колеса, м.
-const WHEEL_WIDTH: f32 = 0.25;
-
-/// Насколько корпус приподнят над поверхностью: колёса под ним, м.
-const RIDE_HEIGHT: f32 = HULL_SIZE.y * 0.5 + WHEEL_RADIUS * 0.6;
+/// Высота центра лунохода над поверхностью, м: от неё отсчитываются башня, дуло и облик.
+pub const RIDE_HEIGHT: f32 = 0.48;
 
 /// Максимальная скорость вперёд, м/с.
 const MAX_FORWARD_SPEED: f32 = 14.0;
@@ -42,7 +27,7 @@ const MAX_TILT: f32 = 35.0 * std::f32::consts::PI / 180.0;
 /// Скорость, с которой наклон догоняет склон, 1/с.
 const TILT_SMOOTHING: f32 = 10.0;
 
-/// Точки касания колёс в системе корпуса (x вбок, z назад), м.
+/// Точки касания гусениц в системе корпуса (x вбок, z назад), м: по ним считается наклон.
 const WHEEL_POINTS: [Vec2; 4] = [
     Vec2::new(-0.6, -0.9),
     Vec2::new(0.6, -0.9),
@@ -80,48 +65,19 @@ impl Plugin for RoverPlugin {
     }
 }
 
-/// Ставит луноход на поверхность в начале координат.
-fn spawn_rover(
-    mut commands: Commands,
-    terrain: Res<Terrain>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
-    let hull = meshes.add(Cuboid::from_size(HULL_SIZE));
-    let wheel = meshes.add(Cylinder::new(WHEEL_RADIUS, WHEEL_WIDTH));
-    let mast = meshes.add(Cuboid::new(0.15, 0.6, 0.15));
-    let body_material = materials.add(ROVER_COLOR);
-    let wheel_material = materials.add(WHEEL_COLOR);
-
+/// Ставит луноход на поверхность в начале координат. Облик добавляет `rover_look`.
+fn spawn_rover(mut commands: Commands, terrain: Res<Terrain>) {
     let up = terrain.normal_at(0.0, 0.0);
     let y = terrain.height_at(0.0, 0.0) + RIDE_HEIGHT;
-    let mut rover = commands.spawn((
+    commands.spawn((
         Rover,
         RoverMotion {
             up,
             ..default()
         },
-        Mesh3d(hull),
-        MeshMaterial3d(body_material),
         Transform::from_xyz(0.0, y, 0.0).with_rotation(Quat::from_rotation_arc(Vec3::Y, up)),
+        Visibility::default(),
     ));
-    rover.with_children(|parent| {
-        for p in WHEEL_POINTS {
-            let side = p.x.signum() * (HULL_SIZE.x + WHEEL_WIDTH) * 0.5;
-            parent.spawn((
-                Mesh3d(wheel.clone()),
-                MeshMaterial3d(wheel_material.clone()),
-                Transform::from_xyz(side, -HULL_SIZE.y * 0.5, p.y * 0.8)
-                    .with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
-            ));
-        }
-        // Мачта у носа показывает, куда смотрит луноход.
-        parent.spawn((
-            Mesh3d(mast),
-            MeshMaterial3d(wheel_material),
-            Transform::from_xyz(0.0, HULL_SIZE.y * 0.5 + 0.3, -HULL_SIZE.z * 0.35),
-        ));
-    });
 }
 
 /// Ось управления по двум клавишам с запасными стрелками: от -1 до 1.

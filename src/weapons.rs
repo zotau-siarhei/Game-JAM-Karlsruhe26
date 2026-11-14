@@ -23,8 +23,14 @@ const MG_DAMAGE: f32 = 6.0;
 /// Разброс пуль пулемёта по горизонтали в каждую сторону, рад.
 const MG_SPREAD: f32 = 1.2 * std::f32::consts::PI / 180.0;
 
-/// Высота башни над центром корпуса, м.
-const TURRET_HEIGHT: f32 = 0.45;
+/// Ось башни в системе лунохода, м: на солнечной панели позади мачты с глазами.
+const TURRET_OFFSET: Vec3 = Vec3::new(0.0, 0.0, 0.3);
+
+/// Высота башни над центром лунохода, м: башня стоит на крышке корпуса.
+const TURRET_HEIGHT: f32 = 0.46;
+
+/// Скорость поворота башни, рад/с: пол-оборота примерно за треть секунды.
+const TURRET_TURN_SPEED: f32 = 9.0;
 
 /// Высота дула над центром корпуса, м.
 const MUZZLE_HEIGHT: f32 = 0.5;
@@ -35,8 +41,11 @@ const MUZZLE_FORWARD: f32 = 1.0;
 /// На какой высоте над точкой прицела проходит пуля, м: примерно середина корпуса врага.
 const AIM_HEIGHT: f32 = 0.6;
 
-/// Цвет башни.
-const TURRET_COLOR: Color = Color::srgb(0.32, 0.34, 0.38);
+/// Цвет башни: белый, как отделка корпуса.
+const TURRET_COLOR: Color = Color::srgb(0.88, 0.9, 0.92);
+
+/// Цвет ствола.
+const BARREL_COLOR: Color = Color::srgb(0.25, 0.27, 0.3);
 
 /// Подключает выбор оружия, башню и пулемёт.
 pub struct WeaponsPlugin;
@@ -88,8 +97,11 @@ impl CurrentWeapon {
 }
 
 /// Башня лунохода: вращается к точке прицела независимо от корпуса.
-#[derive(Component)]
-struct Turret;
+#[derive(Component, Default)]
+struct Turret {
+    /// Поворот башни относительно корпуса вокруг его оси «вверх», рад. Ноль — вперёд.
+    yaw: f32,
+}
 
 /// Время до следующего выстрела пулемёта, с.
 #[derive(Component, Default)]
@@ -123,21 +135,24 @@ fn attach_turret(
 ) {
     for rover in &rovers {
         let material = materials.add(TURRET_COLOR);
-        let base = meshes.add(Cuboid::new(0.6, 0.3, 0.6));
-        let barrel = meshes.add(Cuboid::new(0.12, 0.12, MUZZLE_FORWARD));
+        let barrel_material = materials.add(BARREL_COLOR);
+        let base = meshes.add(Cylinder::new(0.26, 0.22));
+        let barrel = meshes.add(Cylinder::new(0.06, MUZZLE_FORWARD));
         commands.entity(rover).insert(MachineGun::default()).with_children(|parent| {
             parent
                 .spawn((
-                    Turret,
+                    Turret::default(),
                     Mesh3d(base),
                     MeshMaterial3d(material.clone()),
-                    Transform::from_xyz(0.0, TURRET_HEIGHT, 0.0),
+                    Transform::from_translation(TURRET_OFFSET + Vec3::Y * TURRET_HEIGHT),
                 ))
                 .with_children(|turret| {
+                    // Цилиндр стоит вдоль Y: кладём его стволом вперёд, на -Z.
                     turret.spawn((
                         Mesh3d(barrel),
-                        MeshMaterial3d(material.clone()),
-                        Transform::from_xyz(0.0, 0.05, -MUZZLE_FORWARD * 0.5 - 0.2),
+                        MeshMaterial3d(barrel_material.clone()),
+                        Transform::from_xyz(0.0, MUZZLE_HEIGHT - TURRET_HEIGHT, -MUZZLE_FORWARD * 0.5)
+                            .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
                     ));
                 });
         });
@@ -163,25 +178,36 @@ fn select_weapon(
     }
 }
 
-/// Поворачивает башню к точке прицела.
+/// Поворачивает башню к точке прицела вокруг оси корпуса с ограниченной скоростью.
+///
+/// Направление на прицел переводится в систему корпуса и проецируется на его плоскость: на склоне
+/// башня крутится по крышке, а не заваливается. Поворот корпуса тянет башню за собой, и она
+/// догоняет прицел по кратчайшей дуге.
 fn aim_turret(
+    time: Res<Time>,
     aim: Res<AimPoint>,
     rover: Query<&Transform, (With<Rover>, Without<Turret>)>,
-    mut turrets: Query<&mut Transform, With<Turret>>,
+    mut turrets: Query<(&mut Turret, &mut Transform)>,
 ) {
     let Some(rover) = rover.iter().next() else {
         return;
     };
-    let mut to_aim = aim.position - rover.translation;
-    to_aim.y = 0.0;
-    if to_aim.length_squared() < 0.25 {
+    let Some(target) = turret_yaw_towards(rover, aim.position) else {
         return;
+    };
+    for (mut turret, mut transform) in &mut turrets {
+        turret.yaw = vehicle::steer(turret.yaw, target, TURRET_TURN_SPEED * time.delta_secs());
+        transform.rotation = Quat::from_rotation_y(turret.yaw);
     }
-    let world_yaw = Quat::from_rotation_y(vehicle::heading_towards(to_aim));
-    for mut turret in &mut turrets {
-        // Башня — дочерняя сущность: мировой поворот переводится в систему корпуса.
-        turret.rotation = rover.rotation.inverse() * world_yaw;
-    }
+}
+
+/// Поворот башни относительно корпуса, при котором она смотрит на точку `aim`.
+/// `None`, если прицел над самой башней и направление не определено.
+fn turret_yaw_towards(rover: &Transform, aim: Vec3) -> Option<f32> {
+    let pivot = rover.transform_point(TURRET_OFFSET);
+    let mut local = rover.rotation.inverse() * (aim - pivot);
+    local.y = 0.0;
+    (local.length_squared() >= 0.25).then(|| vehicle::heading_towards(local))
 }
 
 /// Откуда и куда летит пуля пулемёта при таком положении лунохода и прицела.
@@ -217,7 +243,9 @@ fn fire_machine_gun(
         && *weapon == CurrentWeapon::MachineGun
         && !health.is_dead();
     for _ in 0..gun.shots(time.delta_secs(), trigger) {
-        let (origin, direction) = machine_gun_shot(transform.translation, aim.position);
+        // Пуля вылетает из ствола: ось башни позади центра лунохода.
+        let pivot = transform.translation + transform.rotation * TURRET_OFFSET;
+        let (origin, direction) = machine_gun_shot(pivot, aim.position);
         let spread = Quat::from_rotation_y(dice.range(-MG_SPREAD, MG_SPREAD));
         bullets.write(FireBullet {
             origin,
@@ -230,6 +258,8 @@ fn fire_machine_gun(
 
 #[cfg(test)]
 mod tests {
+    use std::f32::consts::FRAC_PI_2;
+
     use super::*;
 
     #[test]
@@ -270,6 +300,35 @@ mod tests {
         assert!(direction.z < -0.9);
         // Прицел выше лунохода: пуля летит вверх по склону.
         assert!(direction.y > 0.0);
+    }
+
+    #[test]
+    fn turret_turns_only_around_the_hull_axis() {
+        // Луноход на склоне повёрнут на 90° влево и наклонён: прицел впереди по курсу корпуса.
+        let rover = Transform::from_rotation(Quat::from_rotation_x(0.4) * Quat::from_rotation_y(FRAC_PI_2));
+        let ahead = rover.transform_point(Vec3::new(0.0, 0.0, -10.0));
+        let yaw = turret_yaw_towards(&rover, ahead).unwrap();
+        assert!(yaw.abs() < 1e-3, "прицел по курсу — башня смотрит вперёд, а не {yaw}");
+        // Прицел справа от корпуса: башня поворачивается направо (курс уменьшается).
+        let right = rover.transform_point(Vec3::new(10.0, 0.0, 0.3));
+        let yaw = turret_yaw_towards(&rover, right).unwrap();
+        assert!((yaw + FRAC_PI_2).abs() < 0.05, "{yaw}");
+        // Прицел над башней — направления нет.
+        assert!(turret_yaw_towards(&rover, rover.transform_point(TURRET_OFFSET + Vec3::Y)).is_none());
+    }
+
+    #[test]
+    fn turret_catches_up_with_limited_speed() {
+        let mut yaw = 0.0;
+        let dt = 1.0 / 60.0;
+        let frames = (0..60)
+            .take_while(|_| {
+                yaw = vehicle::steer(yaw, 3.0, TURRET_TURN_SPEED * dt);
+                (yaw - 3.0f32).abs() > 1e-4
+            })
+            .count();
+        // Почти пол-оборота — не мгновенно, но быстрее полусекунды.
+        assert!((10..30).contains(&frames), "{frames}");
     }
 
     #[test]
