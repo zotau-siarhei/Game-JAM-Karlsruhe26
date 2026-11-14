@@ -9,6 +9,7 @@
 use bevy::prelude::*;
 
 use crate::combat::{Collider, Damage, Health, Team};
+use crate::obstacles::{self, Obstacle};
 use crate::run::RunScoped;
 use crate::terrain::Terrain;
 
@@ -160,6 +161,7 @@ fn move_bullets(
     targets: Query<(Entity, &GlobalTransform, &Collider, &Team, &Health)>,
     mut damage: MessageWriter<Damage>,
     assets: Option<Res<BulletAssets>>,
+    obstacles: Query<(Entity, &Obstacle)>,
 ) {
     let dt = time.delta_secs();
     if dt <= 0.0 {
@@ -177,6 +179,12 @@ fn move_bullets(
             to = ground;
             stop = true;
             into_ground = true;
+        }
+        // Дома, валуны и деревья тоже останавливают пулю.
+        if let Some((_, wall)) = obstacles::segment_hit(from, to, &obstacles) {
+            to = wall;
+            stop = true;
+            into_ground = false;
         }
 
         let hit = targets

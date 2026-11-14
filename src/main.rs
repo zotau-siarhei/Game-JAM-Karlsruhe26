@@ -17,6 +17,7 @@ mod hq;
 mod hud;
 mod minimap;
 mod mortar;
+mod obstacles;
 mod music;
 mod props;
 mod records;
@@ -64,6 +65,7 @@ fn main() {
             settlements::SettlementsPlugin,
             buildings::BuildingsPlugin,
             props::PropsPlugin,
+            obstacles::ObstaclesPlugin,
         ))
         .add_plugins((
             combat::CombatPlugin,

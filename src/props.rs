@@ -12,7 +12,11 @@ use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 use noise::{NoiseFn, Perlin};
 
+use crate::obstacles::{Obstacle, Shape};
+use crate::rover::Rover;
 use crate::run::{RunScoped, RunStarted};
+use crate::vehicle::GroundVehicle;
+use crate::combat::Collider;
 use crate::settlements::{self, HouseState, REGION_SIZE, Settlements, region_of};
 use crate::terrain::{CHUNK_SIZE, Terrain, VisibleChunks, chunk_coord_at, chunk_origin};
 
@@ -52,7 +56,7 @@ impl Plugin for PropsPlugin {
             .add_systems(Startup, create_prop_assets)
             .add_systems(
                 Update,
-                (reset_props, stream_props)
+                (reset_props, stream_props, crush_small_props, fly_shards)
                     .chain()
                     .after(settlements::reset_settlements),
             );
@@ -76,6 +80,19 @@ impl PropKind {
     /// Крупный объект — препятствие. Мелкий машина сносит на ходу.
     pub fn is_large(self) -> bool {
         matches!(self, PropKind::Tree | PropKind::Boulder | PropKind::Crystal)
+    }
+
+    /// Радиус в плане и высота при масштабе 1, м: для столкновений и пуль.
+    pub fn footprint(self) -> (f32, f32) {
+        match self {
+            PropKind::Tree => (0.5, 4.5),
+            PropKind::Boulder => (1.5, 1.6),
+            PropKind::Crystal => (0.8, 2.6),
+            PropKind::Bush => (0.8, 0.7),
+            PropKind::Rock => (0.45, 0.3),
+            PropKind::Fence => (1.0, 1.0),
+            PropKind::Post | PropKind::Antenna => (0.3, 3.0),
+        }
     }
 
     // Прочность читает разрушение объектов (задача 5.1).
@@ -363,8 +380,6 @@ fn reset_props(
 }
 
 /// Сущность объекта и адрес его состояния в [`Props`].
-// Адрес читают столкновения и разрушение (задачи 2.3 и 5.1).
-#[allow(dead_code)]
 #[derive(Component, Debug, Clone, Copy)]
 pub struct Prop {
     pub chunk: IVec2,
@@ -630,8 +645,29 @@ fn stream_props(
                 continue;
             };
             let small = !state.kind.is_large();
-            let entity = commands
-                .spawn((Prop { chunk: coord, index }, RunScoped, transform, Visibility::default()))
+            let mut entity = commands.spawn((
+                Prop { chunk: coord, index },
+                RunScoped,
+                transform,
+                Visibility::default(),
+            ));
+            let base = Vec2::new(transform.translation.x, transform.translation.z);
+            let (radius, height) = state.kind.footprint();
+            let scale = transform.scale.max_element();
+            if small {
+                entity.insert(Crushable {
+                    radius: radius * scale,
+                });
+            } else {
+                entity.insert(Obstacle {
+                    shape: Shape::Circle {
+                        center: base,
+                        radius: radius * scale,
+                    },
+                    top: transform.translation.y + height * scale,
+                });
+            }
+            let entity = entity
                 .with_children(|parent| {
                     for p in parts {
                         let mut child = parent.spawn((
@@ -648,6 +684,105 @@ fn stream_props(
             entities.push(entity);
         }
         spawned.0.insert(coord, entities);
+    }
+}
+
+/// Мелкий объект: машина сносит его на ходу.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct Crushable {
+    pub radius: f32,
+}
+
+/// Осколок снесённого объекта: летит, кувыркается и исчезает.
+#[derive(Component)]
+struct Shard {
+    velocity: Vec3,
+    spin: Vec3,
+    remaining: f32,
+}
+
+/// Сколько живёт осколок, с.
+const SHARD_LIFETIME: f32 = 1.0;
+
+/// Гравитация для осколков, м/с².
+const SHARD_GRAVITY: f32 = 20.0;
+
+/// Машина, наехавшая на мелкий объект, сносит его: объект исчезает навсегда, летят осколки.
+fn crush_small_props(
+    mut commands: Commands,
+    mut props: ResMut<Props>,
+    vehicles: Query<(&Transform, Option<&Collider>), Or<(With<Rover>, With<GroundVehicle>)>>,
+    crushable: Query<(Entity, &Prop, &Crushable, &Transform, &Children)>,
+    parts: Query<(&Mesh3d, &MeshMaterial3d<StandardMaterial>)>,
+) {
+    for (entity, prop, small, transform, children) in &crushable {
+        let p = transform.translation;
+        let hit = vehicles.iter().find(|(v, c)| {
+            let r = c.map_or(1.0, |c| c.radius) + small.radius;
+            Vec2::new(v.translation.x - p.x, v.translation.z - p.z).length_squared() < r * r
+        });
+        let Some((vehicle, _)) = hit else {
+            continue;
+        };
+        if let Some(state) = props.get_mut(prop.chunk, prop.index) {
+            state.status = PropStatus::Destroyed;
+        }
+        commands.entity(entity).despawn();
+
+        // Осколки — те же части объекта, уменьшенные, летят от машины и вверх.
+        let away = (p - vehicle.translation).with_y(0.0).normalize_or(Vec3::X);
+        let mut rng = Rng::from_position(Vec2::new(p.x, p.z));
+        for (i, child) in children.iter().enumerate() {
+            let Ok((mesh, material)) = parts.get(child) else {
+                continue;
+            };
+            for _ in 0..2 {
+                let velocity = away * rng.range(3.0, 7.0)
+                    + Vec3::new(rng.range(-2.5, 2.5), rng.range(4.0, 8.0), rng.range(-2.5, 2.5));
+                commands.spawn((
+                    Shard {
+                        velocity,
+                        spin: Vec3::new(rng.range(-9.0, 9.0), rng.range(-9.0, 9.0), rng.range(-9.0, 9.0)),
+                        remaining: SHARD_LIFETIME + i as f32 * 0.05,
+                    },
+                    RunScoped,
+                    Mesh3d(mesh.0.clone()),
+                    MeshMaterial3d(material.0.clone()),
+                    NotShadowCaster,
+                    Transform::from_translation(p + Vec3::Y * 0.4)
+                        .with_scale(transform.scale * rng.range(0.2, 0.35)),
+                ));
+            }
+        }
+    }
+}
+
+/// Двигает осколки по баллистике и уменьшает их к концу жизни.
+fn fly_shards(
+    mut commands: Commands,
+    time: Res<Time>,
+    terrain: Res<Terrain>,
+    mut shards: Query<(Entity, &mut Transform, &mut Shard)>,
+) {
+    let dt = time.delta_secs();
+    for (entity, mut transform, mut shard) in &mut shards {
+        shard.remaining -= dt;
+        if shard.remaining <= 0.0 {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        shard.velocity.y -= SHARD_GRAVITY * dt;
+        transform.translation += shard.velocity * dt;
+        let ground = terrain.height_at(transform.translation.x, transform.translation.z);
+        if transform.translation.y < ground {
+            transform.translation.y = ground;
+            shard.velocity *= Vec3::new(0.5, -0.3, 0.5);
+        }
+        let spin = shard.spin * dt;
+        transform.rotate(Quat::from_euler(EulerRot::XYZ, spin.x, spin.y, spin.z));
+        if shard.remaining < 0.3 {
+            transform.scale *= 1.0 - dt * 3.0;
+        }
     }
 }
 

@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
+use crate::obstacles::{Obstacle, Shape};
 use crate::rover::Rover;
 use crate::run::{RunScoped, RunStarted};
 use crate::settlements::{
@@ -259,7 +260,16 @@ fn spawn_house(
     ));
 
     commands
-        .spawn((House(id), RunScoped, transform, Visibility::default()))
+        .spawn((
+            House(id),
+            RunScoped,
+            transform,
+            Visibility::default(),
+            Obstacle {
+                shape: Shape::Rect(footprint),
+                top: transform.translation.y + wall_h + TWO_STORY_ROOF_HEIGHT,
+            },
+        ))
         .with_children(|parent| {
             for (mesh, material, t) in parts {
                 parent.spawn((Mesh3d(mesh), MeshMaterial3d(material), t));
