@@ -19,6 +19,7 @@ mod explosion_fx;
 mod hq;
 mod hud;
 mod minimap;
+mod laser;
 mod mortar;
 mod obstacles;
 mod music;
@@ -71,6 +72,7 @@ fn main() {
             subsidence::SubsidencePlugin,
             arsenal::ArsenalPlugin,
             rockets::RocketsPlugin,
+            laser::LaserPlugin,
         ))
         .add_plugins((
             TerrainPlugin,

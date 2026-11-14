@@ -268,6 +268,20 @@ impl Terrain {
         changed
     }
 
+    /// Меняет высоту и цвет вершины мировой сетки `(vx, vz)` во всех участках, где она хранится,
+    /// и возвращает эти участки. `edit` получает высоту и линейный цвет и вызывается для каждой
+    /// копии вершины с одинаковыми исходными значениями, поэтому копии не расходятся.
+    pub fn edit_vertex(&mut self, vx: i32, vz: i32, mut edit: impl FnMut(&mut f32, &mut [f32; 4])) -> Vec<IVec2> {
+        let mut changed = Vec::new();
+        for (coord, ix, iz) in vertex_owners(vx, vz) {
+            let chunk = self.chunk_mut(coord);
+            let i = ChunkData::index(ix, iz);
+            edit(&mut chunk.heights[i], &mut chunk.colors[i]);
+            changed.push(coord);
+        }
+        changed
+    }
+
     /// Нормаль поверхности в точке мира по разности высот вокруг неё.
     pub fn normal_at(&self, x: f32, z: f32) -> Vec3 {
         let dx = self.height_at(x + NORMAL_STEP, z) - self.height_at(x - NORMAL_STEP, z);
