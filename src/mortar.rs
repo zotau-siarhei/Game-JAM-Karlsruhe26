@@ -39,10 +39,10 @@ const HIT_STEP: f32 = 0.25;
 const HIT_REFINE_STEPS: usize = 8;
 
 /// Радиус взрыва снаряда мортиры, м.
-const EXPLOSION_RADIUS: f32 = 5.0;
+const EXPLOSION_RADIUS: f32 = 7.0;
 
 /// Мощность взрыва снаряда мортиры: единица, от которой считается всё остальное оружие.
-const EXPLOSION_POWER: f32 = 1.0;
+const EXPLOSION_POWER: f32 = 1.4;
 
 /// Ствол над центром корпуса в его системе координат, м.
 const MUZZLE_OFFSET: Vec3 = Vec3::new(0.0, 0.7, -0.4);

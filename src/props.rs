@@ -16,7 +16,9 @@ use crate::obstacles::{Obstacle, Shape};
 use crate::rover::Rover;
 use crate::run::{RunScoped, RunStarted};
 use crate::vehicle::GroundVehicle;
-use crate::combat::Collider;
+use crate::combat::{Collider, Damage, Died, Health, Team, blast_damage};
+use crate::debris::SpawnDebris;
+use crate::explosion::Explosion;
 use crate::settlements::{self, HouseState, REGION_SIZE, Settlements, region_of};
 use crate::terrain::{CHUNK_SIZE, Terrain, VisibleChunks, chunk_coord_at, chunk_origin};
 
@@ -40,14 +42,30 @@ const START_CLEAR: f32 = 8.0;
 /// Крупные объекты не стоят на склонах круче этого: `y` нормали меньше.
 const LARGE_MIN_UP: f32 = 0.9;
 
-/// Доля объектов, которая остаётся после выбора вида: треть убрана, чтобы можно было ехать.
-const KEEP_FRACTION: f32 = 2.0 / 3.0;
+/// Доля объектов, которая остаётся после выбора вида: дважды убрано по трети, чтобы можно было ехать.
+const KEEP_FRACTION: f32 = 4.0 / 9.0;
 
 /// Доля деревьев, которая остаётся сверх общего прореживания.
 const TREE_KEEP_FRACTION: f32 = 2.0 / 3.0;
 
 /// Вариантов цвета и формы у каждого вида.
 const VARIANTS: usize = 4;
+
+/// Цвета камней по вариантам.
+const STONE_COLORS: [Color; VARIANTS] = [
+    Color::srgb(0.50, 0.49, 0.47),
+    Color::srgb(0.46, 0.40, 0.33),
+    Color::srgb(0.62, 0.57, 0.48),
+    Color::srgb(0.30, 0.29, 0.28),
+];
+
+/// Цвета кристаллов по вариантам.
+const GEM_COLORS: [Color; VARIANTS] = [
+    Color::srgb(0.30, 0.85, 1.00),
+    Color::srgb(0.85, 0.40, 1.00),
+    Color::srgb(0.40, 1.00, 0.70),
+    Color::srgb(1.00, 0.85, 0.30),
+];
 
 /// Подключает объекты поверхности.
 pub struct PropsPlugin;
@@ -59,7 +77,17 @@ impl Plugin for PropsPlugin {
             .add_systems(Startup, create_prop_assets)
             .add_systems(
                 Update,
-                (reset_props, stream_props, crush_small_props, fly_shards)
+                (
+                    reset_props,
+                    stream_props,
+                    crush_small_props,
+                    shockwave_props,
+                    break_props,
+                    fly_shards,
+                    fell_trees,
+                    sway_trees,
+                    burn_crowns,
+                )
                     .chain()
                     .after(settlements::reset_settlements),
             );
@@ -99,8 +127,6 @@ impl PropKind {
         }
     }
 
-    // Прочность читает разрушение объектов (задача 5.1).
-    #[allow(dead_code)]
     pub fn max_health(self) -> f32 {
         match self {
             PropKind::Tree => 40.0,
@@ -116,11 +142,10 @@ impl PropKind {
 pub enum PropStatus {
     Intact,
     // Падение, пень и уничтожение появятся с разрушением объектов (задача 5.1).
-    #[allow(dead_code)]
     Fallen(Transform),
+    // Пень без лежащего ствола: ствол мог сгореть или разлететься, пока не используется.
     #[allow(dead_code)]
     Stump,
-    #[allow(dead_code)]
     Destroyed,
 }
 
@@ -131,7 +156,6 @@ pub struct PropState {
     /// Основание объекта на поверхности, поворот и масштаб.
     pub transform: Transform,
     pub variant: usize,
-    #[allow(dead_code)]
     pub health: f32,
     pub status: PropStatus,
 }
@@ -168,8 +192,6 @@ impl Props {
             .or_insert_with(|| generate_chunk(seed, masks, coord, terrain, settlements))
     }
 
-    // Пишет разрушение объектов (задача 5.1).
-    #[allow(dead_code)]
     pub fn get_mut(&mut self, coord: IVec2, index: usize) -> Option<&mut PropState> {
         self.chunks.get_mut(&coord)?.get_mut(index)
     }
@@ -391,6 +413,7 @@ fn reset_props(
 pub struct Prop {
     pub chunk: IVec2,
     pub index: usize,
+    pub kind: PropKind,
 }
 
 /// Сущности объектов по участкам, которые сейчас в сцене.
@@ -409,6 +432,10 @@ struct Part {
 struct PropAssets {
     /// Облик по виду и варианту.
     looks: HashMap<(PropKind, usize), Vec<Part>>,
+    /// Пень упавшего дерева.
+    stump: Part,
+    /// Огонь на кроне.
+    flame: Part,
 }
 
 fn create_prop_assets(
@@ -450,18 +477,8 @@ fn create_prop_assets(
         Color::srgb(0.34, 0.44, 0.20),
     ];
     // Камни естественных цветов: серый, бурый, светлый песчаник, тёмный базальт.
-    let stones = [
-        Color::srgb(0.50, 0.49, 0.47),
-        Color::srgb(0.46, 0.40, 0.33),
-        Color::srgb(0.62, 0.57, 0.48),
-        Color::srgb(0.30, 0.29, 0.28),
-    ];
-    let gems = [
-        Color::srgb(0.30, 0.85, 1.00),
-        Color::srgb(0.85, 0.40, 1.00),
-        Color::srgb(0.40, 1.00, 0.70),
-        Color::srgb(1.00, 0.85, 0.30),
-    ];
+    let stones = STONE_COLORS;
+    let gems = GEM_COLORS;
 
     let part = |mesh: &Handle<Mesh>, material: &Handle<StandardMaterial>, t: Transform| Part {
         mesh: mesh.clone(),
@@ -621,7 +638,19 @@ fn create_prop_assets(
             ],
         );
     }
-    commands.insert_resource(PropAssets { looks });
+    let stump = part(
+        &cylinder,
+        &trunk,
+        Transform::from_xyz(0.0, 0.25, 0.0).with_scale(Vec3::new(0.3, 0.5, 0.3)),
+    );
+    let fire = materials.add(StandardMaterial {
+        base_color: Color::srgb(1.0, 0.5, 0.08),
+        emissive: LinearRgba::rgb(9.0, 3.0, 0.3),
+        unlit: true,
+        ..default()
+    });
+    let flame = part(&sphere, &fire, Transform::IDENTITY);
+    commands.insert_resource(PropAssets { looks, stump, flame });
 }
 
 /// Создаёт объекты участков, которые появились в сцене, и убирает объекты выгруженных.
@@ -657,15 +686,36 @@ fn stream_props(
         for (index, state) in states.iter().enumerate() {
             let transform = match state.status {
                 PropStatus::Intact => state.transform,
-                PropStatus::Fallen(t) => t,
-                PropStatus::Stump | PropStatus::Destroyed => continue,
+                PropStatus::Fallen(t) => {
+                    entities.push(spawn_stump(&mut commands, &assets, state.transform));
+                    // Лежащее дерево — без столкновений и здоровья.
+                    let entity = commands
+                        .spawn((RunScoped, t, Visibility::default()))
+                        .with_children(|parent| {
+                            for p in assets.looks.get(&(state.kind, state.variant)).into_iter().flatten() {
+                                parent.spawn((Mesh3d(p.mesh.clone()), MeshMaterial3d(p.material.clone()), p.transform));
+                            }
+                        })
+                        .id();
+                    entities.push(entity);
+                    continue;
+                }
+                PropStatus::Stump => {
+                    entities.push(spawn_stump(&mut commands, &assets, state.transform));
+                    continue;
+                }
+                PropStatus::Destroyed => continue,
             };
             let Some(parts) = assets.looks.get(&(state.kind, state.variant)) else {
                 continue;
             };
             let small = !state.kind.is_large();
             let mut entity = commands.spawn((
-                Prop { chunk: coord, index },
+                Prop {
+                    chunk: coord,
+                    index,
+                    kind: state.kind,
+                },
                 RunScoped,
                 transform,
                 Visibility::default(),
@@ -678,6 +728,10 @@ fn stream_props(
                     radius: radius * scale,
                 });
             } else {
+                entity.insert(Health {
+                    current: state.health.min(state.kind.max_health()),
+                    max: state.kind.max_health(),
+                });
                 entity.insert(Obstacle {
                     shape: Shape::Circle {
                         center: base,
@@ -748,8 +802,21 @@ fn crush_small_props(
         }
         commands.entity(entity).despawn();
 
-        // Осколки — те же части объекта, уменьшенные, летят от машины и вверх.
         let away = (p - vehicle.translation).with_y(0.0).normalize_or(Vec3::X);
+        shatter(&mut commands, transform, children, &parts, away);
+    }
+}
+
+/// Осколки — те же части объекта, уменьшенные, летят в сторону `away` и вверх.
+fn shatter(
+    commands: &mut Commands,
+    transform: &Transform,
+    children: &Children,
+    parts: &Query<(&Mesh3d, &MeshMaterial3d<StandardMaterial>)>,
+    away: Vec3,
+) {
+    let p = transform.translation;
+    {
         let mut rng = Rng::from_position(Vec2::new(p.x, p.z));
         for (i, child) in children.iter().enumerate() {
             let Ok((mesh, material)) = parts.get(child) else {
@@ -901,5 +968,258 @@ mod tests {
                 assert!(props.len() >= 60, "сид {seed}, участок {coord}: {}", props.len());
             }
         }
+    }
+}
+
+/// Множитель урона взрыва по крупным объектам.
+const PROP_BLAST_MULTIPLIER: f32 = 2.0;
+
+/// За радиусом взрыва до этой доли радиуса деревья качаются.
+const SWAY_REACH: f32 = 1.8;
+
+/// Сколько падает дерево, с.
+const FALL_SECONDS: f32 = 0.8;
+
+/// Сколько качается дерево, с.
+const SWAY_SECONDS: f32 = 1.0;
+
+/// Центр взрыва, который задел объект: дерево падает от него.
+#[derive(Component, Debug, Clone, Copy)]
+struct PropBlastFrom(Vec3);
+
+/// Дерево падает: поворот вокруг основания.
+#[derive(Component)]
+struct TreeFall {
+    rest: Quat,
+    axis: Vec3,
+    elapsed: f32,
+}
+
+/// Дерево качается от дальнего взрыва: затухающая пружина наклона.
+#[derive(Component)]
+struct Sway {
+    rest: Quat,
+    axis: Vec3,
+    elapsed: f32,
+    amplitude: f32,
+}
+
+/// Огонь на кроне упавшего дерева.
+#[derive(Component)]
+struct CrownFire {
+    remaining: f32,
+}
+
+/// Пень на месте упавшего дерева.
+fn spawn_stump(commands: &mut Commands, assets: &PropAssets, base: Transform) -> Entity {
+    commands
+        .spawn((
+            RunScoped,
+            Mesh3d(assets.stump.mesh.clone()),
+            MeshMaterial3d(assets.stump.material.clone()),
+            Transform::from_translation(base.translation)
+                .with_scale(base.scale)
+                * assets.stump.transform,
+        ))
+        .id()
+}
+
+/// Ударная волна: мелочь в радиусе разлетается, деревья ломаются, крупным — урон;
+/// чуть дальше деревья качаются.
+#[allow(clippy::too_many_arguments)]
+fn shockwave_props(
+    mut commands: Commands,
+    mut explosions: MessageReader<Explosion>,
+    mut props: ResMut<Props>,
+    objects: Query<(Entity, &Prop, &Transform, Option<&Health>, Option<&Children>), Without<TreeFall>>,
+    parts: Query<(&Mesh3d, &MeshMaterial3d<StandardMaterial>)>,
+    mut damage: MessageWriter<Damage>,
+) {
+    for explosion in explosions.read() {
+        let center = explosion.position;
+        let r = explosion.radius;
+        for (entity, prop, transform, health, children) in &objects {
+            let offset = (transform.translation - center).with_y(0.0);
+            let d = offset.length();
+            if d >= r * SWAY_REACH {
+                continue;
+            }
+            let away = offset.normalize_or(Vec3::X);
+            if d >= r {
+                if prop.kind == PropKind::Tree {
+                    commands.entity(entity).try_insert(Sway {
+                        rest: transform.rotation,
+                        axis: Vec3::Y.cross(away).normalize_or(Vec3::X),
+                        elapsed: 0.0,
+                        amplitude: 0.35 * (1.0 - (d - r) / (r * (SWAY_REACH - 1.0))),
+                    });
+                }
+                continue;
+            }
+            if !prop.kind.is_large() {
+                if let Some(state) = props.get_mut(prop.chunk, prop.index) {
+                    state.status = PropStatus::Destroyed;
+                }
+                if let Some(children) = children {
+                    shatter(&mut commands, transform, children, &parts, away);
+                }
+                commands.entity(entity).despawn();
+                continue;
+            }
+            let Some(health) = health else {
+                continue;
+            };
+            let amount = if prop.kind == PropKind::Tree {
+                // Дерево в радиусе ломается всегда.
+                health.current + 1.0
+            } else {
+                blast_damage(explosion.power, r, d, false) * PROP_BLAST_MULTIPLIER
+            };
+            commands.entity(entity).try_insert(PropBlastFrom(center));
+            damage.write(Damage {
+                target: entity,
+                amount,
+                source_team: explosion.source_team,
+            });
+        }
+    }
+}
+
+/// Разрушение по материалу: дерево падает и горит, валун и кристалл разлетаются.
+#[allow(clippy::too_many_arguments)]
+fn break_props(
+    mut commands: Commands,
+    mut died: MessageReader<Died>,
+    mut props: ResMut<Props>,
+    mut spawned: ResMut<SpawnedProps>,
+    assets: Res<PropAssets>,
+    objects: Query<(&Prop, &Transform, Option<&PropBlastFrom>, Option<&Children>)>,
+    parts: Query<(&Mesh3d, &MeshMaterial3d<StandardMaterial>)>,
+    mut debris: MessageWriter<SpawnDebris>,
+) {
+    for death in died.read() {
+        let Ok((prop, transform, blast, children)) = objects.get(death.entity) else {
+            continue;
+        };
+        let Some(state) = props.get_mut(prop.chunk, prop.index) else {
+            continue;
+        };
+        if state.status != PropStatus::Intact {
+            continue;
+        }
+        let p = transform.translation;
+        let away = blast
+            .map(|b| (p - b.0).with_y(0.0).normalize_or(Vec3::X))
+            .unwrap_or_else(|| Quat::from_rotation_y(p.x * 7.3 + p.z * 3.1) * Vec3::X);
+        match prop.kind {
+            PropKind::Tree => {
+                let axis = Vec3::Y.cross(away).normalize_or(Vec3::X);
+                let fallen = Transform {
+                    rotation: Quat::from_axis_angle(axis, std::f32::consts::FRAC_PI_2) * transform.rotation,
+                    ..*transform
+                };
+                state.status = PropStatus::Fallen(fallen);
+                let flame_height = 3.0 * transform.scale.y;
+                let flame = commands
+                    .spawn((
+                        CrownFire {
+                            remaining: 4.0 + (p.x * 1.7).sin().abs() * 2.0,
+                        },
+                        NotShadowCaster,
+                        Mesh3d(assets.flame.mesh.clone()),
+                        MeshMaterial3d(assets.flame.material.clone()),
+                        Transform::from_xyz(0.0, flame_height, 0.0),
+                    ))
+                    .id();
+                commands
+                    .entity(death.entity)
+                    .remove::<(Obstacle, Health)>()
+                    .add_child(flame)
+                    .insert(TreeFall {
+                        rest: transform.rotation,
+                        axis,
+                        elapsed: 0.0,
+                    });
+                let stump = spawn_stump(&mut commands, &assets, state.transform);
+                spawned.0.entry(prop.chunk).or_default().push(stump);
+            }
+            PropKind::Boulder | PropKind::Crystal => {
+                state.status = PropStatus::Destroyed;
+                let (count, color, size) = if prop.kind == PropKind::Boulder {
+                    (6 + prop.index % 3, STONE_COLORS[state.variant], 0.7)
+                } else {
+                    (4 + prop.index % 3, GEM_COLORS[state.variant], 0.4)
+                };
+                let scale = transform.scale.max_element();
+                for i in 0..count {
+                    let a = i as f32 / count as f32 * std::f32::consts::TAU + p.x;
+                    let dir = (Quat::from_rotation_y(a) * Vec3::X + away).normalize_or(Vec3::X);
+                    debris.write(SpawnDebris {
+                        position: p + Vec3::Y * (0.5 + 0.2 * i as f32) * scale,
+                        velocity: dir * (3.0 + i as f32 * 0.6) + Vec3::Y * (5.0 + (i % 3) as f32 * 2.0),
+                        size: Vec3::new(size, size * 0.7, size * 0.9) * scale * (0.7 + (i % 2) as f32 * 0.5),
+                        color,
+                        burning: false,
+                    });
+                }
+                if let Some(children) = children {
+                    shatter(&mut commands, transform, children, &parts, away);
+                }
+                commands.entity(death.entity).despawn();
+            }
+            _ => {
+                state.status = PropStatus::Destroyed;
+                commands.entity(death.entity).despawn();
+            }
+        }
+    }
+}
+
+/// Дерево падает с ускорением и коротко подпрыгивает, коснувшись земли.
+fn fell_trees(mut commands: Commands, time: Res<Time>, mut trees: Query<(Entity, &mut Transform, &mut TreeFall)>) {
+    let half_pi = std::f32::consts::FRAC_PI_2;
+    for (entity, mut transform, mut fall) in &mut trees {
+        fall.elapsed += time.delta_secs();
+        let t = fall.elapsed / FALL_SECONDS;
+        let angle = if t < 1.0 {
+            half_pi * t * t
+        } else {
+            let b = (t - 1.0) / 0.25;
+            if b >= 1.0 {
+                transform.rotation = Quat::from_axis_angle(fall.axis, half_pi) * fall.rest;
+                commands.entity(entity).remove::<TreeFall>();
+                continue;
+            }
+            half_pi - 0.12 * (b * std::f32::consts::PI).sin()
+        };
+        transform.rotation = Quat::from_axis_angle(fall.axis, angle) * fall.rest;
+    }
+}
+
+/// Затухающее качание деревьев от дальнего взрыва.
+fn sway_trees(mut commands: Commands, time: Res<Time>, mut trees: Query<(Entity, &mut Transform, &mut Sway), Without<TreeFall>>) {
+    for (entity, mut transform, mut sway) in &mut trees {
+        sway.elapsed += time.delta_secs();
+        if sway.elapsed >= SWAY_SECONDS {
+            transform.rotation = sway.rest;
+            commands.entity(entity).remove::<Sway>();
+            continue;
+        }
+        let t = sway.elapsed;
+        let angle = sway.amplitude * (-4.0 * t).exp() * (t * 14.0).cos();
+        transform.rotation = Quat::from_axis_angle(sway.axis, angle) * sway.rest;
+    }
+}
+
+/// Огонь на кроне мерцает и гаснет.
+fn burn_crowns(mut commands: Commands, time: Res<Time>, mut fires: Query<(Entity, &mut Transform, &mut CrownFire)>) {
+    for (entity, mut transform, mut fire) in &mut fires {
+        fire.remaining -= time.delta_secs();
+        if fire.remaining <= 0.0 {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        let flicker = 1.0 + (fire.remaining * 21.0).sin() * 0.2;
+        transform.scale = Vec3::splat(1.6 * fire.remaining.min(1.0) * flicker);
     }
 }
