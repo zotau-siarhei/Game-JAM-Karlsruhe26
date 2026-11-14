@@ -1,10 +1,10 @@
 {
   "lines": [
-    { "id": "menu", "event": "Стартовый экран", "text": "Playful retro space lounge theme, light synth melody, comedic, loopable, 60 seconds", "file": "menu.mp3", "kind": "music" },
-    { "id": "lull", "event": "Передышка между волнами", "text": "Calm quirky ambient synth groove, soft bass, curious mood, loopable, 60 seconds", "file": "lull.mp3", "kind": "music" },
-    { "id": "combat", "event": "Бой", "text": "Fast arcade action synth track, driving drums, energetic and slightly silly, loopable, 60 seconds", "file": "combat.mp3", "kind": "music" },
-    { "id": "boss", "event": "Босс", "text": "Over-the-top dramatic boss battle theme, heavy synth brass and choir stabs, comedic menace, loopable, 60 seconds", "file": "boss.mp3", "kind": "music" },
-    { "id": "game_over", "event": "Экран конца забега", "text": "Slow melancholic but funny synth tune, sad trombone feeling, loopable, 40 seconds", "file": "game_over.mp3", "kind": "music" },
-    { "id": "death_sting", "event": "Гибель лунохода", "text": "Short comedic fail sting, descending brass wah-wah, two seconds", "file": "death_sting.mp3", "kind": "music" }
+    {"id": "menu", "event": "Стартовый экран", "text": "Playful retro space lounge theme, light synth melody, comedic, loopable", "file": "menu.mp3", "kind": "music", "seconds": 45},
+    {"id": "lull", "event": "Передышка между волнами", "text": "Calm quirky ambient synth groove, soft bass, curious mood, loopable", "file": "lull.mp3", "kind": "music", "seconds": 45},
+    {"id": "combat", "event": "Бой", "text": "Fast arcade action synth track, driving drums, energetic and slightly silly, loopable", "file": "combat.mp3", "kind": "music", "seconds": 60},
+    {"id": "boss", "event": "Босс", "text": "Over-the-top dramatic boss battle theme, heavy synth brass and choir stabs, comedic menace, loopable", "file": "boss.mp3", "kind": "music", "seconds": 60},
+    {"id": "game_over", "event": "Экран конца забега", "text": "Slow melancholic but funny synth tune, sad trombone feeling, loopable", "file": "game_over.mp3", "kind": "music", "seconds": 30},
+    {"id": "death_sting", "event": "Гибель лунохода", "text": "Short comedic fail sting, descending brass wah-wah", "file": "death_sting.mp3", "kind": "music", "seconds": 3}
   ]
 }

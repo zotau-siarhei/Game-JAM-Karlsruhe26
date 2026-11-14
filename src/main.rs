@@ -5,6 +5,7 @@
 mod camera;
 mod hq;
 mod music;
+mod records;
 mod rover;
 mod sound;
 mod sound_list;
