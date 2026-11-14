@@ -8,6 +8,7 @@ mod buildings;
 mod bullet;
 mod camera;
 mod capsule;
+mod collapse;
 mod combat;
 mod debris;
 mod craters;
@@ -70,6 +71,7 @@ fn main() {
             props::PropsPlugin,
             obstacles::ObstaclesPlugin,
             debris::DebrisPlugin,
+            collapse::CollapsePlugin,
         ))
         .add_plugins((
             combat::CombatPlugin,

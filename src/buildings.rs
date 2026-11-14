@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 
 use crate::combat::{Damage, Died, Health, Team, blast_damage};
-use crate::debris::SpawnDebris;
+use crate::collapse::CollapseHouse;
 use crate::explosion::Explosion;
 use crate::obstacles::{Obstacle, Shape};
 use crate::rover::Rover;
@@ -117,6 +117,10 @@ pub struct BuildingDestroyed {
 /// Чей был последний урон по дому: он и считается разрушителем.
 #[derive(Component, Debug, Clone, Copy)]
 struct LastHit(Team);
+
+/// Центр последнего взрыва, задевшего дом: стены падают от него.
+#[derive(Component, Debug, Clone, Copy)]
+struct BlastFrom(Vec3);
 
 /// Дом вздрагивает после попадания.
 #[derive(Component, Debug, Clone, Copy)]
@@ -415,6 +419,7 @@ fn spawn_ruin(
 
 /// Взрыв ранит дом по расстоянию до ближайшей точки его стены, а не до центра.
 fn blast_houses(
+    mut commands: Commands,
     mut explosions: MessageReader<Explosion>,
     settlements: Res<Settlements>,
     houses: Query<(Entity, &House, &Health)>,
@@ -433,6 +438,7 @@ fn blast_houses(
             let amount = blast_damage(explosion.power, explosion.radius, distance, false)
                 * HOUSE_BLAST_MULTIPLIER;
             if amount > 0.0 {
+                commands.entity(entity).try_insert(BlastFrom(explosion.position));
                 damage.write(Damage {
                     target: entity,
                     amount,
@@ -480,11 +486,11 @@ fn destroy_houses(
     mut destroyed: MessageWriter<BuildingDestroyed>,
     assets: Res<HouseAssets>,
     terrain: Res<Terrain>,
-    houses: Query<(&House, &Transform, Option<&LastHit>, Option<&Wobble>)>,
-    mut debris: MessageWriter<SpawnDebris>,
+    houses: Query<(&House, &Transform, Option<&LastHit>, Option<&Wobble>, Option<&BlastFrom>)>,
+    mut collapse: MessageWriter<CollapseHouse>,
 ) {
     for death in died.read() {
-        let Ok((house, transform, last_hit, wobble)) = houses.get(death.entity) else {
+        let Ok((house, transform, last_hit, wobble, blast)) = houses.get(death.entity) else {
             continue;
         };
         let Some(state) = settlements.house_mut(house.0) else {
@@ -505,42 +511,14 @@ fn destroy_houses(
         };
         let position = wobble.map_or(transform.translation, |w| w.rest.translation);
         destroyed.write(BuildingDestroyed { position, cause });
-        burst_into_debris(&mut debris, &state, position);
-    }
-}
-
-/// Обломки разрушенного дома: куски стен, доски и черепица цветов дома, летят вверх и в стороны.
-fn burst_into_debris(debris: &mut MessageWriter<SpawnDebris>, house: &HouseState, base: Vec3) {
-    let half = house.kind.half_extents();
-    let height = house.kind.wall_height();
-    let wall = WALL_PALETTE[house.wall_color];
-    let roof = ROOF_PALETTE[house.roof_color];
-    let footprint = house.footprint();
-    // Псевдослучайность от положения дома: дома рассыпаются по-разному.
-    let mut seed = (house.position.x * 12.9898 + house.position.y * 78.233).sin() * 43758.547;
-    let mut next = move || {
-        seed = (seed * 1.618 + 0.31).fract().abs();
-        seed
-    };
-    let count = 20 + (next() * 9.0) as usize;
-    for i in 0..count {
-        let local = Vec2::new((next() * 2.0 - 1.0) * half.x, (next() * 2.0 - 1.0) * half.y);
-        let p = footprint.to_world(local);
-        let out = (p - house.position).normalize_or(Vec2::X);
-        let y = base.y + next() * height;
-        let speed = 3.0 + next() * 6.0;
-        let big = i < 8;
-        let size = if big {
-            Vec3::new(0.8 + next() * 1.2, 0.3 + next() * 0.5, 0.6 + next() * 1.0)
-        } else {
-            Vec3::new(0.2 + next() * 0.5, 0.1 + next() * 0.2, 0.2 + next() * 0.6)
-        };
-        debris.write(SpawnDebris {
-            position: Vec3::new(p.x, y, p.y),
-            velocity: Vec3::new(out.x * speed, 5.0 + next() * 7.0, out.y * speed),
-            size,
-            color: if i % 3 == 0 { roof } else { wall },
-            burning: i % 6 == 1,
+        collapse.write(CollapseHouse {
+            house: state.clone(),
+            base: position,
+            wall_color: WALL_PALETTE[state.wall_color],
+            roof_color: ROOF_PALETTE[state.roof_color],
+            wall_material: assets.walls[state.wall_color].clone(),
+            roof_material: assets.roofs[state.roof_color].clone(),
+            blast: blast.map(|b| b.0),
         });
     }
 }
