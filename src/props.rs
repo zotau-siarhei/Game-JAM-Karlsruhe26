@@ -45,9 +45,6 @@ const LARGE_MIN_UP: f32 = 0.9;
 /// Доля объектов, которая остаётся после выбора вида: дважды убрано по трети, чтобы можно было ехать.
 const KEEP_FRACTION: f32 = 4.0 / 9.0;
 
-/// Доля деревьев, которая остаётся сверх общего прореживания.
-const TREE_KEEP_FRACTION: f32 = 2.0 / 3.0;
-
 /// Вариантов цвета и формы у каждого вида.
 const VARIANTS: usize = 4;
 
@@ -245,33 +242,31 @@ fn generate_chunk(
             let rocks = Masks::sample(&masks.rocks, p);
             let crystals = Masks::sample(&masks.crystals, p);
             let roll = rng.next_f32();
-            let kind = if crystals > 0.72 && roll < 0.55 {
+            // Как в природе: больше всего деревьев, кусты, немного камней и редкие кристаллы.
+            let kind = if crystals > 0.8 && roll < 0.15 {
                 PropKind::Crystal
-            } else if forest > 0.56 {
+            } else if forest > 0.5 {
                 match roll {
-                    r if r < 0.6 => PropKind::Tree,
-                    r if r < 0.85 => PropKind::Bush,
+                    r if r < 0.7 => PropKind::Tree,
+                    r if r < 0.9 => PropKind::Bush,
                     _ => continue,
                 }
-            } else if rocks > 0.58 {
+            } else if rocks > 0.7 {
                 match roll {
-                    r if r < 0.3 => PropKind::Boulder,
-                    r if r < 0.75 => PropKind::Rock,
+                    r if r < 0.12 => PropKind::Boulder,
+                    r if r < 0.4 => PropKind::Rock,
                     _ => continue,
                 }
             } else {
-                // Между группами — редкие кусты, камни и одинокие деревья, иногда поляны.
+                // Между группами — одинокие деревья, кусты и редкие камни, иногда поляны.
                 match roll {
-                    r if r < 0.22 => PropKind::Bush,
-                    r if r < 0.40 => PropKind::Rock,
-                    r if r < 0.47 => PropKind::Tree,
+                    r if r < 0.18 => PropKind::Tree,
+                    r if r < 0.32 => PropKind::Bush,
+                    r if r < 0.37 => PropKind::Rock,
                     _ => continue,
                 }
             };
             if rng.next_f32() >= KEEP_FRACTION {
-                continue;
-            }
-            if kind == PropKind::Tree && rng.next_f32() >= TREE_KEEP_FRACTION {
                 continue;
             }
             if p.length() < START_CLEAR {
