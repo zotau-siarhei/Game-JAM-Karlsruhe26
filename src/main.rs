@@ -116,12 +116,21 @@ fn main() {
 }
 
 /// Создаёт солнце: невысокое, чтобы склоны холмов различались по яркости.
+/// Тени облегчены ради плавности: карта 1024, два каскада, только вблизи камеры.
 fn spawn_light(mut commands: Commands) {
+    commands.insert_resource(bevy::light::DirectionalLightShadowMap { size: 1024 });
     commands.spawn((
         DirectionalLight {
             shadow_maps_enabled: true,
             ..default()
         },
+        bevy::light::CascadeShadowConfigBuilder {
+            num_cascades: 2,
+            first_cascade_far_bound: 30.0,
+            maximum_distance: 70.0,
+            ..default()
+        }
+        .build(),
         Transform::from_xyz(6.0, 8.0, 3.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 }

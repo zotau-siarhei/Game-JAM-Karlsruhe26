@@ -30,6 +30,9 @@ fn spawn_camera(mut commands: Commands, rover: Single<&Transform, With<Rover>>) 
     commands.spawn((
         GameCamera,
         Camera3d::default(),
+        // Без сглаживания MSAA и с простой фильтрацией теней: так плавнее на слабой видеокарте.
+        bevy::render::view::Msaa::Off,
+        bevy::light::ShadowFilteringMethod::Hardware2x2,
         Transform::from_translation(target + CAMERA_OFFSET).looking_at(target, Vec3::NEG_Z),
     ));
 }
