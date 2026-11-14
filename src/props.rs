@@ -43,6 +43,9 @@ const LARGE_MIN_UP: f32 = 0.9;
 /// Доля объектов, которая остаётся после выбора вида: треть убрана, чтобы можно было ехать.
 const KEEP_FRACTION: f32 = 2.0 / 3.0;
 
+/// Доля деревьев, которая остаётся сверх общего прореживания.
+const TREE_KEEP_FRACTION: f32 = 2.0 / 3.0;
+
 /// Вариантов цвета и формы у каждого вида.
 const VARIANTS: usize = 4;
 
@@ -85,7 +88,8 @@ impl PropKind {
     /// Радиус в плане и высота при масштабе 1, м: для столкновений и пуль.
     pub fn footprint(self) -> (f32, f32) {
         match self {
-            PropKind::Tree => (0.5, 4.5),
+            // Мешает только ствол: под крону луноход заезжает.
+            PropKind::Tree => (0.3, 6.5),
             PropKind::Boulder => (1.5, 1.6),
             PropKind::Crystal => (0.8, 2.6),
             PropKind::Bush => (0.8, 0.7),
@@ -243,6 +247,9 @@ fn generate_chunk(
                 }
             };
             if rng.next_f32() >= KEEP_FRACTION {
+                continue;
+            }
+            if kind == PropKind::Tree && rng.next_f32() >= TREE_KEEP_FRACTION {
                 continue;
             }
             if p.length() < START_CLEAR {
@@ -429,24 +436,25 @@ fn create_prop_assets(
     let trunk = mat(Color::srgb(0.42, 0.28, 0.20), none);
     let wood = mat(Color::srgb(0.62, 0.46, 0.30), none);
     let metal = mat(Color::srgb(0.75, 0.78, 0.82), none);
-    // Странные инопланетные кроны: бирюзовая, сиреневая, лимонная, мятная.
+    // Зелёные кроны: лиственная, хвойная, тополь, зонтичная.
     let crowns = [
-        Color::srgb(0.10, 0.75, 0.70),
-        Color::srgb(0.70, 0.35, 0.90),
-        Color::srgb(0.85, 0.90, 0.20),
-        Color::srgb(0.35, 0.85, 0.40),
+        Color::srgb(0.24, 0.50, 0.18),
+        Color::srgb(0.12, 0.34, 0.18),
+        Color::srgb(0.36, 0.56, 0.20),
+        Color::srgb(0.28, 0.44, 0.14),
     ];
     let bushes = [
-        Color::srgb(0.20, 0.60, 0.35),
-        Color::srgb(0.45, 0.70, 0.20),
-        Color::srgb(0.25, 0.55, 0.60),
-        Color::srgb(0.55, 0.40, 0.70),
+        Color::srgb(0.22, 0.45, 0.16),
+        Color::srgb(0.30, 0.50, 0.18),
+        Color::srgb(0.18, 0.38, 0.17),
+        Color::srgb(0.34, 0.44, 0.20),
     ];
+    // Камни естественных цветов: серый, бурый, светлый песчаник, тёмный базальт.
     let stones = [
-        Color::srgb(0.55, 0.52, 0.50),
-        Color::srgb(0.48, 0.45, 0.52),
+        Color::srgb(0.50, 0.49, 0.47),
+        Color::srgb(0.46, 0.40, 0.33),
         Color::srgb(0.62, 0.57, 0.48),
-        Color::srgb(0.42, 0.44, 0.46),
+        Color::srgb(0.30, 0.29, 0.28),
     ];
     let gems = [
         Color::srgb(0.30, 0.85, 1.00),
@@ -469,33 +477,44 @@ fn create_prop_assets(
         let gem = mat(gems[v], gem_color * 1.5);
         let fv = v as f32;
 
-        // Дерево: ствол и крона из двух-трёх шаров.
-        let trunk_h = 2.2 + fv * 0.3;
+        // Дерево: высокий ствол и крона выше лунохода, разная форма у каждого варианта.
+        let trunk_h = [3.4, 2.8, 3.0, 4.0][v];
         let mut tree = vec![part(
             &cylinder,
             &trunk,
-            Transform::from_xyz(0.0, trunk_h * 0.5, 0.0).with_scale(Vec3::new(0.25, trunk_h, 0.25)),
+            Transform::from_xyz(0.0, trunk_h * 0.5, 0.0).with_scale(Vec3::new(0.22, trunk_h, 0.22)),
         )];
-        let blobs: &[(Vec3, f32)] = match v {
-            0 => &[(Vec3::new(0.0, 0.0, 0.0), 1.4)],
-            1 => &[(Vec3::new(-0.5, -0.1, 0.0), 1.0), (Vec3::new(0.5, 0.3, 0.2), 1.1)],
-            2 => &[
-                (Vec3::new(0.0, 0.0, 0.0), 1.1),
-                (Vec3::new(0.0, 1.0, 0.0), 0.8),
-                (Vec3::new(0.0, 1.7, 0.0), 0.5),
+        // Части кроны: меш, смещение от верха ствола и масштаб.
+        let crown_parts: Vec<(&Handle<Mesh>, Vec3, Vec3)> = match v {
+            // Лиственное: пышная крона из нескольких шаров.
+            0 => vec![
+                (&sphere, Vec3::new(0.0, 0.8, 0.0), Vec3::new(1.5, 1.2, 1.5)),
+                (&sphere, Vec3::new(-0.9, 0.4, 0.3), Vec3::new(1.0, 0.8, 1.0)),
+                (&sphere, Vec3::new(0.8, 0.5, -0.4), Vec3::new(1.1, 0.9, 1.0)),
+                (&sphere, Vec3::new(0.2, 1.6, 0.2), Vec3::new(0.9, 0.7, 0.9)),
             ],
-            _ => &[
-                (Vec3::new(-0.6, 0.0, -0.3), 0.9),
-                (Vec3::new(0.6, 0.1, -0.2), 0.9),
-                (Vec3::new(0.0, 0.6, 0.5), 1.0),
+            // Ель: ярусы конусов, сужающиеся кверху.
+            1 => vec![
+                (&cone, Vec3::new(0.0, 0.6, 0.0), Vec3::new(1.6, 1.6, 1.6)),
+                (&cone, Vec3::new(0.0, 1.6, 0.0), Vec3::new(1.2, 1.4, 1.2)),
+                (&cone, Vec3::new(0.0, 2.5, 0.0), Vec3::new(0.8, 1.2, 0.8)),
+            ],
+            // Тополь: узкая высокая крона.
+            2 => vec![
+                (&sphere, Vec3::new(0.0, 1.8, 0.0), Vec3::new(0.8, 2.4, 0.8)),
+                (&sphere, Vec3::new(0.2, 0.8, 0.1), Vec3::new(0.7, 1.2, 0.7)),
+            ],
+            // Зонтичное: широкая плоская крона.
+            _ => vec![
+                (&sphere, Vec3::new(0.0, 0.4, 0.0), Vec3::new(2.2, 0.55, 2.0)),
+                (&sphere, Vec3::new(0.5, 0.8, -0.3), Vec3::new(1.3, 0.45, 1.2)),
             ],
         };
-        for &(offset, r) in blobs {
+        for (mesh, offset, scale) in crown_parts {
             tree.push(part(
-                &sphere,
+                mesh,
                 &crown,
-                Transform::from_translation(Vec3::new(0.0, trunk_h + 0.6, 0.0) + offset)
-                    .with_scale(Vec3::new(r, r * 0.85, r)),
+                Transform::from_translation(Vec3::new(0.0, trunk_h, 0.0) + offset).with_scale(scale),
             ));
         }
         looks.insert((PropKind::Tree, v), tree);
