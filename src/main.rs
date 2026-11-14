@@ -25,6 +25,7 @@ mod music;
 mod props;
 mod records;
 mod repair;
+mod rockets;
 mod rover;
 mod rover_look;
 mod run;
@@ -69,6 +70,7 @@ fn main() {
             collapse::CollapsePlugin,
             subsidence::SubsidencePlugin,
             arsenal::ArsenalPlugin,
+            rockets::RocketsPlugin,
         ))
         .add_plugins((
             TerrainPlugin,
