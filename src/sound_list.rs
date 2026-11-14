@@ -286,4 +286,24 @@ mod tests {
             assert_eq!(ids.len(), total, "{name}: идентификаторы повторяются");
         }
     }
+
+    /// У каждой записи списков из репозитория звуковой файл лежит рядом со списком.
+    #[test]
+    fn repository_lists_have_files() {
+        let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets");
+        let lists = [
+            ("voice", include_str!("../assets/voice/lines.json")),
+            ("sfx", include_str!("../assets/sfx/sounds.json")),
+            ("music", include_str!("../assets/music/tracks.json")),
+        ];
+        for (dir, json) in lists {
+            let missing: Vec<_> = parse_list(json)
+                .unwrap()
+                .into_iter()
+                .filter(|entry| entry.file.is_empty() || !assets.join(dir).join(&entry.file).is_file())
+                .map(|entry| entry.id)
+                .collect();
+            assert!(missing.is_empty(), "{dir}: нет звуковых файлов у записей {missing:?}");
+        }
+    }
 }
