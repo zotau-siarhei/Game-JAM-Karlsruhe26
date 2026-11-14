@@ -181,8 +181,10 @@ fn spawn_marker(
 }
 
 /// Двигает маркер в точку прицела, кладёт его вершины на рельеф и красит по дальности.
+/// Маркер виден только у мортиры: остальному оружию точка падения не нужна.
 fn update_marker(
     aim: Res<AimPoint>,
+    weapon: Res<crate::weapons::CurrentWeapon>,
     terrain: Res<Terrain>,
     materials: Res<MarkerMaterials>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -191,11 +193,21 @@ fn update_marker(
             &mut Transform,
             &Mesh3d,
             &mut MeshMaterial3d<StandardMaterial>,
+            &mut Visibility,
         ),
         With<AimMarker>,
     >,
 ) {
-    let (mut transform, mesh, mut material) = marker.into_inner();
+    let (mut transform, mesh, mut material, mut visibility) = marker.into_inner();
+    let mortar = *weapon == crate::weapons::CurrentWeapon::Mortar;
+    visibility.set_if_neq(if mortar {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    });
+    if !mortar {
+        return;
+    }
     let center = aim.position;
     transform.translation = center;
     let wanted = if aim.at_limit {
