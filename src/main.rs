@@ -28,6 +28,7 @@ mod terrain;
 mod vehicle;
 mod weapons;
 mod voice;
+mod waves;
 
 use bevy::prelude::*;
 
@@ -67,6 +68,7 @@ fn main() {
             hud::HudPlugin,
             bullet::BulletPlugin,
             enemy::EnemyPlugin,
+            waves::WavesPlugin,
             weapons::WeaponsPlugin,
             run::RunPlugin,
             repair::RepairPlugin,

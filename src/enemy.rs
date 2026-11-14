@@ -1,7 +1,8 @@
 //! Враги. Первый тип — таран-стрелок: появляется за кадром, едет прямо на луноход,
 //! стреляет очередями при прямой видимости и таранит вплотную.
-
-use std::f32::consts::TAU;
+//!
+//! Когда и сколько врагов появляется, решает директор волн в `src/waves.rs`: он просит
+//! поставить врага сообщением [`SpawnEnemy`].
 
 use bevy::prelude::*;
 
@@ -9,7 +10,7 @@ use crate::bullet::{self, FireBullet};
 use crate::combat::{Collider, Damage, Died, Health, Team};
 use crate::explosion::Explosion;
 use crate::rover::{self, Rover};
-use crate::run::{GameState, RunScoped, RunStarted};
+use crate::run::{GameState, RunScoped};
 use crate::sound_list::Dice;
 use crate::terrain::Terrain;
 use crate::vehicle::{self, GroundVehicle};
@@ -35,14 +36,8 @@ const WHEEL_RADIUS: f32 = 0.32;
 /// Высота центра корпуса врага над поверхностью, м.
 const RIDE_HEIGHT: f32 = HULL_SIZE.y * 0.5 + WHEEL_RADIUS * 0.6;
 
-/// Как часто появляется новый враг, с.
-const SPAWN_INTERVAL: f32 = 4.0;
-
-/// Сколько врагов может быть одновременно.
-pub const MAX_ENEMIES: usize = 8;
-
 /// Кольцо появления вокруг лунохода, м. Кадр видит около 30 м от центра, враг появляется вне его.
-pub const SPAWN_RING: (f32, f32) = (45.0, 55.0);
+const SPAWN_RING: (f32, f32) = (45.0, 55.0);
 
 /// Враги дальше этого расстояния от лунохода убираются, м.
 const DESPAWN_DISTANCE: f32 = 120.0;
@@ -92,13 +87,11 @@ pub struct EnemyPlugin;
 impl Plugin for EnemyPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Dice>()
-            .init_resource::<SpawnTimer>()
-            .add_message::<EnemySpawned>()
+            .add_message::<SpawnEnemy>()
             .add_systems(Startup, create_enemy_assets)
             .add_systems(
                 Update,
                 (
-                    reset_spawning,
                     spawn_enemies.run_if(in_state(GameState::Playing)),
                     chase_rover,
                     vehicle::move_ground_vehicles,
@@ -131,12 +124,10 @@ struct EnemyWeapons {
     burst_timer: f32,
 }
 
-/// Появился новый враг.
+/// Просьба поставить врага за кадром в направлении `angle` от лунохода, рад.
 #[derive(Message, Debug, Clone, Copy)]
-pub struct EnemySpawned {
-    // Сущность пригодится мини-карте и отметкам опасности.
-    #[allow(dead_code)]
-    pub entity: Entity,
+pub struct SpawnEnemy {
+    pub angle: f32,
 }
 
 /// Общие меши и материалы врагов: одинаковые враги рисуются одним пакетом.
@@ -147,16 +138,6 @@ struct EnemyAssets {
     ram: Handle<Mesh>,
     hull_material: Handle<StandardMaterial>,
     dark_material: Handle<StandardMaterial>,
-}
-
-/// Время до появления следующего врага.
-#[derive(Resource)]
-struct SpawnTimer(f32);
-
-impl Default for SpawnTimer {
-    fn default() -> Self {
-        Self(SPAWN_INTERVAL)
-    }
 }
 
 fn create_enemy_assets(
@@ -173,29 +154,19 @@ fn create_enemy_assets(
     });
 }
 
-/// Новый забег: отсчёт до первого врага начинается заново.
-fn reset_spawning(mut started: MessageReader<RunStarted>, mut timer: ResMut<SpawnTimer>) {
-    if started.read().count() > 0 {
-        *timer = SpawnTimer::default();
-    }
-}
-
 /// Точка на окружности радиуса `distance` вокруг `center` по углу `angle`.
 fn ring_point(center: Vec3, angle: f32, distance: f32) -> Vec3 {
     center + Vec3::new(angle.cos(), 0.0, angle.sin()) * distance
 }
 
-/// Раз в несколько секунд ставит врага в случайной точке кольца вокруг лунохода, вне кадра.
+/// Ставит запрошенных врагов на кольце вокруг лунохода, вне кадра.
 fn spawn_enemies(
     mut commands: Commands,
-    time: Res<Time>,
-    mut timer: ResMut<SpawnTimer>,
+    mut requests: MessageReader<SpawnEnemy>,
     mut dice: ResMut<Dice>,
     assets: Res<EnemyAssets>,
     terrain: Res<Terrain>,
     rover: Query<(&Transform, &Health), With<Rover>>,
-    enemies: Query<(), With<Enemy>>,
-    mut spawned: MessageWriter<EnemySpawned>,
 ) {
     let Some((rover, health)) = rover.iter().next() else {
         return;
@@ -203,22 +174,26 @@ fn spawn_enemies(
     if health.is_dead() {
         return;
     }
-    timer.0 -= time.delta_secs();
-    if timer.0 > 0.0 {
-        return;
+    for request in requests.read() {
+        spawn_enemy(&mut commands, &mut dice, &assets, &terrain, rover.translation, request.angle);
     }
-    timer.0 = SPAWN_INTERVAL;
-    if enemies.iter().count() >= MAX_ENEMIES {
-        return;
-    }
+}
 
-    let angle = dice.range(0.0, TAU);
+/// Создаёт таран-стрелка на кольце появления в направлении `angle` от точки `center`.
+fn spawn_enemy(
+    commands: &mut Commands,
+    dice: &mut Dice,
+    assets: &EnemyAssets,
+    terrain: &Terrain,
+    center: Vec3,
+    angle: f32,
+) {
     let distance = dice.range(SPAWN_RING.0, SPAWN_RING.1);
-    let mut position = ring_point(rover.translation, angle, distance);
+    let mut position = ring_point(center, angle, distance);
     position.y = terrain.height_at(position.x, position.z) + RIDE_HEIGHT;
-    let heading = vehicle::heading_towards(rover.translation - position);
+    let heading = vehicle::heading_towards(center - position);
 
-    let entity = commands
+    commands
         .spawn((
             Enemy,
             RunScoped,
@@ -258,9 +233,7 @@ fn spawn_enemies(
                 MeshMaterial3d(assets.dark_material.clone()),
                 Transform::from_xyz(0.0, -0.1, -HULL_SIZE.z * 0.5 - 0.15),
             ));
-        })
-        .id();
-    spawned.write(EnemySpawned { entity });
+        });
 }
 
 /// Поворачивает врагов к луноходу и ведёт их вперёд. Когда луноход погиб, враги встают.
@@ -459,6 +432,8 @@ fn remove_dead_enemies(
 
 #[cfg(test)]
 mod tests {
+    use std::f32::consts::TAU;
+
     use super::*;
 
     #[test]

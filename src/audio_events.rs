@@ -5,7 +5,8 @@ use bevy::prelude::*;
 
 use crate::bullet::FireBullet;
 use crate::combat::{Damage, Died, Health};
-use crate::enemy::{Enemy, EnemySpawned};
+use crate::enemy::Enemy;
+use crate::waves::WaveStarted;
 use crate::explosion::Explosion;
 use crate::hq::{HqMemory, VoiceCue};
 use crate::music::{MusicState, Track};
@@ -99,21 +100,15 @@ fn voice_rover_death(
     }
 }
 
-/// Первые враги — реплика о волне; гибель врага — звук и редкий комментарий лунохода.
+/// Новая волна — реплика о ней; гибель врага — звук и редкий комментарий лунохода.
 fn voice_enemies(
-    mut started: MessageReader<RunStarted>,
-    mut spawned: MessageReader<EnemySpawned>,
+    mut waves: MessageReader<WaveStarted>,
     mut died: MessageReader<Died>,
     enemies: Query<&Transform, With<Enemy>>,
-    mut announced: Local<bool>,
     mut sounds: MessageWriter<PlaySound>,
     mut cues: MessageWriter<VoiceCue>,
 ) {
-    if started.read().count() > 0 {
-        *announced = false;
-    }
-    if spawned.read().count() > 0 && !*announced {
-        *announced = true;
+    if waves.read().count() > 0 {
         cues.write(VoiceCue::new("wave_start"));
     }
     for message in died.read() {
