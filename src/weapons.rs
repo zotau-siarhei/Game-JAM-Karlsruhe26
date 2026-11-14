@@ -159,19 +159,29 @@ fn attach_turret(
     }
 }
 
-/// Клавиши 1 и 2 выбирают оружие, колесо мыши листает по кругу.
+/// Пауза после переключения колесом, с: одна прокрутка растянута на несколько кадров.
+const SCROLL_COOLDOWN: f32 = 0.25;
+
+/// Клавиши 1 и 2 выбирают оружие, колесо мыши листает по кругу: одна прокрутка — одно оружие.
 fn select_weapon(
     keys: Res<ButtonInput<KeyCode>>,
     scroll: Res<AccumulatedMouseScroll>,
+    time: Res<Time>,
+    mut cooldown: Local<f32>,
     mut weapon: ResMut<CurrentWeapon>,
 ) {
+    *cooldown = (*cooldown - time.delta_secs()).max(0.0);
     let mut chosen = *weapon;
     if keys.just_pressed(KeyCode::Digit1) {
         chosen = CurrentWeapon::MachineGun;
     } else if keys.just_pressed(KeyCode::Digit2) {
         chosen = CurrentWeapon::Mortar;
     } else if scroll.delta.y != 0.0 {
-        chosen = weapon.cycled(if scroll.delta.y > 0.0 { -1 } else { 1 });
+        // Пока колесо крутится, пауза продлевается: переключение только в начале прокрутки.
+        if *cooldown == 0.0 {
+            chosen = weapon.cycled(if scroll.delta.y > 0.0 { -1 } else { 1 });
+        }
+        *cooldown = SCROLL_COOLDOWN;
     }
     if chosen != *weapon {
         *weapon = chosen;
