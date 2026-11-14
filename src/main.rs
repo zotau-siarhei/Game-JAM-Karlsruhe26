@@ -4,6 +4,7 @@
 
 mod aim;
 mod audio_events;
+mod bullet;
 mod camera;
 mod combat;
 mod enemy;
@@ -39,7 +40,12 @@ fn main() {
             ..default()
         }))
         .add_plugins((TerrainPlugin, RoverPlugin, CameraPlugin, aim::AimPlugin))
-        .add_plugins((combat::CombatPlugin, hud::HudPlugin, enemy::EnemyPlugin))
+        .add_plugins((
+            combat::CombatPlugin,
+            hud::HudPlugin,
+            bullet::BulletPlugin,
+            enemy::EnemyPlugin,
+        ))
         .add_plugins((
             voice::VoicePlugin,
             hq::HqPlugin,

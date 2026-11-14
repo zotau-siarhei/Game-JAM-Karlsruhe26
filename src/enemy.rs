@@ -1,10 +1,12 @@
-//! Враги. Первый тип — таран-стрелок: появляется за кадром и едет прямо на луноход.
+//! Враги. Первый тип — таран-стрелок: появляется за кадром, едет прямо на луноход,
+//! стреляет очередями при прямой видимости и таранит вплотную.
 
 use std::f32::consts::TAU;
 
 use bevy::prelude::*;
 
-use crate::combat::{Collider, Died, Health, Team};
+use crate::bullet::{self, FireBullet};
+use crate::combat::{Collider, Damage, Died, Health, Team};
 use crate::rover::{self, Rover};
 use crate::sound_list::Dice;
 use crate::terrain::Terrain;
@@ -43,6 +45,36 @@ pub const SPAWN_RING: (f32, f32) = (45.0, 55.0);
 /// Враги дальше этого расстояния от лунохода убираются, м.
 const DESPAWN_DISTANCE: f32 = 120.0;
 
+/// Урон тарана.
+const RAM_DAMAGE: f32 = 12.0;
+
+/// Один враг таранит не чаще раза в столько секунд.
+const RAM_INTERVAL: f32 = 0.5;
+
+/// Запас к сумме радиусов, при котором машины считаются столкнувшимися, м.
+const RAM_MARGIN: f32 = 0.2;
+
+/// Дистанция, с которой враг стреляет, м.
+const FIRE_RANGE: f32 = 28.0;
+
+/// Пуль в очереди.
+const BURST_SIZE: u8 = 3;
+
+/// Пауза между пулями очереди, с.
+const BURST_GAP: f32 = 0.12;
+
+/// Пауза между очередями, с.
+const RELOAD: f32 = 1.5;
+
+/// Разброс пуль по горизонтали в каждую сторону, рад.
+const SPREAD: f32 = 4.0 * std::f32::consts::PI / 180.0;
+
+/// Урон пули врага.
+const BULLET_DAMAGE: f32 = 4.0;
+
+/// Высота дула над центром корпуса, м.
+const MUZZLE_HEIGHT: f32 = 0.5;
+
 /// Цвет корпуса врага.
 const HULL_COLOR: Color = Color::srgb(0.72, 0.16, 0.12);
 
@@ -65,6 +97,8 @@ impl Plugin for EnemyPlugin {
                     chase_rover,
                     vehicle::move_ground_vehicles,
                     separate_enemies,
+                    ram_rover,
+                    shoot_rover,
                     remove_far_enemies,
                     remove_dead_enemies,
                 )
@@ -77,6 +111,19 @@ impl Plugin for EnemyPlugin {
 /// Враг.
 #[derive(Component)]
 pub struct Enemy;
+
+/// Оружие врага: таран и пулемёт.
+#[derive(Component, Debug)]
+struct EnemyWeapons {
+    /// Сколько секунд до следующего тарана.
+    ram_cooldown: f32,
+    /// Сколько секунд до следующей очереди.
+    reload: f32,
+    /// Сколько пуль осталось в текущей очереди.
+    burst_left: u8,
+    /// Сколько секунд до следующей пули очереди.
+    burst_timer: f32,
+}
 
 /// Появился новый враг.
 #[derive(Message, Debug, Clone, Copy)]
@@ -167,6 +214,13 @@ fn spawn_enemies(
                 radius: ENEMY_RADIUS,
             },
             GroundVehicle::new(heading, RIDE_HEIGHT, Vec2::new(HULL_SIZE.x, HULL_SIZE.z) * 0.5),
+            EnemyWeapons {
+                ram_cooldown: 0.0,
+                // Разная задержка, чтобы враги не стреляли залпом.
+                reload: dice.range(0.3, RELOAD),
+                burst_left: 0,
+                burst_timer: 0.0,
+            },
             Mesh3d(assets.hull.clone()),
             MeshMaterial3d(assets.hull_material.clone()),
             Transform::from_translation(position).with_rotation(Quat::from_rotation_y(heading)),
@@ -256,6 +310,103 @@ fn separate_enemies(
     }
 }
 
+/// Столкнулись ли машины: расстояние по горизонтали не больше суммы радиусов с запасом.
+fn is_ramming(enemy: Vec3, rover: Vec3, radius_sum: f32) -> bool {
+    Vec2::new(enemy.x - rover.x, enemy.z - rover.z).length() <= radius_sum + RAM_MARGIN
+}
+
+/// Таран: враг, упёршийся в луноход, наносит урон не чаще раза в [`RAM_INTERVAL`].
+fn ram_rover(
+    time: Res<Time>,
+    rover: Query<(Entity, &Transform, &Collider, &Health), (With<Rover>, Without<Enemy>)>,
+    mut enemies: Query<(&Transform, &Collider, &mut EnemyWeapons), With<Enemy>>,
+    mut damage: MessageWriter<Damage>,
+) {
+    let rover = rover.iter().next().filter(|(_, _, _, health)| !health.is_dead());
+    for (transform, collider, mut weapons) in &mut enemies {
+        weapons.ram_cooldown = (weapons.ram_cooldown - time.delta_secs()).max(0.0);
+        let Some((target, rover_transform, rover_collider, _)) = rover else {
+            continue;
+        };
+        let radius_sum = collider.radius + rover_collider.radius;
+        if weapons.ram_cooldown <= 0.0
+            && is_ramming(transform.translation, rover_transform.translation, radius_sum)
+        {
+            weapons.ram_cooldown = RAM_INTERVAL;
+            damage.write(Damage {
+                target,
+                amount: RAM_DAMAGE,
+                source_team: Team::Enemy,
+            });
+        }
+    }
+}
+
+/// Что делает пулемёт врага в этом кадре.
+#[derive(Debug, PartialEq)]
+enum GunAction {
+    /// Ждёт.
+    Wait,
+    /// Выпускает пулю.
+    Fire,
+}
+
+impl EnemyWeapons {
+    /// Ведёт перезарядку и очередь. `can_start` — цель в дальности и видна.
+    fn tick_gun(&mut self, dt: f32, can_start: bool) -> GunAction {
+        self.reload = (self.reload - dt).max(0.0);
+        if self.burst_left == 0 {
+            if !can_start || self.reload > 0.0 {
+                return GunAction::Wait;
+            }
+            self.burst_left = BURST_SIZE;
+            self.burst_timer = 0.0;
+            self.reload = RELOAD;
+        }
+        self.burst_timer -= dt;
+        if self.burst_timer > 0.0 {
+            return GunAction::Wait;
+        }
+        self.burst_left -= 1;
+        self.burst_timer = BURST_GAP;
+        GunAction::Fire
+    }
+}
+
+/// Стрельба: на средней дистанции и только когда между врагом и луноходом нет рельефа.
+fn shoot_rover(
+    time: Res<Time>,
+    terrain: Res<Terrain>,
+    mut dice: ResMut<Dice>,
+    rover: Query<(&Transform, &Health), (With<Rover>, Without<Enemy>)>,
+    mut enemies: Query<(&Transform, &mut EnemyWeapons), With<Enemy>>,
+    mut bullets: MessageWriter<FireBullet>,
+) {
+    let Some(target) = rover
+        .iter()
+        .next()
+        .filter(|(_, health)| !health.is_dead())
+        .map(|(transform, _)| transform.translation)
+    else {
+        return;
+    };
+    let dt = time.delta_secs();
+    for (transform, mut weapons) in &mut enemies {
+        let muzzle = transform.translation + Vec3::Y * MUZZLE_HEIGHT;
+        let can_start = muzzle.distance(target) <= FIRE_RANGE
+            && bullet::has_line_of_sight(&terrain, muzzle, target);
+        if weapons.tick_gun(dt, can_start) == GunAction::Fire {
+            let spread = Quat::from_rotation_y(dice.range(-SPREAD, SPREAD));
+            bullets.write(FireBullet {
+                origin: muzzle,
+                direction: spread * (target - muzzle),
+                team: Team::Enemy,
+                damage: BULLET_DAMAGE,
+            });
+        }
+    }
+}
+
 /// Убирает врагов, от которых луноход уехал далеко.
 fn remove_far_enemies(
     mut commands: Commands,
@@ -308,6 +459,51 @@ mod tests {
                 assert!(flat > 30.0);
             }
         }
+    }
+
+    #[test]
+    fn ram_needs_contact() {
+        let rover = Vec3::new(0.0, 4.0, 0.0);
+        assert!(is_ramming(Vec3::new(2.4, 0.0, 0.0), rover, 2.4));
+        assert!(is_ramming(Vec3::new(0.0, 9.0, 2.5), rover, 2.4));
+        assert!(!is_ramming(Vec3::new(3.0, 4.0, 0.0), rover, 2.4));
+    }
+
+    fn weapons(reload: f32) -> EnemyWeapons {
+        EnemyWeapons {
+            ram_cooldown: 0.0,
+            reload,
+            burst_left: 0,
+            burst_timer: 0.0,
+        }
+    }
+
+    #[test]
+    fn gun_fires_bursts_with_reload_between_them() {
+        let mut gun = weapons(0.0);
+        let dt = 0.02;
+        let mut shots = Vec::new();
+        for frame in 0..200 {
+            if gun.tick_gun(dt, true) == GunAction::Fire {
+                shots.push(frame as f32 * dt);
+            }
+        }
+        // За 4 секунды: очереди в 0, 1,5 и 3 с по три пули.
+        assert_eq!(shots.len(), 9);
+        assert!(shots[2] - shots[0] < 0.4);
+        assert!(shots[3] - shots[0] >= RELOAD - 0.05);
+    }
+
+    #[test]
+    fn gun_does_not_fire_without_sight_but_finishes_a_burst() {
+        let mut gun = weapons(0.0);
+        for _ in 0..100 {
+            assert_eq!(gun.tick_gun(0.02, false), GunAction::Wait);
+        }
+        // Очередь началась, цель скрылась: оставшиеся пули всё равно вылетают.
+        assert_eq!(gun.tick_gun(0.02, true), GunAction::Fire);
+        let rest = (0..50).filter(|_| gun.tick_gun(0.02, false) == GunAction::Fire).count();
+        assert_eq!(rest, usize::from(BURST_SIZE) - 1);
     }
 
     #[test]

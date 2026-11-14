@@ -3,6 +3,7 @@
 
 use bevy::prelude::*;
 
+use crate::bullet::FireBullet;
 use crate::combat::{Damage, Died, Health};
 use crate::enemy::{Enemy, EnemySpawned};
 use crate::hq::VoiceCue;
@@ -31,6 +32,7 @@ impl Plugin for AudioEventsPlugin {
                 voice_rover_damage,
                 voice_rover_death,
                 voice_enemies,
+                sound_shots,
                 music_follows_enemies,
             ),
         );
@@ -127,5 +129,12 @@ fn music_follows_enemies(
     };
     if music.track != wanted {
         music.track = wanted;
+    }
+}
+
+/// Выстрел пулей — звук пулемёта в месте выстрела.
+fn sound_shots(mut shots: MessageReader<FireBullet>, mut sounds: MessageWriter<PlaySound>) {
+    for shot in shots.read() {
+        sounds.write(PlaySound::at("mg_fire", shot.origin));
     }
 }
