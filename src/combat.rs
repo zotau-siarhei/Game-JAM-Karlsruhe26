@@ -163,7 +163,7 @@ fn equip_rover(mut commands: Commands, rovers: Query<Entity, Added<Rover>>) {
             Health::new(ROVER_MAX_HEALTH),
             Team::Player,
             Collider {
-                radius: ROVER_COLLIDER_RADIUS,
+                radius: ROVER_COLLIDER_RADIUS * crate::rover::ROVER_SCALE,
             },
         ));
     }

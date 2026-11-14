@@ -25,7 +25,7 @@ const GAME_OVER_DELAY: f32 = 1.0;
 const DEATH_BLAST: (f32, f32) = (9.0, 2.5);
 
 /// Высота центра корпуса лунохода над поверхностью при возвращении на старт, м.
-const ROVER_RIDE_HEIGHT: f32 = 0.5;
+const ROVER_RIDE_HEIGHT: f32 = crate::rover::RIDE_HEIGHT * crate::rover::ROVER_SCALE;
 
 /// Скорость, с которой планета летит под камерой в меню, м/с.
 const MENU_FLIGHT: Vec3 = Vec3::new(5.0, 0.0, -2.5);

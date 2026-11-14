@@ -203,7 +203,8 @@ fn machine_gun_shot(rover: Vec3, aim: Vec3) -> (Vec3, Vec3) {
     let mut flat = aim - rover;
     flat.y = 0.0;
     let forward = flat.try_normalize().unwrap_or(Vec3::NEG_Z);
-    let origin = rover + Vec3::Y * MUZZLE_HEIGHT + forward * MUZZLE_FORWARD;
+    let scale = crate::rover::ROVER_SCALE;
+    let origin = rover + (Vec3::Y * MUZZLE_HEIGHT + forward * MUZZLE_FORWARD) * scale;
     let target = aim + Vec3::Y * AIM_HEIGHT;
     // Прицел у самого лунохода: стреляем вперёд по башне, а не себе под колёса.
     let direction = if flat.length() > MUZZLE_FORWARD + 0.5 {

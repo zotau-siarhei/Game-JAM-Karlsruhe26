@@ -9,6 +9,9 @@ use crate::terrain::Terrain;
 /// Высота центра лунохода над поверхностью, м: от неё отсчитываются башня, дуло и облик.
 pub const RIDE_HEIGHT: f32 = 0.48;
 
+/// Во сколько раз луноход больше своей модели: масштаб корня, облик и башня растут вместе с ним.
+pub const ROVER_SCALE: f32 = 2.0;
+
 /// Максимальная скорость вперёд, м/с.
 const MAX_FORWARD_SPEED: f32 = 14.0;
 
@@ -68,14 +71,16 @@ impl Plugin for RoverPlugin {
 /// Ставит луноход на поверхность в начале координат. Облик добавляет `rover_look`.
 fn spawn_rover(mut commands: Commands, terrain: Res<Terrain>) {
     let up = terrain.normal_at(0.0, 0.0);
-    let y = terrain.height_at(0.0, 0.0) + RIDE_HEIGHT;
+    let y = terrain.height_at(0.0, 0.0) + RIDE_HEIGHT * ROVER_SCALE;
     commands.spawn((
         Rover,
         RoverMotion {
             up,
             ..default()
         },
-        Transform::from_xyz(0.0, y, 0.0).with_rotation(Quat::from_rotation_arc(Vec3::Y, up)),
+        Transform::from_xyz(0.0, y, 0.0)
+            .with_rotation(Quat::from_rotation_arc(Vec3::Y, up))
+            .with_scale(Vec3::splat(ROVER_SCALE)),
         Visibility::default(),
     ));
 }
@@ -121,7 +126,7 @@ pub fn drive_rover(
     let mut normal = WHEEL_POINTS
         .iter()
         .map(|p| {
-            let w = pos + yaw * Vec3::new(p.x, 0.0, p.y);
+            let w = pos + yaw * Vec3::new(p.x, 0.0, p.y) * ROVER_SCALE;
             terrain.normal_at(w.x, w.z)
         })
         .sum::<Vec3>()
@@ -133,7 +138,7 @@ pub fn drive_rover(
     let blend = 1.0 - (-TILT_SMOOTHING * dt).exp();
     motion.up = motion.up.lerp(normal, blend).normalize_or(Vec3::Y);
 
-    pos.y = terrain.height_at(pos.x, pos.z) + RIDE_HEIGHT;
+    pos.y = terrain.height_at(pos.x, pos.z) + RIDE_HEIGHT * ROVER_SCALE;
     transform.translation = pos;
     transform.rotation = Quat::from_rotation_arc(Vec3::Y, motion.up) * yaw;
 }
