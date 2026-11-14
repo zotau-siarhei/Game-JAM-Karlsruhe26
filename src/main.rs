@@ -1,4 +1,4 @@
-//! Lunokhod: луноход попадает на неизвестную планету и отбивается от врагов.
+//! Space Guard: луноход попадает на неизвестную планету и отбивается от врагов.
 //!
 //! Сейчас есть холмистый бесконечный ландшафт, луноход с танковым управлением и камера сверху.
 
@@ -55,7 +55,7 @@ fn main() {
         .insert_resource(RunSeed::from_clock())
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "Lunokhod".into(),
+                title: "Space Guard".into(),
                 ..default()
             }),
             ..default()

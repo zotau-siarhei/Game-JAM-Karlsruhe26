@@ -1,4 +1,4 @@
-# Lunokhod
+# Space Guard
 
 Игра для [Game Jam Karlsruhe 2026](https://gamejam-karlsruhe.hackops.tech/): луноход попадает на неизвестную планету и, как в аркаде, уничтожает врагов.
 

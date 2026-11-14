@@ -367,7 +367,7 @@ fn show_menu(mut commands: Commands, records: Res<RecordsTable>) {
     commands
         .spawn((MenuScreen, screen_root(0.35)))
         .with_children(|screen| {
-            screen.spawn(screen_line("LUNOKHOD", 96.0, TITLE_COLOR));
+            screen.spawn(screen_line("SPACE GUARD", 96.0, TITLE_COLOR));
             screen.spawn(screen_line("SURVIVE AS LONG AS YOU CAN", 26.0, Color::WHITE));
             if let Some(best) = best {
                 screen.spawn(screen_line(best, 26.0, TITLE_COLOR));
