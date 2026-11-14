@@ -30,14 +30,31 @@ const GRASS_TINT_STRENGTH: f32 = 0.12;
 /// Шаг, на котором считается нормаль в точке мира, м.
 const NORMAL_STEP: f32 = 1.0;
 
-/// Внешний край вала кратера в долях радиуса чаши.
-const CRATER_RIM_EXTENT: f32 = 1.3;
+/// Полуширина вала в долях радиуса чаши: гребень на радиусе чаши, вал сходит на нет к `1 + это`.
+/// Вал мортиры (R = 5 м) получается шириной 5 м, и на каждом луче его ловят несколько вершин
+/// сетки с шагом 1 м: гребень ровный, а не зубчатый.
+const CRATER_RIM_HALF_WIDTH: f32 = 0.5;
+
+/// Насколько пятна шума сдвигают границу коричневой земли, в долях полуширины вала.
+const CRATER_EDGE_JITTER: f32 = 0.35;
 
 /// Цвет разрушенной земли в кратере.
 const CRATER_BROWN: Color = Color::srgb(0.36, 0.23, 0.12);
 
 /// Насколько пятна шума меняют яркость земли в кратере.
 const CRATER_TINT_STRENGTH: f32 = 0.18;
+
+/// Изменение высоты кратером на расстоянии `x` от центра в радиусах чаши.
+///
+/// Чаша `-depth · (1 - x²)²` внутри `x < 1` плавно, без излома, сходит на нет к краю.
+/// Вал `rim · (1 - u²)²`, где `u = (x - 1) / CRATER_RIM_HALF_WIDTH`, — горб с гребнем на краю
+/// чаши. Обе части гладкие вместе с наклоном, поэтому на сетке нет ступенек и изломов.
+pub fn crater_profile(x: f32, depth: f32, rim: f32) -> f32 {
+    let bowl = if x < 1.0 { -depth * (1.0 - x * x).powi(2) } else { 0.0 };
+    let u = (x - 1.0) / CRATER_RIM_HALF_WIDTH;
+    let bank = if u.abs() < 1.0 { rim * (1.0 - u * u).powi(2) } else { 0.0 };
+    bowl + bank
+}
 
 /// Состояние одного участка: высоты и цвета вершин сетки `CHUNK_VERTS` × `CHUNK_VERTS`.
 ///
@@ -238,17 +255,18 @@ impl Terrain {
     /// Вырывает кратер с центром в точке мира `(center.x, center.z)` и возвращает участки,
     /// данные которых изменились.
     ///
-    /// К высоте каждой вершины в радиусе `radius · CRATER_RIM_EXTENT` прибавляется профиль:
-    /// чаша `-depth · (1 - (d/R)²)` внутри `R` и вал `+rim · sin²` между `R` и краем вала.
-    /// Профиль вычитается из текущих высот, поэтому повторный взрыв углубляет кратер без предела.
+    /// К высоте каждой вершины прибавляется гладкий профиль `crater_profile`: чаша глубиной `depth`
+    /// и вал высотой `rim` с гребнем на радиусе `R`. Профиль прибавляется к текущим высотам,
+    /// поэтому повторный взрыв углубляет кратер без предела.
     /// Цвет вершин смешивается с коричневым: внутри чаши полностью, на валу с плавным переходом
-    /// к исходному цвету. Общие вершины на границах пишутся во все участки, где они хранятся.
+    /// к исходному цвету, граница слегка неровная по шуму. Общие вершины на границах пишутся
+    /// во все участки, где они хранятся.
     pub fn apply_crater(&mut self, center: Vec3, radius: f32, depth: f32, rim: f32) -> Vec<IVec2> {
         let mut changed = Vec::new();
         if radius <= 0.0 {
             return changed;
         }
-        let outer = radius * CRATER_RIM_EXTENT;
+        let outer = radius * (1.0 + CRATER_RIM_HALF_WIDTH);
         let (x0, x1) = ((center.x - outer).floor() as i32, (center.x + outer).ceil() as i32);
         let (z0, z1) = ((center.z - outer).floor() as i32, (center.z + outer).ceil() as i32);
         let brown = CRATER_BROWN.to_linear();
@@ -258,14 +276,13 @@ impl Terrain {
                 if d >= outer {
                     continue;
                 }
-                let (delta, scorch) = if d < radius {
-                    (-depth * (1.0 - (d / radius).powi(2)), 1.0)
-                } else {
-                    let t = (d - radius) / (outer - radius);
-                    let s = (t * std::f32::consts::PI).sin();
-                    (rim * s * s, 1.0 - t * t * (3.0 - 2.0 * t))
-                };
-                let variation = 1.0 + self.generator.tint(vx as f32, vz as f32) * CRATER_TINT_STRENGTH;
+                let delta = crater_profile(d / radius, depth, rim);
+                let tint = self.generator.tint(vx as f32, vz as f32);
+                // Коричневый до гребня вала, дальше плавно уходит в исходный цвет к краю вала.
+                let t = (d / radius - 1.0) / CRATER_RIM_HALF_WIDTH + tint * CRATER_EDGE_JITTER;
+                let t = t.clamp(0.0, 1.0);
+                let scorch = 1.0 - t * t * (3.0 - 2.0 * t);
+                let variation = 1.0 + tint * CRATER_TINT_STRENGTH;
                 let target = brown * variation;
                 for (coord, ix, iz) in vertex_owners(vx, vz) {
                     let chunk = self.chunk_mut(coord);
@@ -428,6 +445,63 @@ mod tests {
         let (coord, ix, iz) = split_vertex(50, 50);
         let c = terrain.chunk(coord).colors[ChunkData::index(ix, iz)];
         assert!(c[0] > c[1] && (c[0] - brown.red).abs() < 0.1, "центр не коричневый: {c:?}");
+    }
+
+    #[test]
+    fn crater_profile_is_smooth() {
+        let (depth, rim) = (2.5, 0.6);
+        let outer = 1.0 + CRATER_RIM_HALF_WIDTH;
+        assert!((crater_profile(0.0, depth, rim) + depth).abs() < 1e-6, "центр на полной глубине");
+        assert_eq!(crater_profile(outer, depth, rim), 0.0, "за валом рельеф не тронут");
+        // Без скачков высоты и наклона: на стыках чаши, гребня и края вала разности соседних
+        // точек почти равны.
+        let h = 1e-3;
+        for x in [1.0, outer] {
+            let left = crater_profile(x - h, depth, rim) - crater_profile(x - 2.0 * h, depth, rim);
+            let right = crater_profile(x + 2.0 * h, depth, rim) - crater_profile(x + h, depth, rim);
+            assert!((left - right).abs() < 1e-3, "излом профиля на x = {x}: {left} и {right}");
+        }
+    }
+
+    #[test]
+    fn mortar_rim_is_wide_enough_for_the_grid() {
+        // Гребень, где вал выше половины своей высоты, шире двух шагов сетки:
+        // на каждом луче его ловят несколько вершин, и он не рассыпается на зубья.
+        let (radius, depth, rim) = (5.0, 0.0, 0.6);
+        let crest: Vec<f32> = (0..1000)
+            .map(|i| i as f32 * 0.01)
+            .filter(|d| crater_profile(d / radius, depth, rim) > rim * 0.5)
+            .collect();
+        let width = crest.last().unwrap() - crest.first().unwrap();
+        assert!(width > 2.0, "гребень вала {width} м");
+    }
+
+    #[test]
+    fn crater_rim_crest_is_even_around_the_circle() {
+        // Самая высокая вершина вала в каждом из 24 секторов поднимается почти одинаково при любом
+        // сдвиге центра относительно сетки. Узкий вал прежнего профиля здесь гулял на 1,25 м:
+        // в одних секторах вершина попадала на гребень, в других мимо, и край шёл гребёнкой.
+        for (seed, center) in [(9, Vec2::new(40.37, 40.81)), (3, Vec2::new(40.0, 40.0)), (5, Vec2::new(40.5, 40.5))] {
+            let mut terrain = Terrain::new(seed);
+            let ring = |x: i32, z: i32| Vec2::new(x as f32, z as f32) - center;
+            let vertices: Vec<(i32, i32)> = (28..54)
+                .flat_map(|z| (28..54).map(move |x| (x, z)))
+                .filter(|&(x, z)| (4.0..8.0).contains(&ring(x, z).length()))
+                .collect();
+            let before: Vec<f32> = vertices.iter().map(|&(x, z)| terrain.vertex_height(x, z)).collect();
+            for _ in 0..3 {
+                terrain.apply_crater(center.extend(0.0).xzy(), 5.0, 2.5, 0.6);
+            }
+            let mut crest = [f32::MIN; 24];
+            for (&(x, z), h) in vertices.iter().zip(before) {
+                let angle = ring(x, z).to_angle() + std::f32::consts::PI;
+                let sector = ((angle / std::f32::consts::TAU * 24.0) as usize).min(23);
+                crest[sector] = crest[sector].max(terrain.vertex_height(x, z) - h);
+            }
+            let spread = crest.iter().cloned().fold(f32::MIN, f32::max) - crest.iter().cloned().fold(f32::MAX, f32::min);
+            // Вал после трёх взрывов 1,8 м, гребень по кругу ровный с точностью до 0,5 м.
+            assert!(spread < 0.5, "гребень зубчатый: по секторам разброс {spread} м");
+        }
     }
 
     impl Terrain {
