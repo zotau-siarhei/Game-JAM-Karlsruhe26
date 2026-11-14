@@ -1,0 +1,41 @@
+//! Взрыв — общее сообщение, на которое реагируют кратеры, эффекты, тряска, а позже урон
+//! и разрушение домов. Отправить взрыв может любое оружие:
+//!
+//! ```ignore
+//! fn on_hit(mut explosions: MessageWriter<Explosion>) {
+//!     explosions.write(Explosion { position, radius: 5.0, power: 1.0 });
+//! }
+//! ```
+
+use bevy::prelude::*;
+
+/// Взрыв в точке мира.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct Explosion {
+    /// Центр взрыва, обычно точка касания поверхности.
+    pub position: Vec3,
+    /// Радиус воздействия, м.
+    pub radius: f32,
+    /// Мощность: 1 — снаряд мортиры, от неё масштабируются кратер, эффекты и тряска.
+    pub power: f32,
+}
+
+/// Плагин взрывов: регистрирует сообщение и пишет взрывы в лог.
+pub struct ExplosionPlugin;
+
+impl Plugin for ExplosionPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_message::<Explosion>()
+            .add_systems(Update, log_explosions);
+    }
+}
+
+/// Пишет каждый взрыв в лог: пока на сообщение больше никто не подписан.
+fn log_explosions(mut explosions: MessageReader<Explosion>) {
+    for e in explosions.read() {
+        info!(
+            "Взрыв в ({:.1}, {:.1}, {:.1}), радиус {:.1} м, мощность {:.2}",
+            e.position.x, e.position.y, e.position.z, e.radius, e.power
+        );
+    }
+}

@@ -8,8 +8,10 @@ mod bullet;
 mod camera;
 mod combat;
 mod enemy;
+mod explosion;
 mod hq;
 mod hud;
+mod mortar;
 mod music;
 mod records;
 mod rover;
@@ -40,7 +42,14 @@ fn main() {
             }),
             ..default()
         }))
-        .add_plugins((TerrainPlugin, RoverPlugin, CameraPlugin, aim::AimPlugin))
+        .add_plugins((
+            TerrainPlugin,
+            RoverPlugin,
+            CameraPlugin,
+            aim::AimPlugin,
+            explosion::ExplosionPlugin,
+            mortar::MortarPlugin,
+        ))
         .add_plugins((
             combat::CombatPlugin,
             hud::HudPlugin,

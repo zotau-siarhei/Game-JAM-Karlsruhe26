@@ -36,7 +36,7 @@ const MARKER_DOT_RADIUS: f32 = 0.3;
 const MARKER_SEGMENTS: usize = 64;
 
 /// Высота кольца над поверхностью, чтобы оно не мерцало вместе с землёй, м.
-const MARKER_LIFT: f32 = 0.12;
+pub(crate) const MARKER_LIFT: f32 = 0.12;
 
 /// Цвет маркера в пределах дальности.
 const MARKER_COLOR: Color = Color::srgb(1.0, 1.0, 1.0);
@@ -132,7 +132,7 @@ fn confine_cursor(mut cursor: Single<&mut CursorOptions, With<PrimaryWindow>>) {
 }
 
 /// Пересчитывает точку прицела по курсору. Без курсора над окном точка остаётся прежней.
-fn update_aim_point(
+pub fn update_aim_point(
     mut aim: ResMut<AimPoint>,
     terrain: Res<Terrain>,
     window: Single<&Window, With<PrimaryWindow>>,
@@ -214,7 +214,7 @@ fn update_marker(
 }
 
 /// Меш маркера: кольцо и диск в центре. Высота вершины над центром — `lift(смещение по x, z)`.
-fn marker_mesh(lift: impl Fn(Vec2) -> f32) -> Mesh {
+pub(crate) fn marker_mesh(lift: impl Fn(Vec2) -> f32) -> Mesh {
     let mut positions = Vec::with_capacity(MARKER_SEGMENTS * 3 + 1);
     let mut indices = Vec::with_capacity(MARKER_SEGMENTS * 9);
     let inner = MARKER_OUTER_RADIUS - MARKER_WIDTH;
