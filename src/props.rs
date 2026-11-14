@@ -36,6 +36,9 @@ const START_CLEAR: f32 = 8.0;
 /// Крупные объекты не стоят на склонах круче этого: `y` нормали меньше.
 const LARGE_MIN_UP: f32 = 0.9;
 
+/// Доля объектов, которая остаётся после выбора вида: треть убрана, чтобы можно было ехать.
+const KEEP_FRACTION: f32 = 2.0 / 3.0;
+
 /// Вариантов цвета и формы у каждого вида.
 const VARIANTS: usize = 4;
 
@@ -222,6 +225,9 @@ fn generate_chunk(
                     _ => continue,
                 }
             };
+            if rng.next_f32() >= KEEP_FRACTION {
+                continue;
+            }
             if p.length() < START_CLEAR {
                 continue;
             }
