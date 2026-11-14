@@ -35,7 +35,7 @@ fn spawn_camera(mut commands: Commands, rover: Single<&Transform, With<Rover>>) 
 }
 
 /// Плавно двигает камеру за луноходом, не вращая её.
-fn follow_rover(
+pub fn follow_rover(
     time: Res<Time>,
     rover: Single<&Transform, (With<Rover>, Without<GameCamera>)>,
     mut camera: Single<&mut Transform, With<GameCamera>>,
