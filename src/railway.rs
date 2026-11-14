@@ -1,6 +1,6 @@
 //! Железная дорога: бесконечные линии, вычисляемые функцией от координаты, и профиль путей.
 //!
-//! Мир пересекают два семейства линий: вдоль X (`z ≈ k·L`) и вдоль Z (`x ≈ k·L`). Каждая линия
+//! Мир пересекают параллельные линии вдоль X (`z ≈ k·L`), без пересечений. Каждая линия
 //! плавно отклоняется от своей оси по шуму, поэтому точку и касательную пути можно вычислить для
 //! любого куска мира без хранения линии. Уровень путей — рельеф холмов вдоль линии, сглаженный
 //! скользящим средним; горы в профиль не входят, под ними путь уходит в туннель.
@@ -11,9 +11,12 @@ use noise::{NoiseFn, Perlin};
 /// Шаг сетки линий, м.
 pub const LINE_SPACING: f32 = 260.0;
 
-/// Наибольшее отклонение линии от оси, м, и длина волны изгиба.
+/// Наибольшее отклонение линии от оси, м, и длина волны изгиба: крупные петли и мелкие извивы,
+/// как будто путь обходит рощи. Радиус поворота не меньше ~20 м, чтобы прошёл поезд.
 const BEND_AMPLITUDE: f32 = 40.0;
 const BEND_WAVELENGTH: f32 = 300.0;
+const WIGGLE_AMPLITUDE: f32 = 10.0;
+const WIGGLE_WAVELENGTH: f32 = 90.0;
 
 /// Сдвиг линии от узла сетки в обе стороны, м.
 const OFFSET_RANGE: f32 = 40.0;
@@ -32,12 +35,16 @@ pub const TUNNEL_DEPTH: f32 = 9.0;
 /// Сдвиг сида для изгибов линий.
 const BEND_SEED: u32 = 6_000;
 
+/// Семейства линий, которые есть в мире: только параллельные линии вдоль X, без пересечений.
+const FAMILIES: [Family; 1] = [Family::AlongX];
+
 /// Семейство линий.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Family {
     /// Вдоль оси X: параметр пути — `x`.
     AlongX,
-    /// Вдоль оси Z: параметр пути — `z`.
+    /// Вдоль оси Z: параметр пути — `z`. Сейчас таких линий нет, чтобы пути не пересекались.
+    #[allow(dead_code)]
     AlongZ,
 }
 
@@ -86,11 +93,10 @@ impl Lines {
             Family::AlongZ => 1,
         };
         let offset = (hash(self.seed, line.index, fam) * 2.0 - 1.0) * OFFSET_RANGE;
-        let bend = self.bend.get([
-            (s / BEND_WAVELENGTH) as f64,
-            line.index as f64 * 7.31 + fam as f64 * 101.7,
-        ]) as f32;
-        line.index as f32 * LINE_SPACING + offset + bend * BEND_AMPLITUDE
+        let row = line.index as f64 * 7.31 + fam as f64 * 101.7;
+        let bend = self.bend.get([(s / BEND_WAVELENGTH) as f64, row]) as f32;
+        let wiggle = self.bend.get([(s / WIGGLE_WAVELENGTH) as f64 + 500.0, row + 33.3]) as f32;
+        line.index as f32 * LINE_SPACING + offset + bend * BEND_AMPLITUDE + wiggle * WIGGLE_AMPLITUDE
     }
 
     /// Точка оси в плане на параметре `s`.
@@ -120,7 +126,7 @@ impl Lines {
     /// Ближайшая линия к точке плана.
     pub fn nearest(&self, p: Vec2) -> Nearest {
         let mut best: Option<Nearest> = None;
-        for family in [Family::AlongX, Family::AlongZ] {
+        for family in FAMILIES {
             let (s, across) = match family {
                 Family::AlongX => (p.x, p.y),
                 Family::AlongZ => (p.y, p.x),
@@ -146,7 +152,7 @@ impl Lines {
     /// Все линии, ось которых ближе `radius` к точке.
     pub fn near(&self, p: Vec2, radius: f32) -> Vec<Nearest> {
         let mut found = Vec::new();
-        for family in [Family::AlongX, Family::AlongZ] {
+        for family in FAMILIES {
             let (s, across) = match family {
                 Family::AlongX => (p.x, p.y),
                 Family::AlongZ => (p.y, p.x),
@@ -166,28 +172,6 @@ impl Lines {
             }
         }
         found
-    }
-
-    // Нужно поездам и крестам на пересечениях (задачи 2.1 и 4.1).
-    #[allow(dead_code)]
-    /// Пересечение линии вдоль X номер `a` с линией вдоль Z номер `b`.
-    pub fn intersection(&self, a: i32, b: i32) -> Vec2 {
-        let la = LineId {
-            family: Family::AlongX,
-            index: a,
-        };
-        let lb = LineId {
-            family: Family::AlongZ,
-            index: b,
-        };
-        // Простая итерация: изгибы пологие, поэтому она быстро сходится.
-        let mut x = b as f32 * LINE_SPACING;
-        let mut z = a as f32 * LINE_SPACING;
-        for _ in 0..30 {
-            z = self.cross(la, x);
-            x = self.cross(lb, z);
-        }
-        Vec2::new(x, z)
     }
 
     /// Уровень путей на параметре `s`: высота холмов вдоль оси, сглаженная треугольным окном.
@@ -232,10 +216,6 @@ impl Lines {
 mod tests {
     use super::*;
 
-    fn hills(x: f32, z: f32) -> f32 {
-        // Холмы рельефа: основная октава около 45 м, следующие короче.
-        (x * 0.14).sin() * 4.0 + (z * 0.1).cos() * 3.0 + (x * 0.28 + z * 0.2).sin() * 1.5
-    }
 
     #[test]
     fn same_seed_gives_same_lines() {
@@ -260,32 +240,24 @@ mod tests {
     }
 
     #[test]
-    fn intersection_lies_on_both_lines() {
-        let lines = Lines::new(3);
-        for (a, b) in [(0, 0), (1, -2), (-3, 4)] {
-            let p = lines.intersection(a, b);
-            let za = lines.cross(LineId { family: Family::AlongX, index: a }, p.x);
-            let xb = lines.cross(LineId { family: Family::AlongZ, index: b }, p.y);
-            assert!((za - p.y).abs() < 0.05 && (xb - p.x).abs() < 0.05, "{a},{b}: {p}");
-        }
-    }
-
-    #[test]
     fn profile_slope_is_at_most_3_percent() {
-        let lines = Lines::new(8);
-        let line = LineId {
-            family: Family::AlongX,
-            index: 0,
-        };
-        let mut worst: f32 = 0.0;
-        let mut s = -400.0;
-        while s < 400.0 {
-            let a = lines.level(line, s, hills);
-            let b = lines.level(line, s + 4.0, hills);
-            let run = lines.point(line, s).distance(lines.point(line, s + 4.0));
-            worst = worst.max((b - a).abs() / run);
-            s += 4.0;
+        // Уровень по настоящим холмам рельефа.
+        for seed in [8, 21, 99] {
+            let terrain = crate::terrain::Terrain::new(seed);
+            let line = LineId {
+                family: Family::AlongX,
+                index: 0,
+            };
+            let mut worst: f32 = 0.0;
+            let mut s = -600.0;
+            while s < 600.0 {
+                let a = terrain.track_level(line, s);
+                let b = terrain.track_level(line, s + 4.0);
+                let run = terrain.lines().point(line, s).distance(terrain.lines().point(line, s + 4.0));
+                worst = worst.max((b - a).abs() / run);
+                s += 4.0;
+            }
+            assert!(worst <= 0.03, "сид {seed}: уклон {worst}");
         }
-        assert!(worst <= 0.03, "уклон {worst}");
     }
 }
