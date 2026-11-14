@@ -55,14 +55,16 @@ impl Plugin for RunPlugin {
                     (pause_input, highlight_pause_choice)
                         .chain()
                         .run_if(in_state(GameState::Paused)),
-                    game_over_input.run_if(in_state(GameState::GameOver)),
+                    (game_over_input, draw_game_over)
+                        .chain()
+                        .run_if(in_state(GameState::GameOver)),
                 ),
             )
             .add_systems(OnEnter(GameState::Menu), show_menu)
             .add_systems(OnExit(GameState::Menu), hide_screen::<MenuScreen>)
             .add_systems(OnEnter(GameState::Paused), (stop_time, show_pause))
             .add_systems(OnExit(GameState::Paused), (resume_time, hide_screen::<PauseScreen>))
-            .add_systems(OnEnter(GameState::GameOver), (record_result, show_game_over).chain())
+            .add_systems(OnEnter(GameState::GameOver), prepare_result)
             .add_systems(OnExit(GameState::GameOver), hide_screen::<GameOverScreen>);
     }
 }
@@ -106,12 +108,73 @@ struct Death {
     position: Vec3,
 }
 
-/// Итог последнего забега для экрана.
+/// Итог последнего забега для экрана конца забега.
 #[derive(Resource, Default)]
 struct RunResult {
     seconds: f32,
     /// Место в таблице рекордов, считая с нуля. `None` — не попал.
     place: Option<usize>,
+    /// Имя, которое игрок набирает. `None` — имя уже сохранено или результат не попал в таблицу.
+    entry: Option<NameEntry>,
+}
+
+/// Ввод имени из трёх символов: буква или цифра встаёт в ячейку под курсором и двигает его.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NameEntry {
+    cells: [Option<char>; records::NAME_LENGTH],
+    cursor: usize,
+}
+
+impl NameEntry {
+    /// Ввод с подставленным именем и курсором на первой ячейке.
+    fn new(default_name: &str) -> Self {
+        let mut cells = [None; records::NAME_LENGTH];
+        for (cell, letter) in cells.iter_mut().zip(default_name.chars()) {
+            *cell = Some(letter.to_ascii_uppercase());
+        }
+        Self { cells, cursor: 0 }
+    }
+
+    fn type_char(&mut self, letter: char) {
+        if self.cursor < self.cells.len() && letter.is_ascii_alphanumeric() {
+            self.cells[self.cursor] = Some(letter.to_ascii_uppercase());
+            self.cursor += 1;
+        }
+    }
+
+    /// Стирает ячейку перед курсором и возвращает курсор на неё.
+    fn backspace(&mut self) {
+        if self.cursor > 0 {
+            self.cursor -= 1;
+            self.cells[self.cursor] = None;
+        }
+    }
+
+    /// Имя, если заполнены все ячейки.
+    fn name(&self) -> Option<String> {
+        self.cells.iter().copied().collect()
+    }
+}
+
+/// Буква или цифра клавиши. Берётся из кода клавиши, поэтому не зависит от раскладки.
+fn key_char(key: KeyCode) -> Option<char> {
+    const LETTERS: [KeyCode; 26] = [
+        KeyCode::KeyA, KeyCode::KeyB, KeyCode::KeyC, KeyCode::KeyD, KeyCode::KeyE, KeyCode::KeyF,
+        KeyCode::KeyG, KeyCode::KeyH, KeyCode::KeyI, KeyCode::KeyJ, KeyCode::KeyK, KeyCode::KeyL,
+        KeyCode::KeyM, KeyCode::KeyN, KeyCode::KeyO, KeyCode::KeyP, KeyCode::KeyQ, KeyCode::KeyR,
+        KeyCode::KeyS, KeyCode::KeyT, KeyCode::KeyU, KeyCode::KeyV, KeyCode::KeyW, KeyCode::KeyX,
+        KeyCode::KeyY, KeyCode::KeyZ,
+    ];
+    const DIGITS: [KeyCode; 10] = [
+        KeyCode::Digit0, KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4,
+        KeyCode::Digit5, KeyCode::Digit6, KeyCode::Digit7, KeyCode::Digit8, KeyCode::Digit9,
+    ];
+    let at = |keys: &[KeyCode], first: u8| {
+        keys.iter()
+            .position(|candidate| *candidate == key)
+            .map(|index| (first + index as u8) as char)
+    };
+    at(&LETTERS, b'A').or_else(|| at(&DIGITS, b'0'))
 }
 
 /// Таблица рекордов в памяти и путь к её файлу.
@@ -122,6 +185,17 @@ struct RecordsTable {
 }
 
 impl RecordsTable {
+    /// Вносит результат в таблицу и записывает файл. Возвращает занятое место.
+    fn add(&mut self, name: &str, seconds: f32) -> Option<usize> {
+        let place = self.table.insert(name, f64::from(seconds));
+        if let Some(path) = self.path.as_deref()
+            && let Err(error) = self.table.save(path)
+        {
+            warn!("Рекорды: не записан {}: {error}", path.display());
+        }
+        place
+    }
+
     fn load() -> Self {
         let path = records::records_path();
         let table = path.as_deref().map(Records::load).unwrap_or_default();
@@ -359,47 +433,120 @@ fn hold_dead_rover(
     }
 }
 
-/// Записывает время забега в таблицу рекордов.
-fn record_result(
-    survival: Res<SurvivalTime>,
-    mut records: ResMut<RecordsTable>,
-    mut result: ResMut<RunResult>,
-) {
-    let name = records.table.last_name.clone();
-    result.seconds = survival.0;
-    result.place = records.table.insert(&name, f64::from(survival.0));
-    if let (Some(_), Some(path)) = (result.place, records.path.as_deref())
-        && let Err(error) = records.table.save(path)
-    {
-        warn!("Рекорды: не записан {}: {error}", path.display());
+/// Итог забега: если время достойно таблицы, игрок вводит имя.
+fn prepare_result(survival: Res<SurvivalTime>, records: Res<RecordsTable>, mut result: ResMut<RunResult>) {
+    let place = records.table.place_for(f64::from(survival.0));
+    *result = RunResult {
+        seconds: survival.0,
+        place,
+        entry: place.map(|_| NameEntry::new(&records.table.last_name)),
+    };
+}
+
+/// Строка о месте в таблице.
+fn rank_line(place: Option<usize>) -> String {
+    match place {
+        Some(0) => "NEW RECORD!".to_string(),
+        Some(place) => format!("PLACE {}", place + 1),
+        None => format!("NOT IN TOP {}", records::MAX_RECORDS),
     }
 }
 
-/// Строки экрана конца забега: время, место и лучший результат.
-fn result_lines(seconds: f32, place: Option<usize>, best: Option<f64>) -> (String, String) {
-    let time = format!("TIME  {}", format_time(seconds));
-    let rank = match (place, best) {
-        (Some(0), _) => "NEW RECORD!".to_string(),
-        (Some(place), Some(best)) => format!("PLACE {}   BEST {}", place + 1, format_time(best as f32)),
-        (None, Some(best)) => format!("BEST {}", format_time(best as f32)),
-        (_, None) => String::new(),
-    };
-    (time, rank)
+/// Строка таблицы рекордов.
+fn table_row(place: usize, record: &Record) -> String {
+    format!("{:>2}. {}  {:>7}", place + 1, record.name, format_time(record.seconds as f32))
 }
 
-fn show_game_over(mut commands: Commands, result: Res<RunResult>, records: Res<RecordsTable>) {
-    let best = records.table.best().map(|record| record.seconds);
-    let (time, rank) = result_lines(result.seconds, result.place, best);
+/// Перерисовывает экран конца забега, когда итог изменился: ввод имени или таблица.
+fn draw_game_over(
+    mut commands: Commands,
+    result: Res<RunResult>,
+    records: Res<RecordsTable>,
+    old: Query<Entity, With<GameOverScreen>>,
+) {
+    if !result.is_changed() {
+        return;
+    }
+    for screen in &old {
+        commands.entity(screen).despawn();
+    }
     commands
         .spawn((GameOverScreen, screen_root(0.62)))
         .with_children(|screen| {
             screen.spawn(screen_line("ROVER LOST", 56.0, Color::srgb(1.0, 0.35, 0.25)));
-            screen.spawn(screen_line(time, 34.0, Color::WHITE));
-            if !rank.is_empty() {
-                screen.spawn(screen_line(rank, 26.0, TITLE_COLOR));
+            screen.spawn(screen_line(format!("TIME  {}", format_time(result.seconds)), 34.0, Color::WHITE));
+            screen.spawn(screen_line(rank_line(result.place), 26.0, TITLE_COLOR));
+
+            if let Some(entry) = &result.entry {
+                screen.spawn(screen_line("ENTER YOUR NAME", 22.0, Color::WHITE));
+                screen
+                    .spawn(Node {
+                        column_gap: Val::Px(14.0),
+                        ..default()
+                    })
+                    .with_children(|cells| {
+                        for (index, cell) in entry.cells.iter().enumerate() {
+                            let color = if index == entry.cursor { TITLE_COLOR } else { Color::WHITE };
+                            cells.spawn(screen_line(cell.unwrap_or('_').to_string(), 64.0, color));
+                        }
+                    });
+                screen.spawn(screen_line("LETTERS, DIGITS, BACKSPACE     ENTER - SAVE", 20.0, HINT_COLOR));
+                return;
             }
+
+            screen
+                .spawn(Node {
+                    flex_direction: FlexDirection::Column,
+                    row_gap: Val::Px(4.0),
+                    ..default()
+                })
+                .with_children(|table| {
+                    for (place, record) in records.table.records.iter().enumerate() {
+                        let color = if result.place == Some(place) { TITLE_COLOR } else { Color::WHITE };
+                        table.spawn(screen_line(table_row(place, record), 22.0, color));
+                    }
+                });
             screen.spawn(screen_line("ENTER - RESTART     ESC - MENU", 22.0, HINT_COLOR));
         });
+}
+
+/// Конец забега. Пока вводится имя: буквы, цифры, Backspace, Enter сохраняет результат.
+/// После этого Enter начинает новый забег, Esc возвращает в меню.
+fn game_over_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut result: ResMut<RunResult>,
+    mut records: ResMut<RecordsTable>,
+    mut world: RunWorld,
+) {
+    let enter = keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter]);
+    let escape = keys.just_pressed(KeyCode::Escape);
+
+    if let Some(mut entry) = result.entry.clone() {
+        for letter in keys.get_just_pressed().copied().filter_map(key_char) {
+            entry.type_char(letter);
+        }
+        if keys.just_pressed(KeyCode::Backspace) {
+            entry.backspace();
+        }
+        // Esc с недописанным именем сохраняет результат под прежним именем: рекорд не теряется.
+        let name = entry.name().or_else(|| escape.then(|| records.table.last_name.clone()));
+        if let (true, Some(name)) = (enter || escape, name) {
+            result.place = records.add(&name, result.seconds);
+            result.entry = None;
+        } else if result.entry.as_ref() != Some(&entry) {
+            result.entry = Some(entry);
+        }
+        if escape {
+            world.open_menu();
+        }
+        return;
+    }
+
+    if enter {
+        world.start_run();
+    } else if escape {
+        world.open_menu();
+    }
 }
 
 /// Пункты экрана паузы по порядку и их клавиши-подсказки.
@@ -491,31 +638,61 @@ fn highlight_pause_choice(choice: Res<PauseChoice>, mut items: Query<(&PauseItem
     }
 }
 
-/// Конец забега: Enter начинает новый забег, Esc возвращает в меню.
-fn game_over_input(keys: Res<ButtonInput<KeyCode>>, mut world: RunWorld) {
-    if keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter]) {
-        world.start_run();
-    } else if keys.just_pressed(KeyCode::Escape) {
-        world.open_menu();
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn result_shows_time_and_rank() {
-        assert_eq!(
-            result_lines(67.3, Some(0), Some(67.3)),
-            ("TIME  1:07.3".to_string(), "NEW RECORD!".to_string())
-        );
-        assert_eq!(
-            result_lines(30.0, Some(2), Some(187.25)),
-            ("TIME  0:30.0".to_string(), "PLACE 3   BEST 3:07.2".to_string())
-        );
-        assert_eq!(result_lines(5.0, None, Some(187.25)).1, "BEST 3:07.2");
-        assert_eq!(result_lines(5.0, None, None).1, "");
+    fn rank_line_names_the_place() {
+        assert_eq!(rank_line(Some(0)), "NEW RECORD!");
+        assert_eq!(rank_line(Some(2)), "PLACE 3");
+        assert_eq!(rank_line(None), "NOT IN TOP 10");
+    }
+
+    #[test]
+    fn table_row_is_aligned() {
+        let record = Record {
+            name: "IVA".to_string(),
+            seconds: 187.25,
+        };
+        assert_eq!(table_row(0, &record), " 1. IVA   3:07.2");
+        assert_eq!(table_row(9, &record), "10. IVA   3:07.2");
+    }
+
+    #[test]
+    fn name_entry_starts_with_default_and_types_over_it() {
+        let mut entry = NameEntry::new("lun");
+        assert_eq!(entry.name().as_deref(), Some("LUN"));
+        entry.type_char('i');
+        entry.type_char('?');
+        entry.type_char('v');
+        assert_eq!(entry.name().as_deref(), Some("IVN"));
+        entry.type_char('a');
+        entry.type_char('x');
+        assert_eq!(entry.name().as_deref(), Some("IVA"));
+    }
+
+    #[test]
+    fn backspace_clears_the_cell_and_incomplete_name_is_not_a_name() {
+        let mut entry = NameEntry::new("LUN");
+        entry.backspace();
+        assert_eq!(entry.name().as_deref(), Some("LUN"));
+        entry.type_char('A');
+        entry.type_char('B');
+        entry.backspace();
+        assert_eq!(entry.name(), None);
+        assert_eq!(entry.cursor, 1);
+        entry.type_char('7');
+        assert_eq!(entry.name().as_deref(), Some("A7N"));
+    }
+
+    #[test]
+    fn keys_give_letters_and_digits() {
+        assert_eq!(key_char(KeyCode::KeyA), Some('A'));
+        assert_eq!(key_char(KeyCode::KeyZ), Some('Z'));
+        assert_eq!(key_char(KeyCode::Digit0), Some('0'));
+        assert_eq!(key_char(KeyCode::Digit9), Some('9'));
+        assert_eq!(key_char(KeyCode::Space), None);
     }
 
     #[test]
