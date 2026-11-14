@@ -63,6 +63,10 @@ pub struct RoverMotion {
     pub up: Vec3,
 }
 
+/// Множитель скорости лунохода: меньше единицы — луноход едет медленнее, например при ремонте.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct SpeedFactor(pub f32);
+
 /// Плагин лунохода.
 pub struct RoverPlugin;
 
@@ -129,9 +133,9 @@ pub fn drive_rover(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     terrain: Res<Terrain>,
-    rover: Single<(&mut Transform, &mut RoverMotion), With<Rover>>,
+    rover: Single<(&mut Transform, &mut RoverMotion, Option<&SpeedFactor>), With<Rover>>,
 ) {
-    let (mut transform, mut motion) = rover.into_inner();
+    let (mut transform, mut motion, speed_factor) = rover.into_inner();
     let dt = time.delta_secs();
 
     let throttle = axis(&keys, [KeyCode::KeyW, KeyCode::ArrowUp], [KeyCode::KeyS, KeyCode::ArrowDown]);
@@ -146,7 +150,7 @@ pub fn drive_rover(
         -MAX_REVERSE_SPEED
     } else {
         0.0
-    };
+    } * speed_factor.map_or(1.0, |factor| factor.0);
     let accel = MAX_FORWARD_SPEED / ACCEL_TIME * dt;
     motion.speed += (target_speed - motion.speed).clamp(-accel, accel);
 

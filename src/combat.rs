@@ -72,8 +72,6 @@ impl Health {
         self.current = (self.current - amount.max(0.0)).clamp(0.0, self.max);
     }
 
-    // Лечение появится с ремонтом и аптечками.
-    #[allow(dead_code)]
     /// Добавляет здоровье, не поднимая его выше максимума. Погибшего не воскрешает.
     pub fn heal(&mut self, amount: f32) {
         if self.is_dead() {

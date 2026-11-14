@@ -9,6 +9,7 @@ use crate::enemy::{Enemy, EnemySpawned};
 use crate::explosion::Explosion;
 use crate::hq::{HqMemory, VoiceCue};
 use crate::music::{MusicState, Track};
+use crate::repair::{MedkitPicked, RepairChanged};
 use crate::rover::Rover;
 use crate::run::RunStarted;
 use crate::sound::PlaySound;
@@ -33,6 +34,7 @@ impl Plugin for AudioEventsPlugin {
                 voice_enemies,
                 sound_shots,
                 sound_explosions,
+                voice_repair,
                 music_follows_enemies,
             ),
         );
@@ -158,6 +160,30 @@ fn explosion_sound(power: f32) -> &'static str {
 fn sound_explosions(mut explosions: MessageReader<Explosion>, mut sounds: MessageWriter<PlaySound>) {
     for explosion in explosions.read() {
         sounds.write(PlaySound::at(explosion_sound(explosion.power), explosion.position));
+    }
+}
+
+/// Ремонт и аптечки: звук и короткие реплики лунохода.
+fn voice_repair(
+    mut repair: MessageReader<RepairChanged>,
+    mut picked: MessageReader<MedkitPicked>,
+    mut sounds: MessageWriter<PlaySound>,
+    mut cues: MessageWriter<VoiceCue>,
+) {
+    for change in repair.read() {
+        match change {
+            RepairChanged::Started => {
+                sounds.write(PlaySound::new("repair"));
+                cues.write(VoiceCue::new("repair_start"));
+            }
+            RepairChanged::Done => {
+                cues.write(VoiceCue::new("repair_done"));
+            }
+        }
+    }
+    for medkit in picked.read() {
+        sounds.write(PlaySound::at("pickup", medkit.position));
+        cues.write(VoiceCue::new("medkit"));
     }
 }
 

@@ -15,6 +15,7 @@ mod hud;
 mod mortar;
 mod music;
 mod records;
+mod repair;
 mod rover;
 mod run;
 mod sound;
@@ -60,6 +61,7 @@ fn main() {
             enemy::EnemyPlugin,
             weapons::WeaponsPlugin,
             run::RunPlugin,
+            repair::RepairPlugin,
         ))
         .add_plugins((
             voice::VoicePlugin,
