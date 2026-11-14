@@ -17,6 +17,7 @@ mod sound;
 mod sound_list;
 mod terrain;
 mod vehicle;
+mod weapons;
 mod voice;
 
 use bevy::prelude::*;
@@ -45,6 +46,7 @@ fn main() {
             hud::HudPlugin,
             bullet::BulletPlugin,
             enemy::EnemyPlugin,
+            weapons::WeaponsPlugin,
         ))
         .add_plugins((
             voice::VoicePlugin,

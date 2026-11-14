@@ -1,9 +1,11 @@
-//! Интерфейс во время забега: полоса здоровья слева сверху и время выживания по центру.
+//! Интерфейс во время забега: полоса здоровья слева сверху, время выживания по центру
+//! и выбранное оружие справа сверху.
 
 use bevy::prelude::*;
 
 use crate::combat::{Health, SurvivalTime};
 use crate::rover::Rover;
+use crate::weapons::CurrentWeapon;
 
 /// Отступ интерфейса от краёв окна.
 const MARGIN: f32 = 16.0;
@@ -20,7 +22,7 @@ pub struct HudPlugin;
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_hud)
-            .add_systems(Update, (update_health_bar, update_time));
+            .add_systems(Update, (update_health_bar, update_time, update_weapon));
     }
 }
 
@@ -35,6 +37,10 @@ struct HealthText;
 /// Текст времени выживания.
 #[derive(Component)]
 struct TimeText;
+
+/// Название выбранного оружия.
+#[derive(Component)]
+struct WeaponText;
 
 fn spawn_hud(mut commands: Commands) {
     // Полоса здоровья.
@@ -104,6 +110,33 @@ fn spawn_hud(mut commands: Commands) {
                 BackgroundColor(PANEL_COLOR),
             ));
         });
+
+    // Выбранное оружие.
+    commands.spawn((
+        WeaponText,
+        Text::new(""),
+        TextFont {
+            font_size: FontSize::Px(18.0),
+            ..default()
+        },
+        TextColor(Color::WHITE),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(MARGIN),
+            right: Val::Px(MARGIN),
+            padding: UiRect::axes(Val::Px(12.0), Val::Px(6.0)),
+            ..default()
+        },
+        BackgroundColor(PANEL_COLOR),
+    ));
+}
+
+fn update_weapon(weapon: Res<CurrentWeapon>, mut text: Query<&mut Text, With<WeaponText>>) {
+    for mut text in &mut text {
+        if text.0 != weapon.name() {
+            text.0 = weapon.name().to_string();
+        }
+    }
 }
 
 /// Цвет полосы: зелёный при полном здоровье, жёлтый на половине, красный у нуля.
