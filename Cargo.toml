@@ -8,6 +8,14 @@ publish = false
 
 [dependencies]
 bevy = "0.20.1"
+# GPU-частицы: взрывы, дым, искры. В браузере требует WebGPU.
+bevy_hanabi = "0.20"
+# Тряска камеры при взрывах.
+bevy_trauma_shake = "0.9"
+# Шум для генерации ландшафта от сида.
+noise = "0.9"
+# HTTP-запросы к ElevenLabs, один код для native и браузера.
+ehttp = "0.7"
 
 # Bevy и её зависимости берут случайные числа через getrandom, в браузере нужен бэкенд wasm_js.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
