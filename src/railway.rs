@@ -107,6 +107,8 @@ impl Lines {
         (self.point(line, s + 0.5) - self.point(line, s - 0.5)).normalize_or(Vec2::X)
     }
 
+    // Нужно поездам и крестам на пересечениях (задачи 2.1 и 4.1).
+    #[allow(dead_code)]
     /// Параметр пути для точки плана: координата вдоль оси семейства.
     pub fn param(line: LineId, p: Vec2) -> f32 {
         match line.family {
@@ -166,6 +168,8 @@ impl Lines {
         found
     }
 
+    // Нужно поездам и крестам на пересечениях (задачи 2.1 и 4.1).
+    #[allow(dead_code)]
     /// Пересечение линии вдоль X номер `a` с линией вдоль Z номер `b`.
     pub fn intersection(&self, a: i32, b: i32) -> Vec2 {
         let la = LineId {

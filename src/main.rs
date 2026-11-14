@@ -26,6 +26,7 @@ mod obstacles;
 mod music;
 mod pickups;
 mod props;
+mod rails;
 mod railway;
 mod records;
 mod repair;
@@ -78,6 +79,7 @@ fn main() {
             laser::LaserPlugin,
             airstrike::AirstrikePlugin,
             pickups::PickupsPlugin,
+            rails::RailsPlugin,
         ))
         .add_plugins((
             TerrainPlugin,
