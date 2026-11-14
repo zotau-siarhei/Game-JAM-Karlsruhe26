@@ -11,6 +11,9 @@
 - `openspec/changes/` — изменения в работе: `proposal.md`, `design.md`, `tasks.md` и дельты спецификаций.
 - `assets/voice/`, `assets/sfx/`, `assets/music/` — реплики, звуки и музыка: список JSON и mp3 рядом.
   Формат и соглашение о вариантах — в `assets/voice/README.md`.
+- Урон — только сообщением `Damage { target, amount, source_team }` из `src/combat.rs`; здоровье
+  напрямую не менять. Гибель приходит сообщением `Died`. Время забега — ресурс `SurvivalTime`.
+- Озвучка игровых событий собрана в `src/audio_events.rs`: новое событие озвучивается там.
 - Звук из кода — только сообщениями и ресурсами, файлы напрямую не грузить:
   - повод для реплики: `VoiceCue::new("house_destroyed")` (`src/hq.rs`), тон штаба — ресурс `HqTone`;
   - звуковой эффект: `PlaySound::at("explosion", position)` или `PlaySound::new("ui_click")` (`src/sound.rs`);

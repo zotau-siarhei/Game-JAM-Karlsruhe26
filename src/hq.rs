@@ -54,8 +54,6 @@ impl Plugin for HqPlugin {
 pub struct VoiceCue(pub String);
 
 impl VoiceCue {
-    // Игровых событий, которые сообщают поводы, пока нет.
-    #[allow(dead_code)]
     pub fn new(base: impl Into<String>) -> Self {
         Self(base.into())
     }

@@ -55,7 +55,7 @@ impl Plugin for MusicPlugin {
 }
 
 /// Что должно звучать.
-// Состояний игры, которые переключают треки, пока нет.
+// Меню, бой и босс появятся с экранами и волнами.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Track {
