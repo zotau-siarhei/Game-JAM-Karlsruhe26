@@ -24,7 +24,7 @@ pub struct Explosion {
     pub source_team: Team,
 }
 
-/// Плагин взрывов: регистрирует сообщение и пишет взрывы в лог.
+/// Плагин взрывов: регистрирует сообщение и пишет взрывы в отладочный лог.
 pub struct ExplosionPlugin;
 
 impl Plugin for ExplosionPlugin {
@@ -34,10 +34,10 @@ impl Plugin for ExplosionPlugin {
     }
 }
 
-/// Пишет каждый взрыв в лог: пока на сообщение больше никто не подписан.
+/// Пишет каждый взрыв в отладочный лог: видно при `RUST_LOG=lunokhod=debug`.
 fn log_explosions(mut explosions: MessageReader<Explosion>) {
     for e in explosions.read() {
-        info!(
+        debug!(
             "Взрыв в ({:.1}, {:.1}, {:.1}), радиус {:.1} м, мощность {:.2}",
             e.position.x, e.position.y, e.position.z, e.radius, e.power
         );

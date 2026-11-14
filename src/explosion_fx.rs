@@ -1,0 +1,667 @@
+//! Эффекты взрыва: вспышка света, огненный шар и кольцо ударной волны с пылью.
+//!
+//! На каждое сообщение `Explosion` создаётся одна корневая сущность `ExplosionFx` с дочерними
+//! слоями. Каждый слой анимируется по возрасту корня, корень удаляется по таймеру вместе со
+//! слоями. Все слои масштабируются по мощности взрыва и получают случайный разброс, поэтому
+//! два взрыва в одном месте выглядят по-разному.
+//!
+//! | Слой | Чем сделан | Время |
+//! |---|---|---|
+//! | Вспышка | `PointLight` без теней, яркость гаснет по экспоненте | 0–0,15 с |
+//! | Огненный шар | несколько неосвещённых сфер, растут, желтеют, краснеют и темнеют; поверх частицы огня | 0–0,7 с |
+//! | Ударная волна | кольцо, лежащее на рельефе, быстро расходится и тает; по краю частицы пыли | 0–0,4 с |
+
+use bevy::camera::visibility::NoFrustumCulling;
+use bevy::mesh::{Indices, PrimitiveTopology};
+use bevy::prelude::*;
+use bevy::render::render_resource::Face;
+use bevy_hanabi::prelude::*;
+
+use crate::explosion::Explosion;
+use crate::run::RunScoped;
+use crate::terrain::Terrain;
+
+/// Сколько живёт корень взрыва, с: дольше всех слоёв, включая частицы пыли.
+const FX_LIFETIME: f32 = 1.6;
+
+/// Пиковая яркость вспышки при мощности 1, лм.
+const FLASH_PEAK: f32 = 3.0e7;
+/// Постоянная затухания вспышки, с: за 0,15 с яркость падает примерно в 40 раз.
+const FLASH_DECAY: f32 = 0.04;
+/// Сколько горит вспышка, с.
+const FLASH_TIME: f32 = 0.15;
+/// Дальность света вспышки в радиусах взрыва.
+const FLASH_RANGE: f32 = 8.0;
+/// Высота вспышки над точкой взрыва, м: чтобы свет падал на склоны вокруг, а не только в чашу.
+const FLASH_HEIGHT: f32 = 2.0;
+/// Цвет вспышки: тёплый белый.
+const FLASH_COLOR: Color = Color::srgb(1.0, 0.85, 0.6);
+
+/// Сколько живёт огненный шар, с.
+const FIREBALL_TIME: f32 = 0.7;
+/// Наибольший радиус огненного шара в радиусах взрыва.
+const FIREBALL_SIZE: f32 = 0.55;
+/// С какой доли наибольшего радиуса шар начинает расти.
+const FIREBALL_START: f32 = 0.2;
+/// Насколько шар поднимается за свою жизнь, м.
+const FIREBALL_RISE: f32 = 1.5;
+/// Сколько сфер в огненном шаре: от и до.
+const FIREBALL_BLOBS: (u32, u32) = (3, 5);
+
+/// Цвет огненного шара по доле его жизни: от жёлто-белого через оранжевый к тёмному дыму.
+const FIREBALL_COLORS: [(f32, [f32; 4]); 5] = [
+    (0.0, [1.0, 0.97, 0.85, 1.0]),
+    (0.15, [1.0, 0.78, 0.32, 1.0]),
+    (0.35, [0.95, 0.42, 0.08, 0.95]),
+    (0.65, [0.32, 0.16, 0.08, 0.75]),
+    (1.0, [0.12, 0.11, 0.1, 0.0]),
+];
+
+/// Сколько расходится ударная волна, с.
+const SHOCK_TIME: f32 = 0.4;
+/// До какого радиуса доходит волна, в радиусах взрыва.
+const SHOCK_REACH: f32 = 2.4;
+/// Ширина кольца в начале и в конце, м.
+const SHOCK_WIDTH: (f32, f32) = (0.5, 1.6);
+/// Непрозрачность кольца в начале.
+const SHOCK_ALPHA: f32 = 0.7;
+/// Подъём кольца над рельефом, м: чтобы не мерцало с поверхностью.
+const SHOCK_LIFT: f32 = 0.08;
+/// Число сегментов кольца.
+const SHOCK_SEGMENTS: usize = 72;
+/// Цвет кольца: светлая пыль.
+const SHOCK_COLOR: [f32; 3] = [0.9, 0.85, 0.75];
+
+/// Частиц огня на взрыв мощности 1.
+const FIRE_PARTICLES: f32 = 60.0;
+/// Частиц пыли ударной волны на взрыв мощности 1.
+const DUST_PARTICLES: f32 = 90.0;
+
+/// Плагин эффектов взрыва.
+pub struct ExplosionFxPlugin;
+
+impl Plugin for ExplosionFxPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_plugins(HanabiPlugin)
+            .add_systems(Startup, create_assets)
+            .add_systems(
+                Update,
+                (
+                    spawn_explosions,
+                    age_explosions,
+                    animate_flash,
+                    animate_fireball,
+                    animate_shockwave,
+                )
+                    .chain(),
+            );
+    }
+}
+
+/// Корень взрыва: возраст и параметры, по которым анимируются слои.
+#[derive(Component)]
+struct ExplosionFx {
+    /// Сколько прошло с взрыва, с.
+    age: f32,
+    /// Центр взрыва.
+    center: Vec3,
+    /// Мощность взрыва.
+    power: f32,
+}
+
+/// Слой «вспышка».
+#[derive(Component)]
+struct FlashLayer;
+
+/// Одна сфера огненного шара.
+#[derive(Component)]
+struct FireballBlob {
+    /// Смещение от центра шара при наибольшем радиусе.
+    offset: Vec3,
+    /// Масштаб сферы по осям при наибольшем радиусе.
+    size: Vec3,
+    /// Задержка появления, с: сферы раздуваются не одновременно.
+    delay: f32,
+}
+
+/// Слой «ударная волна»: кольцо, которое каждый кадр кладётся на рельеф.
+#[derive(Component)]
+struct ShockwaveLayer {
+    /// Наибольший радиус волны, м.
+    reach: f32,
+}
+
+/// Общие ресурсы эффектов: создаются один раз при старте.
+#[derive(Resource)]
+struct ExplosionFxAssets {
+    sphere: Handle<Mesh>,
+    fire: Handle<EffectAsset>,
+    dust: Handle<EffectAsset>,
+}
+
+/// Яркость вспышки в момент `age`, лм.
+pub fn flash_intensity(age: f32, power: f32) -> f32 {
+    if age >= FLASH_TIME {
+        return 0.0;
+    }
+    FLASH_PEAK * power * (-age / FLASH_DECAY).exp()
+}
+
+/// Радиус огненного шара по доле жизни `t` в долях наибольшего: быстро растёт и замедляется.
+pub fn fireball_growth(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    FIREBALL_START + (1.0 - FIREBALL_START) * (1.0 - (1.0 - t).powi(3))
+}
+
+/// Цвет огненного шара по доле жизни `t`, линейно между ключами `FIREBALL_COLORS`.
+pub fn fireball_color(t: f32) -> [f32; 4] {
+    let t = t.clamp(0.0, 1.0);
+    let keys = &FIREBALL_COLORS;
+    let i = keys
+        .windows(2)
+        .position(|w| t <= w[1].0)
+        .unwrap_or(keys.len() - 2);
+    let (t0, a) = keys[i];
+    let (t1, b) = keys[i + 1];
+    let k = (t - t0) / (t1 - t0);
+    std::array::from_fn(|c| a[c] + (b[c] - a[c]) * k)
+}
+
+/// Радиус, ширина и непрозрачность кольца ударной волны по доле жизни `t`.
+pub fn shockwave_shape(t: f32, reach: f32) -> (f32, f32, f32) {
+    let t = t.clamp(0.0, 1.0);
+    let radius = reach * (1.0 - (1.0 - t).powi(2));
+    let width = SHOCK_WIDTH.0 + (SHOCK_WIDTH.1 - SHOCK_WIDTH.0) * t;
+    let alpha = SHOCK_ALPHA * (1.0 - t).powf(1.5);
+    (radius, width, alpha)
+}
+
+/// Простой генератор случайных чисел для разброса: xorshift от сида взрыва.
+struct Rng(u32);
+
+impl Rng {
+    fn new(seed: u32) -> Self {
+        Self(seed.max(1))
+    }
+
+    fn next_u32(&mut self) -> u32 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.0 = x;
+        x
+    }
+
+    /// Случайное число от `min` до `max`.
+    fn range(&mut self, min: f32, max: f32) -> f32 {
+        let unit = (self.next_u32() >> 8) as f32 / (1u32 << 24) as f32;
+        min + (max - min) * unit
+    }
+}
+
+/// Сид взрыва из его позиции и времени: разный у двух взрывов в одной точке.
+fn explosion_seed(position: Vec3, elapsed: f32) -> u32 {
+    let mut h = 0x9e37_79b9u32;
+    for bits in [
+        position.x.to_bits(),
+        position.y.to_bits(),
+        position.z.to_bits(),
+        elapsed.to_bits(),
+    ] {
+        h = (h ^ bits).wrapping_mul(0x85eb_ca6b);
+        h ^= h >> 13;
+    }
+    h
+}
+
+/// Создаёт сферу огненного шара и шаблоны частиц.
+fn create_assets(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut effects: ResMut<Assets<EffectAsset>>,
+) {
+    commands.insert_resource(ExplosionFxAssets {
+        sphere: meshes.add(
+            Sphere::new(1.0)
+                .mesh()
+                .ico(3)
+                .expect("сфера огненного шара"),
+        ),
+        fire: effects.add(fire_effect()),
+        dust: effects.add(dust_effect()),
+    });
+}
+
+/// Частицы огня: разлетаются из центра, тормозят, поднимаются и темнеют.
+fn fire_effect() -> EffectAsset {
+    let writer = ExprWriter::new();
+    let power = writer.add_property("power", Value::Scalar(1.0.into()));
+
+    let init_pos = SetPositionSphereModifier {
+        center: writer.lit(Vec3::ZERO).expr(),
+        radius: (writer.lit(0.8) * writer.prop(power)).expr(),
+        dimension: ShapeDimension::Volume,
+    };
+    let init_vel = SetVelocitySphereModifier {
+        center: writer.lit(Vec3::ZERO).expr(),
+        speed: (writer.lit(5.0).uniform(writer.lit(12.0)) * writer.prop(power)).expr(),
+    };
+    let init_lifetime = SetAttributeModifier::new(
+        Attribute::LIFETIME,
+        writer.lit(0.35).uniform(writer.lit(0.7)).expr(),
+    );
+    let init_age = SetAttributeModifier::new(Attribute::AGE, writer.lit(0.0).expr());
+    let update_drag = LinearDragModifier::new(writer.lit(5.0).expr());
+    let update_rise = AccelModifier::new(writer.lit(Vec3::Y * 4.0).expr());
+    // Без текстуры частица — квадрат, скругляем до круга.
+    let round = RoundModifier {
+        roundness: writer.lit(1.0).expr(),
+    };
+
+    let mut color = bevy_hanabi::Gradient::new();
+    color.add_key(0.0, Vec4::new(1.0, 0.95, 0.7, 1.0));
+    color.add_key(0.3, Vec4::new(1.0, 0.55, 0.12, 0.9));
+    color.add_key(0.7, Vec4::new(0.6, 0.18, 0.04, 0.5));
+    color.add_key(1.0, Vec4::new(0.1, 0.05, 0.02, 0.0));
+
+    let mut size = bevy_hanabi::Gradient::new();
+    size.add_key(0.0, Vec3::splat(0.6));
+    size.add_key(0.4, Vec3::splat(1.5));
+    size.add_key(1.0, Vec3::splat(0.5));
+
+    EffectAsset::new(
+        256,
+        SpawnerSettings::once(FIRE_PARTICLES.into()),
+        writer.finish(),
+    )
+    .with_name("explosion_fire")
+    .with_alpha_mode(bevy_hanabi::AlphaMode::Add)
+    .init(init_pos)
+    .init(init_vel)
+    .init(init_lifetime)
+    .init(init_age)
+    .update(update_drag)
+    .update(update_rise)
+    .render(OrientModifier::new(OrientMode::FaceCameraPosition))
+    .render(round)
+    .render(ColorOverLifetimeModifier {
+        gradient: color,
+        blend: ColorBlendMode::Overwrite,
+        mask: ColorBlendMask::RGBA,
+    })
+    .render(SizeOverLifetimeModifier {
+        gradient: size,
+        screen_space_size: false,
+    })
+}
+
+/// Частицы пыли ударной волны: разлетаются по кругу у земли, тормозят и оседают.
+fn dust_effect() -> EffectAsset {
+    let writer = ExprWriter::new();
+    let power = writer.add_property("power", Value::Scalar(1.0.into()));
+
+    let init_pos = SetPositionCircleModifier {
+        center: writer.lit(Vec3::Y * 0.3).expr(),
+        axis: writer.lit(Vec3::Y).expr(),
+        radius: (writer.lit(1.0) * writer.prop(power)).expr(),
+        dimension: ShapeDimension::Volume,
+    };
+    let init_vel = SetVelocityCircleModifier {
+        center: writer.lit(Vec3::ZERO).expr(),
+        axis: writer.lit(Vec3::Y).expr(),
+        speed: (writer.lit(16.0).uniform(writer.lit(28.0)) * writer.prop(power)).expr(),
+    };
+    let init_lifetime = SetAttributeModifier::new(
+        Attribute::LIFETIME,
+        writer.lit(0.6).uniform(writer.lit(1.1)).expr(),
+    );
+    let init_age = SetAttributeModifier::new(Attribute::AGE, writer.lit(0.0).expr());
+    let update_drag = LinearDragModifier::new(writer.lit(4.0).expr());
+    let update_rise = AccelModifier::new(writer.lit(Vec3::Y * 1.5).expr());
+    let round = RoundModifier {
+        roundness: writer.lit(1.0).expr(),
+    };
+
+    let mut color = bevy_hanabi::Gradient::new();
+    color.add_key(0.0, Vec4::new(0.75, 0.66, 0.52, 0.0));
+    color.add_key(0.1, Vec4::new(0.75, 0.66, 0.52, 0.6));
+    color.add_key(0.6, Vec4::new(0.6, 0.53, 0.43, 0.35));
+    color.add_key(1.0, Vec4::new(0.5, 0.45, 0.38, 0.0));
+
+    let mut size = bevy_hanabi::Gradient::new();
+    size.add_key(0.0, Vec3::splat(0.6));
+    size.add_key(1.0, Vec3::splat(2.4));
+
+    EffectAsset::new(
+        256,
+        SpawnerSettings::once(DUST_PARTICLES.into()),
+        writer.finish(),
+    )
+    .with_name("explosion_dust")
+    .init(init_pos)
+    .init(init_vel)
+    .init(init_lifetime)
+    .init(init_age)
+    .update(update_drag)
+    .update(update_rise)
+    .render(OrientModifier::new(OrientMode::FaceCameraPosition))
+    .render(round)
+    .render(ColorOverLifetimeModifier {
+        gradient: color,
+        blend: ColorBlendMode::Overwrite,
+        mask: ColorBlendMask::RGBA,
+    })
+    .render(SizeOverLifetimeModifier {
+        gradient: size,
+        screen_space_size: false,
+    })
+}
+
+/// Неосвещённый полупрозрачный материал, видимый с обеих сторон.
+fn unlit_material(color: Color) -> StandardMaterial {
+    StandardMaterial {
+        base_color: color,
+        unlit: true,
+        alpha_mode: bevy::prelude::AlphaMode::Blend,
+        cull_mode: None::<Face>,
+        ..default()
+    }
+}
+
+/// Создаёт корень взрыва со всеми слоями на каждое сообщение `Explosion`.
+fn spawn_explosions(
+    mut commands: Commands,
+    time: Res<Time>,
+    assets: Res<ExplosionFxAssets>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut explosions: MessageReader<Explosion>,
+) {
+    for (index, e) in explosions.read().enumerate() {
+        let seed = explosion_seed(e.position, time.elapsed_secs() + index as f32);
+        let mut rng = Rng::new(seed);
+        let power = e.power.max(0.05);
+        let scale = power.sqrt();
+
+        let root = commands
+            .spawn((
+                ExplosionFx {
+                    age: 0.0,
+                    center: e.position,
+                    power,
+                },
+                Transform::from_translation(e.position),
+                Visibility::default(),
+                RunScoped,
+            ))
+            .id();
+
+        // Вспышка.
+        commands.spawn((
+            FlashLayer,
+            PointLight {
+                color: FLASH_COLOR,
+                intensity: flash_intensity(0.0, power),
+                range: e.radius * FLASH_RANGE * scale,
+                shadow_maps_enabled: false,
+                ..default()
+            },
+            Transform::from_xyz(0.0, FLASH_HEIGHT * scale, 0.0),
+            ChildOf(root),
+        ));
+
+        // Огненный шар из нескольких сфер с общим материалом.
+        let fireball = materials.add(unlit_material(Color::srgba(1.0, 0.97, 0.85, 1.0)));
+        let max_radius = e.radius * FIREBALL_SIZE * scale;
+        let blobs = rng.range(FIREBALL_BLOBS.0 as f32, FIREBALL_BLOBS.1 as f32 + 0.999) as u32;
+        for i in 0..blobs {
+            let (offset, size, delay) = if i == 0 {
+                // Главная сфера в центре, чуть приплюснутая.
+                let r = max_radius * rng.range(0.85, 1.1);
+                (Vec3::ZERO, Vec3::new(r, r * rng.range(0.75, 0.95), r), 0.0)
+            } else {
+                let angle = rng.range(0.0, std::f32::consts::TAU);
+                let dist = max_radius * rng.range(0.4, 0.75);
+                let offset = Vec3::new(
+                    angle.cos() * dist,
+                    max_radius * rng.range(0.0, 0.5),
+                    angle.sin() * dist,
+                );
+                let r = max_radius * rng.range(0.45, 0.7);
+                (offset, Vec3::splat(r), rng.range(0.0, 0.08))
+            };
+            commands.spawn((
+                FireballBlob {
+                    offset,
+                    size,
+                    delay,
+                },
+                Mesh3d(assets.sphere.clone()),
+                MeshMaterial3d(fireball.clone()),
+                Transform::from_scale(Vec3::splat(0.001)),
+                bevy::light::NotShadowCaster,
+                ChildOf(root),
+            ));
+        }
+
+        // Огонь и пыль частицами, у каждого взрыва свой сид разброса.
+        let properties = EffectProperties::default()
+            .with_properties([("power".to_string(), Value::Scalar(scale.into()))]);
+        for (effect, salt) in [(&assets.fire, 1u32), (&assets.dust, 2u32)] {
+            commands.spawn((
+                ParticleEffect {
+                    prng_seed: Some(seed.wrapping_add(salt)),
+                    ..ParticleEffect::new(effect.clone())
+                },
+                properties.clone(),
+                Transform::default(),
+                ChildOf(root),
+            ));
+        }
+
+        // Кольцо ударной волны. Меш свой у каждого взрыва: вершины кладутся на рельеф.
+        commands.spawn((
+            ShockwaveLayer {
+                reach: e.radius * SHOCK_REACH * scale * rng.range(0.9, 1.1),
+            },
+            Mesh3d(meshes.add(ring_mesh())),
+            MeshMaterial3d(materials.add(unlit_material(Color::srgba(
+                SHOCK_COLOR[0],
+                SHOCK_COLOR[1],
+                SHOCK_COLOR[2],
+                SHOCK_ALPHA,
+            )))),
+            Transform::default(),
+            bevy::light::NotShadowCaster,
+            // Вершины меняются каждый кадр, а границы меша нет.
+            NoFrustumCulling,
+            ChildOf(root),
+        ));
+    }
+}
+
+/// Пустое кольцо нужной топологии: вершины заполняет `animate_shockwave`.
+fn ring_mesh() -> Mesh {
+    let vertices = (SHOCK_SEGMENTS + 1) * 2;
+    let mut indices = Vec::with_capacity(SHOCK_SEGMENTS * 6);
+    for i in 0..SHOCK_SEGMENTS as u32 {
+        let (inner, outer) = (i * 2, i * 2 + 1);
+        let (next_inner, next_outer) = (inner + 2, outer + 2);
+        indices.extend_from_slice(&[inner, outer, next_outer, inner, next_outer, next_inner]);
+    }
+    Mesh::new(PrimitiveTopology::TriangleList, default())
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0f32; 3]; vertices])
+        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0f32, 1.0, 0.0]; vertices])
+        .with_inserted_indices(Indices::U32(indices))
+}
+
+/// Старит взрывы и удаляет отыгравшие вместе со слоями.
+fn age_explosions(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut roots: Query<(Entity, &mut ExplosionFx)>,
+) {
+    for (entity, mut fx) in &mut roots {
+        fx.age += time.delta_secs();
+        if fx.age >= FX_LIFETIME {
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
+/// Гасит вспышку по экспоненте.
+fn animate_flash(
+    roots: Query<&ExplosionFx>,
+    mut lights: Query<(&ChildOf, &mut PointLight), With<FlashLayer>>,
+) {
+    for (parent, mut light) in &mut lights {
+        if let Ok(fx) = roots.get(parent.parent()) {
+            light.intensity = flash_intensity(fx.age, fx.power);
+        }
+    }
+}
+
+/// Раздувает сферы огненного шара, поднимает его и меняет цвет к тёмному дыму.
+fn animate_fireball(
+    roots: Query<&ExplosionFx>,
+    mut blobs: Query<(
+        &ChildOf,
+        &FireballBlob,
+        &MeshMaterial3d<StandardMaterial>,
+        &mut Transform,
+        &mut Visibility,
+    )>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    for (parent, blob, material, mut transform, mut visibility) in &mut blobs {
+        let Ok(fx) = roots.get(parent.parent()) else {
+            continue;
+        };
+        let t = ((fx.age - blob.delay) / FIREBALL_TIME).max(0.0);
+        if t >= 1.0 {
+            *visibility = Visibility::Hidden;
+            continue;
+        }
+        let growth = fireball_growth(t);
+        transform.translation = blob.offset * growth + Vec3::Y * FIREBALL_RISE * t;
+        transform.scale = blob.size * growth;
+        // У всех сфер одного взрыва материал общий, цвет по главной сфере.
+        if blob.delay == 0.0
+            && let Some(mut material) = materials.get_mut(&material.0)
+        {
+            let [r, g, b, a] = fireball_color(t);
+            material.base_color = Color::srgba(r, g, b, a);
+        }
+    }
+}
+
+/// Расширяет кольцо ударной волны, кладёт его на рельеф и растворяет.
+fn animate_shockwave(
+    terrain: Res<Terrain>,
+    roots: Query<&ExplosionFx>,
+    mut rings: Query<(
+        &ChildOf,
+        &ShockwaveLayer,
+        &Mesh3d,
+        &MeshMaterial3d<StandardMaterial>,
+        &mut Visibility,
+    )>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    for (parent, ring, mesh, material, mut visibility) in &mut rings {
+        let Ok(fx) = roots.get(parent.parent()) else {
+            continue;
+        };
+        let t = fx.age / SHOCK_TIME;
+        if t >= 1.0 {
+            *visibility = Visibility::Hidden;
+            continue;
+        }
+        let (radius, width, alpha) = shockwave_shape(t, ring.reach);
+        let inner = (radius - width * 0.5).max(0.0);
+        let outer = radius + width * 0.5;
+
+        if let Some(mut mesh) = meshes.get_mut(&mesh.0) {
+            let center = fx.center;
+            let positions: Vec<[f32; 3]> = (0..=SHOCK_SEGMENTS)
+                .flat_map(|i| {
+                    let dir =
+                        Vec2::from_angle(i as f32 / SHOCK_SEGMENTS as f32 * std::f32::consts::TAU);
+                    [inner, outer].map(|r| {
+                        let p = dir * r;
+                        let y = terrain.height_at(center.x + p.x, center.z + p.y) - center.y;
+                        [p.x, y + SHOCK_LIFT, p.y]
+                    })
+                })
+                .collect();
+            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+        }
+        if let Some(mut material) = materials.get_mut(&material.0) {
+            material.base_color =
+                Color::srgba(SHOCK_COLOR[0], SHOCK_COLOR[1], SHOCK_COLOR[2], alpha);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flash_fades_out_quickly() {
+        let peak = flash_intensity(0.0, 1.0);
+        assert!(flash_intensity(0.05, 1.0) < peak * 0.4);
+        assert!(flash_intensity(0.14, 1.0) < peak * 0.05);
+        assert_eq!(flash_intensity(FLASH_TIME, 1.0), 0.0);
+        assert!(flash_intensity(0.0, 2.0) > peak);
+    }
+
+    #[test]
+    fn fireball_grows_and_darkens() {
+        let mut previous_size = 0.0;
+        let mut previous_brightness = f32::MAX;
+        for step in 0..=10 {
+            let t = step as f32 / 10.0;
+            let size = fireball_growth(t);
+            let [r, g, b, _] = fireball_color(t);
+            let brightness = r + g + b;
+            assert!(size >= previous_size, "шар не должен сжиматься: t = {t}");
+            assert!(
+                brightness <= previous_brightness,
+                "шар не должен светлеть: t = {t}"
+            );
+            previous_size = size;
+            previous_brightness = brightness;
+        }
+        assert_eq!(fireball_color(0.0), FIREBALL_COLORS[0].1);
+        assert_eq!(
+            fireball_color(1.0)[3],
+            0.0,
+            "к концу шар полностью растворяется"
+        );
+        assert!((fireball_growth(1.0) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn shockwave_expands_and_fades() {
+        let (r0, _, a0) = shockwave_shape(0.0, 12.0);
+        let (r_mid, _, a_mid) = shockwave_shape(0.5, 12.0);
+        let (r1, _, a1) = shockwave_shape(1.0, 12.0);
+        assert_eq!(r0, 0.0);
+        assert!(r_mid > 12.0 * 0.5, "волна быстро уходит вперёд");
+        assert!((r1 - 12.0).abs() < 1e-5);
+        assert!(a0 > a_mid && a_mid > a1);
+        assert_eq!(a1, 0.0);
+    }
+
+    #[test]
+    fn explosions_in_same_place_get_different_seeds() {
+        let p = Vec3::new(3.0, 1.0, -7.0);
+        assert_ne!(explosion_seed(p, 10.0), explosion_seed(p, 11.0));
+        let mut a = Rng::new(explosion_seed(p, 10.0));
+        let mut b = Rng::new(explosion_seed(p, 11.0));
+        assert_ne!(a.range(0.0, 1.0), b.range(0.0, 1.0));
+    }
+}

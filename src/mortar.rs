@@ -12,7 +12,7 @@ use crate::aim::{self, AimPoint};
 use crate::combat::{Health, Team};
 use crate::explosion::Explosion;
 use crate::rover::Rover;
-use crate::run::GameState;
+use crate::run::{GameState, RunScoped};
 use crate::terrain::Terrain;
 use crate::weapons::CurrentWeapon;
 
@@ -259,6 +259,7 @@ fn fire(
             Transform::from_translation(impact),
             // Вершины ложатся на рельеф каждый кадр, а границы меша нет.
             NoFrustumCulling,
+            RunScoped,
         ))
         .id();
     commands.spawn((
@@ -270,6 +271,7 @@ fn fire(
         Mesh3d(assets.shell_mesh.clone()),
         MeshMaterial3d(assets.shell_material.clone()),
         Transform::from_translation(muzzle),
+        RunScoped,
     ));
     commands.spawn((
         MuzzleFlash::default(),
@@ -283,6 +285,7 @@ fn fire(
             shadow_maps_enabled: false,
             ..default()
         },
+        RunScoped,
     ));
 }
 

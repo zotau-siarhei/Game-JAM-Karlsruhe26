@@ -11,6 +11,7 @@ mod combat;
 mod craters;
 mod enemy;
 mod explosion;
+mod explosion_fx;
 mod hq;
 mod hud;
 mod mortar;
@@ -54,6 +55,7 @@ fn main() {
             CameraPlugin,
             aim::AimPlugin,
             explosion::ExplosionPlugin,
+            explosion_fx::ExplosionFxPlugin,
             mortar::MortarPlugin,
             craters::CratersPlugin,
             settlements::SettlementsPlugin,
