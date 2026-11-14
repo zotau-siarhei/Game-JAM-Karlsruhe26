@@ -161,6 +161,11 @@ impl SoundList {
         self.iter()
             .filter(move |loaded| loaded.sound.is_some() && base_id(&loaded.entry.id) == base)
     }
+
+    /// Есть ли в списке записи группы, пусть даже без звуковых файлов.
+    pub fn has_group(&self, base: &str) -> bool {
+        self.iter().any(|loaded| base_id(&loaded.entry.id) == base)
+    }
 }
 
 /// Маленький генератор случайных чисел для выбора вариантов и разброса высоты звука.

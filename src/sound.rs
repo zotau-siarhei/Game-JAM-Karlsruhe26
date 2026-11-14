@@ -12,6 +12,8 @@
 //! Идентификатор — основа группы: `explosion` выбирает случайный из `explosion`, `explosion_1`,
 //! `explosion_2`. Громкость убывает с расстоянием до слушателя — сущности с [`SoundListener`].
 
+use std::collections::HashSet;
+
 use bevy::prelude::*;
 
 use crate::rover::Rover;
@@ -139,6 +141,7 @@ fn play_sounds(
     time: Res<Time<Virtual>>,
     listener: Query<&GlobalTransform, With<SoundListener>>,
     instances: Query<&SoundInstance>,
+    mut reported: Local<HashSet<String>>,
 ) {
     if requests.is_empty() {
         return;
@@ -160,7 +163,20 @@ fn play_sounds(
 
         let variants: Vec<_> = sounds.list.group(&request.id).collect();
         let Some(chosen) = variants.get(dice.below(variants.len())) else {
-            debug!("Звуки: нет озвученной записи «{}»", request.id);
+            // О каждом идентификаторе пишем один раз, иначе пулемёт забьёт лог.
+            if reported.insert(request.id.clone()) {
+                if sounds.list.has_group(&request.id) {
+                    warn!(
+                        "Звуки: у «{}» нет звукового файла в assets/{SFX_DIR}",
+                        request.id
+                    );
+                } else {
+                    warn!(
+                        "Звуки: «{}» нет в {SFX_DIR}/{LIST_FILE} — опечатка в идентификаторе?",
+                        request.id
+                    );
+                }
+            }
             continue;
         };
 
