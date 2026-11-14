@@ -9,7 +9,8 @@ use bevy::prelude::*;
 
 use crate::combat::{Collider, Damage, Health, Team};
 use crate::enemy::Enemy;
-use crate::rover::{self, Rover};
+use crate::rover::{self, Rover, RoverMotion};
+use std::f32::consts::{PI, TAU};
 use crate::settlements::Footprint;
 use crate::vehicle::{self, GroundVehicle};
 
@@ -152,33 +153,53 @@ pub fn segment_hit<'a>(
 /// Выталкивает луноход и машины из препятствий.
 /// Луноход сбивает препятствия со здоровьем на своём пути: деревья падают от него,
 /// камни и кристаллы разлетаются, дома рушатся. Враги не сбиваются.
+///
+/// Сбитое препятствие сразу перестаёт быть стеной, но немного сносит луноход и чуть
+/// поворачивает его от себя: крупное — сильнее.
 fn ram_obstacles(
     mut commands: Commands,
-    rover: Single<(&Transform, Option<&Collider>), With<Rover>>,
+    rover: Single<(&mut Transform, &mut RoverMotion, Option<&Collider>), With<Rover>>,
     obstacles: Query<(Entity, &Obstacle, &Health), Without<Enemy>>,
     mut damages: MessageWriter<Damage>,
 ) {
-    let (transform, collider) = rover.into_inner();
+    let (mut transform, mut motion, collider) = rover.into_inner();
     let radius = collider.map_or(DEFAULT_VEHICLE_RADIUS, |c| c.radius);
-    let p = Vec2::new(transform.translation.x, transform.translation.z);
+    let mut p = Vec2::new(transform.translation.x, transform.translation.z);
     for (entity, obstacle, health) in &obstacles {
         if health.is_dead() {
             continue;
         }
         let (center, r) = obstacle.shape.bounds();
-        if center.distance_squared(p) > (r + radius).powi(2) || obstacle.shape.push_out(p, radius).is_none() {
+        if center.distance_squared(p) > (r + radius).powi(2) {
             continue;
         }
-        commands.entity(entity).try_insert((
-            crate::props::PropBlastFrom(transform.translation),
-            crate::buildings::BlastFrom(transform.translation),
-        ));
+        let Some(push) = obstacle.shape.push_out(p, radius) else {
+            continue;
+        };
+        // Доля выталкивания и поворот от препятствия растут с его размером.
+        let weight = (0.1 + 0.06 * r).min(0.5);
+        p += push * weight;
+        if let Some(away) = push.try_normalize() {
+            let wanted = (-away.x).atan2(-away.y);
+            let diff = (wanted - motion.heading + PI).rem_euclid(TAU) - PI;
+            motion.heading += diff.clamp(-1.0, 1.0) * weight * 0.4;
+        }
+        motion.speed *= 1.0 - weight * 0.5;
+        commands
+            .entity(entity)
+            .remove::<Obstacle>()
+            .try_insert((
+                crate::props::PropBlastFrom(transform.translation),
+                crate::buildings::BlastFrom(transform.translation),
+            ));
         damages.write(Damage {
             target: entity,
             amount: health.current + 1.0,
             source_team: Team::Player,
         });
     }
+    transform.translation.x = p.x;
+    transform.translation.z = p.y;
 }
 
 fn push_vehicles_out(
