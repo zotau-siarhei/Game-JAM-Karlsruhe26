@@ -14,6 +14,7 @@ mod explosion;
 mod explosion_fx;
 mod hq;
 mod hud;
+mod minimap;
 mod mortar;
 mod music;
 mod props;
@@ -66,6 +67,7 @@ fn main() {
         .add_plugins((
             combat::CombatPlugin,
             hud::HudPlugin,
+            minimap::MinimapPlugin,
             bullet::BulletPlugin,
             enemy::EnemyPlugin,
             waves::WavesPlugin,

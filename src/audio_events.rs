@@ -6,9 +6,9 @@ use bevy::prelude::*;
 use crate::bullet::FireBullet;
 use crate::combat::{Damage, Died, Health};
 use crate::enemy::Enemy;
-use crate::waves::WaveStarted;
+use crate::waves::{Threat, WaveStarted};
 use crate::explosion::Explosion;
-use crate::hq::{HqMemory, VoiceCue};
+use crate::hq::{HqMemory, VoiceCue, HqTone};
 use crate::music::{MusicState, Track};
 use crate::repair::{MedkitPicked, RepairChanged};
 use crate::rover::Rover;
@@ -40,6 +40,7 @@ impl Plugin for AudioEventsPlugin {
                 sound_explosions,
                 voice_repair,
                 music_follows_enemies.run_if(in_state(GameState::Playing)),
+                tone_follows_threat,
             ),
         );
     }
@@ -119,6 +120,23 @@ fn voice_enemies(
     }
 }
 
+/// Тон штаба по угрозе: вежливо, беспокойство, паника.
+fn tone_for(threat: f32) -> u8 {
+    match threat {
+        t if t < 1.0 => 1,
+        t if t < 2.5 => 2,
+        _ => 3,
+    }
+}
+
+/// Чем выше угроза, тем нервнее штаб.
+fn tone_follows_threat(threat: Res<Threat>, mut tone: ResMut<HqTone>) {
+    let wanted = tone_for(threat.value());
+    if tone.0 != wanted {
+        tone.0 = wanted;
+    }
+}
+
 /// В меню играет своя музыка.
 fn menu_music(mut music: ResMut<MusicState>) {
     music.track = Track::Menu;
@@ -193,6 +211,13 @@ fn voice_repair(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hq_tone_rises_with_threat() {
+        assert_eq!(tone_for(0.0), 1);
+        assert_eq!(tone_for(1.5), 2);
+        assert_eq!(tone_for(4.0), 3);
+    }
 
     #[test]
     fn explosion_sound_matches_power() {

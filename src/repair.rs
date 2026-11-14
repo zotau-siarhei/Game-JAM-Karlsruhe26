@@ -87,7 +87,7 @@ struct Repairing;
 
 /// Аптечка на поверхности.
 #[derive(Component)]
-struct Medkit;
+pub struct Medkit;
 
 /// Искра ремонта: летит по баллистике и гаснет.
 #[derive(Component)]
