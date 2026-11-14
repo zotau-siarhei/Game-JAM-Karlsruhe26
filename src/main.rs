@@ -3,7 +3,11 @@
 //! Сейчас есть холмистый бесконечный ландшафт, луноход с танковым управлением и камера сверху.
 
 mod camera;
+mod hq;
+mod music;
 mod rover;
+mod sound;
+mod sound_list;
 mod terrain;
 mod voice;
 
@@ -27,7 +31,13 @@ fn main() {
             }),
             ..default()
         }))
-        .add_plugins((TerrainPlugin, RoverPlugin, CameraPlugin, voice::VoicePlugin))
+        .add_plugins((TerrainPlugin, RoverPlugin, CameraPlugin))
+        .add_plugins((
+            voice::VoicePlugin,
+            hq::HqPlugin,
+            sound::SoundPlugin,
+            music::MusicPlugin,
+        ))
         .add_systems(Startup, spawn_light)
         .run();
 }

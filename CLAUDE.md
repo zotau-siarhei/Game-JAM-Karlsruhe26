@@ -9,8 +9,13 @@
 - `openspec/config.yaml` — контекст проекта и правила для артефактов OpenSpec.
 - `openspec/specs/` — принятые спецификации.
 - `openspec/changes/` — изменения в работе: `proposal.md`, `design.md`, `tasks.md` и дельты спецификаций.
-- `assets/voice/` — реплики штаба: список `lines.json`, mp3-файлы и предпросмотр `preview.html`.
-  Реплика проигрывается сообщением `PlayVoice::new("id")` из `src/voice.rs`.
+- `assets/voice/`, `assets/sfx/`, `assets/music/` — реплики, звуки и музыка: список JSON и mp3 рядом.
+  Формат и соглашение о вариантах — в `assets/voice/README.md`.
+- Звук из кода — только сообщениями и ресурсами, файлы напрямую не грузить:
+  - повод для реплики: `VoiceCue::new("house_destroyed")` (`src/hq.rs`), тон штаба — ресурс `HqTone`;
+  - звуковой эффект: `PlaySound::at("explosion", position)` или `PlaySound::new("ui_click")` (`src/sound.rs`);
+  - громкость звука с позицией убывает с расстоянием до лунохода;
+  - музыка: `ResMut<MusicState>`, поле `track` (`src/music.rs`).
 
 ## Работа через OpenSpec
 

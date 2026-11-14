@@ -1,0 +1,31 @@
+{
+  "lines": [
+    { "id": "mg_fire_1", "event": "Выстрел пулемёта", "text": "Single punchy heavy machine gun shot, dry, short tail, no reverb", "file": "mg_fire_1.mp3", "kind": "sfx" },
+    { "id": "mg_fire_2", "event": "Выстрел пулемёта", "text": "Single heavy machine gun shot, slightly brighter, dry, short", "file": "mg_fire_2.mp3", "kind": "sfx" },
+    { "id": "mg_fire_3", "event": "Выстрел пулемёта", "text": "Single heavy machine gun shot with metallic click, dry, short", "file": "mg_fire_3.mp3", "kind": "sfx" },
+    { "id": "mortar_fire", "event": "Выстрел мортиры", "text": "Mortar launch, deep hollow thump from a metal tube, short", "file": "mortar_fire.mp3", "kind": "sfx" },
+    { "id": "mortar_whistle", "event": "Падение снаряда мортиры", "text": "Falling artillery shell whistle, descending pitch, one second", "file": "mortar_whistle.mp3", "kind": "sfx" },
+    { "id": "rocket_fire", "event": "Пуск ракеты", "text": "Rocket launch whoosh with ignition burst, one second", "file": "rocket_fire.mp3", "kind": "sfx" },
+    { "id": "laser_fire", "event": "Импульс лазера", "text": "Sci-fi laser pulse, bright electric zap with low hum, half a second", "file": "laser_fire.mp3", "kind": "sfx" },
+    { "id": "airstrike_flyby", "event": "Пролёт самолёта авиаудара", "text": "Jet aircraft fast flyby overhead, doppler, three seconds", "file": "airstrike_flyby.mp3", "kind": "sfx" },
+    { "id": "explosion_small_1", "event": "Слабый взрыв", "text": "Small explosion pop with dirt spray, short and dry", "file": "explosion_small_1.mp3", "kind": "sfx" },
+    { "id": "explosion_small_2", "event": "Слабый взрыв", "text": "Small sharp explosion crack with debris, short", "file": "explosion_small_2.mp3", "kind": "sfx" },
+    { "id": "explosion_1", "event": "Взрыв", "text": "Medium explosion, punchy boom with falling dirt and rocks, two seconds", "file": "explosion_1.mp3", "kind": "sfx" },
+    { "id": "explosion_2", "event": "Взрыв", "text": "Medium explosion, heavy thud with rumbling tail and debris, two seconds", "file": "explosion_2.mp3", "kind": "sfx" },
+    { "id": "explosion_3", "event": "Взрыв", "text": "Medium ground explosion, boom with gravel rain, two seconds", "file": "explosion_3.mp3", "kind": "sfx" },
+    { "id": "explosion_big_1", "event": "Мощный взрыв", "text": "Huge explosion, deep rolling low-frequency boom with long rumble, four seconds", "file": "explosion_big_1.mp3", "kind": "sfx" },
+    { "id": "explosion_big_2", "event": "Мощный взрыв", "text": "Massive bomb blast, earth-shaking sub bass, long rumbling tail, four seconds", "file": "explosion_big_2.mp3", "kind": "sfx" },
+    { "id": "hit_1", "event": "Попадание по врагу", "text": "Bullet hitting metal armor, short ricochet clank", "file": "hit_1.mp3", "kind": "sfx" },
+    { "id": "hit_2", "event": "Попадание по врагу", "text": "Bullet impact on metal plate, dull clang, short", "file": "hit_2.mp3", "kind": "sfx" },
+    { "id": "rover_hit", "event": "Урон по луноходу", "text": "Heavy metallic impact on a vehicle hull with electric crackle, short", "file": "rover_hit.mp3", "kind": "sfx" },
+    { "id": "enemy_death", "event": "Гибель врага", "text": "Robot vehicle destroyed, metal crunch and small explosion, one second", "file": "enemy_death.mp3", "kind": "sfx" },
+    { "id": "building_collapse_1", "event": "Обрушение дома", "text": "Small house collapsing, wood cracking, walls falling, rubble settling, three seconds", "file": "building_collapse_1.mp3", "kind": "sfx" },
+    { "id": "building_collapse_2", "event": "Обрушение дома", "text": "Brick building collapse, heavy crash and dusty rubble slide, three seconds", "file": "building_collapse_2.mp3", "kind": "sfx" },
+    { "id": "train_horn", "event": "Гудок поезда", "text": "Diesel train horn, two short blasts", "file": "train_horn.mp3", "kind": "sfx" },
+    { "id": "train_crash", "event": "Крушение поезда", "text": "Train derailment, screeching metal, heavy crash, long clattering tail, four seconds", "file": "train_crash.mp3", "kind": "sfx" },
+    { "id": "pickup", "event": "Подбор предмета", "text": "Cheerful arcade item pickup chime, short", "file": "pickup.mp3", "kind": "sfx" },
+    { "id": "repair", "event": "Ремонт лунохода", "text": "Electric wrench ratchet and welding sparks, one second loop", "file": "repair.mp3", "kind": "sfx" },
+    { "id": "ui_click", "event": "Кнопка меню", "text": "Soft retro interface click, very short", "file": "ui_click.mp3", "kind": "sfx" },
+    { "id": "ui_pause", "event": "Пауза", "text": "Retro interface pause blip, two descending notes, short", "file": "ui_pause.mp3", "kind": "sfx" }
+  ]
+}

@@ -31,10 +31,37 @@ python3 -m http.server 8000 --directory assets/voice
 
 Затем открыть http://localhost:8000/preview.html. Кнопка «Обновить» перечитывает `lines.json`.
 
+## Варианты и тон
+
+Повод для реплики — основа идентификатора, например `house_destroyed`. Варианты повода —
+записи с суффиксами: номер `_2`, тон `_t2`, оба сразу `_t3_2`. Игра сама выбирает вариант:
+
+- по полю `tone` (1 вежливо, 2 беспокойство, 3 паника) берётся самый высокий тон не выше
+  текущего тона штаба; реплики без `tone` годятся для любого тона;
+- один вариант не звучит дважды подряд, если есть другие;
+- `pri` 3 обрывает текущую реплику, остальные поводы отбрасываются, пока штаб говорит
+  и 4 секунды после; `pri` 0 звучит не чаще раза в 10 секунд.
+
+Текст реплики показывается субтитром, пока она звучит. У записей с `kind: "sfx"` субтитра нет.
+
 ## Воспроизведение в игре
 
+Игра сообщает повод, вариант выбирает модуль `src/hq.rs`:
+
 ```rust
-fn on_run_start(mut voice: MessageWriter<PlayVoice>) {
-    voice.write(PlayVoice::new("run_start"));
+fn on_house_destroyed(mut cues: MessageWriter<VoiceCue>) {
+    cues.write(VoiceCue::new("house_destroyed"));
 }
+```
+
+Конкретная реплика по идентификатору — `PlayVoice::new("run_start")` из `src/voice.rs`.
+
+## Звуки и музыка
+
+Устроены так же: `assets/sfx/sounds.json` и `assets/music/tracks.json`, файлы рядом со списком,
+поле `text` — описание для генерации в ElevenLabs.
+
+```rust
+sounds.write(PlaySound::at("explosion", position)); // случайный из explosion_1, explosion_2, ...
+music.track = Track::Combat;                        // ResMut<MusicState>, смена с затуханием
 ```
