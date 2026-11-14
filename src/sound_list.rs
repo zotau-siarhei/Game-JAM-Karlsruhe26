@@ -320,4 +320,32 @@ mod tests {
             assert!(missing.is_empty(), "{dir}: нет звуковых файлов у записей {missing:?}");
         }
     }
+
+    /// Каждый звуковой файл из списков разбирается звуковой библиотекой. Файл, который она
+    /// не разберёт, уронит игру в момент проигрывания.
+    #[test]
+    fn repository_sound_files_decode() {
+        use bevy::audio::Decodable;
+
+        let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets");
+        let lists = [
+            ("voice", include_str!("../assets/voice/lines.json")),
+            ("sfx", include_str!("../assets/sfx/sounds.json")),
+            ("music", include_str!("../assets/music/tracks.json")),
+        ];
+        let mut broken = Vec::new();
+        for (dir, json) in lists {
+            for entry in parse_list(json).unwrap() {
+                let Ok(bytes) = std::fs::read(assets.join(dir).join(&entry.file)) else {
+                    continue;
+                };
+                let source = AudioSource { bytes: bytes.into() };
+                let samples = std::panic::catch_unwind(|| source.decoder().take(1000).count());
+                if samples.unwrap_or(0) < 1000 {
+                    broken.push(format!("{dir}/{}", entry.file));
+                }
+            }
+        }
+        assert!(broken.is_empty(), "звуковая библиотека не читает файлы {broken:?}");
+    }
 }

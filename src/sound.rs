@@ -10,13 +10,16 @@
 //! ```
 //!
 //! Идентификатор — основа группы: `explosion` выбирает случайный из `explosion`, `explosion_1`,
-//! `explosion_2`. Громкость убывает с расстоянием до слушателя — сущности с [`SoundListener`].
+//! `explosion_2`. Громкость убывает с расстоянием до слушателя — сущности с [`SoundListener`],
+//! а сторона звука совпадает со стороной экрана: событие слева от центра слышно слева.
 
 use std::collections::HashSet;
 
+use bevy::audio::{AudioSinkPlayback, SpatialAudioSink, SpatialListener, SpatialScale, Volume};
 use bevy::prelude::*;
 
-use crate::rover::Rover;
+use crate::combat::Health;
+use crate::rover::{MAX_FORWARD_SPEED, Rover, RoverMotion};
 use crate::run::GameState;
 use crate::sound_list::{Dice, SoundList};
 
@@ -35,6 +38,22 @@ const MAX_DISTANCE: f32 = 90.0;
 /// Разброс скорости воспроизведения, чтобы частые звуки не повторялись один в один.
 const SPEED_SPREAD: (f32, f32) = (0.9, 1.1);
 
+/// Расстояние между «ушами» слушателя, м. На сторону звука влияет только направление на него.
+const EAR_GAP: f32 = 2.0;
+
+/// Масштаб расстояний для расстановки по сторонам. Он сжимает все слышимые расстояния до величин
+/// меньше единицы: так звуковая библиотека не добавляет своё затухание к нашему [`volume_at`].
+const PAN_SCALE: f32 = 1.0 / 200.0;
+
+/// Зацикленный звук мотора лунохода.
+const ENGINE_SOUND: &str = "rover_engine";
+
+/// Громкость мотора на полной скорости.
+const ENGINE_VOLUME: f32 = 0.3;
+
+/// Высота звука мотора на месте и прибавка к ней на полной скорости.
+const ENGINE_PITCH: (f32, f32) = (0.7, 0.5);
+
 /// Сколько экземпляров одной группы звучит одновременно, если для группы нет своего предела.
 const DEFAULT_LIMIT: usize = 4;
 
@@ -46,6 +65,9 @@ const LIMITS: &[(&str, usize)] = &[
     ("hit", 3),
     ("explosion", 5),
     ("building_", 3),
+    ("tree_", 3),
+    ("rock_", 3),
+    ("capsule_", 3),
     ("resident_", 4),
     ("ui_", 2),
 ];
@@ -63,12 +85,19 @@ impl Plugin for SoundPlugin {
                 Update,
                 (
                     attach_listener,
+                    attach_ears,
                     play_sounds,
-                    stretch_world_sounds,
-                    pause_world_sounds.run_if(in_state(GameState::Paused)),
+                    drive_engine,
+                    stretch_world_sounds::<AudioSink>,
+                    stretch_world_sounds::<SpatialAudioSink>,
+                    pause_world_sounds::<AudioSink>.run_if(in_state(GameState::Paused)),
+                    pause_world_sounds::<SpatialAudioSink>.run_if(in_state(GameState::Paused)),
                 ),
             )
-            .add_systems(OnExit(GameState::Paused), resume_world_sounds);
+            .add_systems(
+                OnExit(GameState::Paused),
+                (resume_world_sounds::<AudioSink>, resume_world_sounds::<SpatialAudioSink>),
+            );
     }
 }
 
@@ -111,6 +140,90 @@ fn attach_listener(mut commands: Commands, rovers: Query<Entity, Added<Rover>>) 
     for rover in &rovers {
         commands.entity(rover).insert(SoundListener);
     }
+}
+
+/// Ставит «уши» на камеру: звук слева от центра экрана слышен в основном в левом канале.
+///
+/// Уши стоят на камере, а не на луноходе: камера не вращается, поэтому стороны звука совпадают
+/// со сторонами экрана, а сдвиг в сторону растёт плавно, как положение события на экране.
+///
+/// Левое и правое ухо нарочно поменяны местами. Звуковая библиотека делает дальнее ухо громче
+/// и полагается на собственное затухание с расстоянием, а оно у нас выключено масштабом
+/// [`PAN_SCALE`]: без перестановки звук слева звучал бы справа.
+fn attach_ears(
+    mut commands: Commands,
+    cameras: Query<Entity, With<Camera3d>>,
+    ears: Query<(), With<SpatialListener>>,
+) {
+    if !ears.is_empty() {
+        return;
+    }
+    if let Some(camera) = cameras.iter().next() {
+        commands.entity(camera).insert(SpatialListener {
+            left_ear_offset: Vec3::X * EAR_GAP / 2.0,
+            right_ear_offset: Vec3::X * EAR_GAP / -2.0,
+        });
+    }
+}
+
+/// Громкости левого и правого каналов для звука, смещённого от слушателя на долю `side`:
+/// −1 — точно слева, 0 — прямо, 1 — точно справа. Повторяет расчёт звуковой библиотеки
+/// при наших настройках ушей и нужна тестам.
+#[cfg(test)]
+fn channel_gains(side: f32) -> (f32, f32) {
+    // Библиотека считает (расстояние до своего уха − до другого) / расстояние между ушами.
+    // «Левое» ухо у нас стоит справа, поэтому для звука слева эта доля у него положительна.
+    let left = ((-side + 1.0) / 4.0 + 0.5).min(1.0);
+    let right = ((side + 1.0) / 4.0 + 0.5).min(1.0);
+    (left, right)
+}
+
+/// Метка зацикленного звука мотора.
+#[derive(Component)]
+struct EngineSound;
+
+/// Мотор лунохода: один зацикленный звук, громкость и высота растут со скоростью. Вне забега,
+/// на паузе и после гибели мотор молчит.
+fn drive_engine(
+    mut commands: Commands,
+    sounds: Res<Sounds>,
+    state: Res<State<GameState>>,
+    time: Res<Time<Virtual>>,
+    rover: Query<(&RoverMotion, &Health), With<Rover>>,
+    started: Query<(), With<EngineSound>>,
+    mut engine: Query<&mut AudioSink, With<EngineSound>>,
+) {
+    if started.is_empty() {
+        if let Some(sound) = sounds.list.get(ENGINE_SOUND).and_then(|loaded| loaded.sound.clone()) {
+            commands.spawn((
+                EngineSound,
+                AudioPlayer::new(sound),
+                PlaybackSettings {
+                    volume: Volume::Linear(0.0),
+                    ..PlaybackSettings::LOOP
+                },
+            ));
+        }
+        return;
+    }
+    let load = if *state.get() == GameState::Playing {
+        rover
+            .iter()
+            .next()
+            .filter(|(_, health)| !health.is_dead())
+            .map_or(0.0, |(motion, _)| engine_load(motion.speed))
+    } else {
+        0.0
+    };
+    for mut sink in &mut engine {
+        sink.set_volume(Volume::Linear(ENGINE_VOLUME * load));
+        sink.set_speed((ENGINE_PITCH.0 + ENGINE_PITCH.1 * load) * time_stretch(&time));
+    }
+}
+
+/// Нагрузка мотора от 0 до 1 по скорости лунохода, вперёд или назад.
+fn engine_load(speed: f32) -> f32 {
+    (speed.abs() / MAX_FORWARD_SPEED).min(1.0)
 }
 
 /// Все звуки из `sounds.json`.
@@ -219,19 +332,30 @@ fn play_sounds(
         let pitch = dice.range(SPEED_SPREAD.0, SPEED_SPREAD.1);
         // Замедление времени растягивает звук мира.
         let speed = if world { pitch * time_stretch(&time) } else { pitch };
-        commands.spawn((
-            SoundInstance {
-                group: request.id.clone(),
-                world,
-                pitch,
-            },
-            AudioPlayer::new(sound.clone()),
-            PlaybackSettings {
-                volume: bevy::audio::Volume::Linear(volume),
-                speed,
-                ..PlaybackSettings::DESPAWN
-            },
-        ));
+        let instance = SoundInstance {
+            group: request.id.clone(),
+            world,
+            pitch,
+        };
+        let settings = PlaybackSettings {
+            volume: Volume::Linear(volume),
+            speed,
+            ..PlaybackSettings::DESPAWN
+        };
+        match request.position {
+            // Звук с местом в мире расставляется по сторонам: левее центра экрана — в левый канал.
+            Some(position) => commands.spawn((
+                instance,
+                AudioPlayer::new(sound.clone()),
+                PlaybackSettings {
+                    spatial: true,
+                    spatial_scale: Some(SpatialScale::new(PAN_SCALE)),
+                    ..settings
+                },
+                Transform::from_translation(position),
+            )),
+            None => commands.spawn((instance, AudioPlayer::new(sound.clone()), settings)),
+        };
     }
 }
 
@@ -240,11 +364,12 @@ fn time_stretch(time: &Time<Virtual>) -> f32 {
     time.relative_speed().max(0.1)
 }
 
-/// Замедление времени растягивает и те звуки мира, что уже звучат.
-fn stretch_world_sounds(
+/// Замедление времени растягивает и те звуки мира, что уже звучат. `S` — вид проигрывателя:
+/// обычный или расставленный по сторонам.
+fn stretch_world_sounds<S: Component + AudioSinkPlayback>(
     time: Res<Time<Virtual>>,
     mut applied: Local<Option<f32>>,
-    instances: Query<(&SoundInstance, &AudioSink)>,
+    instances: Query<(&SoundInstance, &S)>,
 ) {
     let stretch = time_stretch(&time);
     if *applied == Some(stretch) {
@@ -260,7 +385,7 @@ fn stretch_world_sounds(
 
 /// На паузе звуки мира замирают. Система идёт каждый кадр паузы: у звука, созданного
 /// в последнем кадре игры, проигрыватель появляется уже на паузе.
-fn pause_world_sounds(instances: Query<(&SoundInstance, &AudioSink)>) {
+fn pause_world_sounds<S: Component + AudioSinkPlayback>(instances: Query<(&SoundInstance, &S)>) {
     for (instance, sink) in &instances {
         if instance.world && !sink.is_paused() {
             sink.pause();
@@ -269,7 +394,7 @@ fn pause_world_sounds(instances: Query<(&SoundInstance, &AudioSink)>) {
 }
 
 /// После паузы звуки мира продолжаются с того же места.
-fn resume_world_sounds(instances: Query<(&SoundInstance, &AudioSink)>) {
+fn resume_world_sounds<S: Component + AudioSinkPlayback>(instances: Query<(&SoundInstance, &S)>) {
     for (instance, sink) in &instances {
         if instance.world {
             sink.play();
@@ -308,5 +433,32 @@ mod tests {
         assert_eq!(limit_for("mg_fire"), 6);
         assert_eq!(limit_for("explosion_big"), 5);
         assert_eq!(limit_for("pickup"), DEFAULT_LIMIT);
+        assert_eq!(limit_for("tree_fall"), 3);
+        assert_eq!(limit_for("rock_break"), 3);
+        assert_eq!(limit_for("capsule_fall"), 3);
+    }
+
+    #[test]
+    fn sound_on_the_left_is_louder_in_the_left_channel() {
+        let (left, right) = channel_gains(-1.0);
+        assert!(left > right);
+        let (left, right) = channel_gains(1.0);
+        assert!(right > left);
+        // Чем дальше в сторону, тем сильнее перекос.
+        assert!(channel_gains(-1.0).0 > channel_gains(-0.3).0);
+    }
+
+    #[test]
+    fn sound_straight_ahead_is_equal_in_both_channels() {
+        let (left, right) = channel_gains(0.0);
+        assert_eq!(left, right);
+    }
+
+    #[test]
+    fn engine_load_follows_speed_in_both_directions() {
+        assert_eq!(engine_load(0.0), 0.0);
+        assert_eq!(engine_load(MAX_FORWARD_SPEED), 1.0);
+        assert_eq!(engine_load(-MAX_FORWARD_SPEED * 0.5), 0.5);
+        assert_eq!(engine_load(MAX_FORWARD_SPEED * 3.0), 1.0);
     }
 }

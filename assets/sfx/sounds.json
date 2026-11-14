@@ -119,6 +119,12 @@
     { "id": "ui_pause", "event": "Пауза", "text": "Retro interface pause blip, two descending notes, short", "file": "ui_pause.mp3", "kind": "sfx" },
     { "id": "ui_pause_2", "event": "Пауза", "text": "Retro interface pause blip, two descending notes, short", "file": "ui_pause_2.mp3", "kind": "sfx" },
     { "id": "ui_pause_3", "event": "Пауза", "text": "Retro interface pause blip, two descending notes, short", "file": "ui_pause_3.mp3", "kind": "sfx" },
-    { "id": "ui_pause_4", "event": "Пауза", "text": "Retro interface pause blip, two descending notes, short", "file": "ui_pause_4.mp3", "kind": "sfx" }
+    { "id": "ui_pause_4", "event": "Пауза", "text": "Retro interface pause blip, two descending notes, short", "file": "ui_pause_4.mp3", "kind": "sfx" },
+    { "id": "rover_engine", "event": "Езда лунохода", "text": "Electric tracked rover motor, steady low whirring hum with soft gravel crunch, constant speed, seamless loop", "file": "rover_engine.ogg", "kind": "sfx" },
+    { "id": "tree_fall_1", "event": "Падение дерева", "text": "Tree trunk cracking and falling to the ground with a leafy crash, two seconds", "file": "tree_fall_1.mp3", "kind": "sfx" },
+    { "id": "tree_fall_2", "event": "Падение дерева", "text": "Tree trunk cracking and falling to the ground with a leafy crash, two seconds", "file": "tree_fall_2.mp3", "kind": "sfx" },
+    { "id": "rock_break_1", "event": "Раскол камня", "text": "Large boulder cracking apart and crumbling into rubble, dry, one second", "file": "rock_break_1.mp3", "kind": "sfx" },
+    { "id": "rock_break_2", "event": "Раскол камня", "text": "Large boulder cracking apart and crumbling into rubble, dry, one second", "file": "rock_break_2.mp3", "kind": "sfx" },
+    { "id": "capsule_fall", "event": "Падение капсулы", "text": "Heavy metal drop pod falling from the sky, descending roaring whoosh, one and a half seconds", "file": "capsule_fall.mp3", "kind": "sfx" }
   ]
 }

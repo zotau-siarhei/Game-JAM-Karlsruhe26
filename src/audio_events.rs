@@ -1,18 +1,22 @@
 //! Какие игровые события чем озвучены: единственное место, где события превращаются
 //! в звуки, поводы для реплик и смену музыки.
 
+use std::collections::HashMap;
+
 use bevy::prelude::*;
 
 use crate::airstrike::Strike;
 use crate::arsenal::WeaponDenied;
 use crate::buildings::BuildingDestroyed;
 use crate::bullet::FireBullet;
+use crate::capsule::{Capsule, FALL_SECONDS, MARK_SECONDS};
 use crate::collapse::CollapseHouse;
 use crate::combat::{Damage, Died, Health, Team};
 use crate::enemy::Enemy;
 use crate::laser::Beam;
 use crate::mortar::{Shell, FLIGHT_TIME};
 use crate::pickups::Popup;
+use crate::props::{Prop, PropKind};
 use crate::rockets::Rocket;
 use crate::waves::{Threat, WaveStarted};
 use crate::explosion::Explosion;
@@ -37,6 +41,9 @@ const BIG_EXPLOSION_POWER: f32 = 1.5;
 
 /// За сколько секунд до падения снаряда начинается свист: длина звука `mortar_whistle`.
 const WHISTLE_LEAD: f32 = 0.95;
+
+/// За сколько секунд до удара капсулы о землю начинается гул её падения.
+const CAPSULE_FALL_LEAD: f32 = 1.2;
 
 /// Подключает озвучку игровых событий.
 pub struct AudioEventsPlugin;
@@ -65,6 +72,8 @@ impl Plugin for AudioEventsPlugin {
                 sound_hits,
                 sound_explosions,
                 sound_buildings,
+                sound_props,
+                sound_capsules,
                 voice_weapon_denied,
                 voice_repair,
                 sound_pause_menu.run_if(in_state(GameState::Paused)),
@@ -214,6 +223,63 @@ fn sound_shells(
             return true;
         }
         sounds.write(PlaySound::at("mortar_whistle", *target));
+        false
+    });
+}
+
+/// Гибель объекта поверхности: дерево падает с треском, валун и кристалл раскалываются.
+///
+/// Валун и кристалл исчезают в том же кадре, где приходит весть о гибели, поэтому вид и место
+/// каждого прочного объекта запоминаются при появлении.
+fn sound_props(
+    mut died: MessageReader<Died>,
+    added: Query<(Entity, &Prop, &Transform), Added<Health>>,
+    mut removed: RemovedComponents<Prop>,
+    mut known: Local<HashMap<Entity, (PropKind, Vec3)>>,
+    mut sounds: MessageWriter<PlaySound>,
+) {
+    for (entity, prop, transform) in &added {
+        known.insert(entity, (prop.kind, transform.translation));
+    }
+    for death in died.read() {
+        let Some((kind, position)) = known.get(&death.entity) else {
+            continue;
+        };
+        if let Some(sound) = prop_death_sound(*kind) {
+            sounds.write(PlaySound::at(sound, *position));
+        }
+    }
+    for entity in removed.read() {
+        known.remove(&entity);
+    }
+}
+
+/// Звук гибели объекта поверхности. У мелких объектов своего звука нет.
+fn prop_death_sound(kind: PropKind) -> Option<&'static str> {
+    match kind {
+        PropKind::Tree => Some("tree_fall"),
+        PropKind::Boulder | PropKind::Crystal => Some("rock_break"),
+        _ => None,
+    }
+}
+
+/// Десантная капсула: гул падения начинается заранее и кончается ударом о землю.
+fn sound_capsules(
+    time: Res<Time>,
+    capsules: Query<&Transform, Added<Capsule>>,
+    mut falls: Local<Vec<(f32, Vec3)>>,
+    mut sounds: MessageWriter<PlaySound>,
+) {
+    for transform in &capsules {
+        falls.push(((MARK_SECONDS + FALL_SECONDS - CAPSULE_FALL_LEAD).max(0.0), transform.translation));
+    }
+    let dt = time.delta_secs();
+    falls.retain_mut(|(delay, place)| {
+        *delay -= dt;
+        if *delay > 0.0 {
+            return true;
+        }
+        sounds.write(PlaySound::at("capsule_fall", *place));
         false
     });
 }
@@ -379,6 +445,14 @@ mod tests {
         assert_eq!(tone_for(0.0), 1);
         assert_eq!(tone_for(1.5), 2);
         assert_eq!(tone_for(4.0), 3);
+    }
+
+    #[test]
+    fn large_props_have_death_sounds() {
+        assert_eq!(prop_death_sound(PropKind::Tree), Some("tree_fall"));
+        assert_eq!(prop_death_sound(PropKind::Boulder), Some("rock_break"));
+        assert_eq!(prop_death_sound(PropKind::Crystal), Some("rock_break"));
+        assert_eq!(prop_death_sound(PropKind::Fence), None);
     }
 
     #[test]

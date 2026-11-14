@@ -16,10 +16,10 @@ use crate::sound_list::Dice;
 use crate::terrain::Terrain;
 
 /// Сколько секунд отметка видна до начала падения.
-const MARK_SECONDS: f32 = 2.0;
+pub const MARK_SECONDS: f32 = 2.0;
 
 /// Сколько секунд капсула падает.
-const FALL_SECONDS: f32 = 0.6;
+pub const FALL_SECONDS: f32 = 0.6;
 
 /// С какой высоты капсула падает, м.
 const FALL_HEIGHT: f32 = 60.0;
@@ -63,7 +63,7 @@ pub struct DropCapsule {
 
 /// Капсула от отметки до выезда врага. Сущность стоит в точке падения на земле.
 #[derive(Component)]
-struct Capsule {
+pub struct Capsule {
     /// Сколько секунд прошло с появления отметки.
     age: f32,
     landed: bool,

@@ -13,7 +13,7 @@ pub const RIDE_HEIGHT: f32 = 0.48;
 pub const ROVER_SCALE: f32 = 2.0;
 
 /// Максимальная скорость вперёд, м/с.
-const MAX_FORWARD_SPEED: f32 = 14.0;
+pub const MAX_FORWARD_SPEED: f32 = 14.0;
 
 /// Максимальная скорость назад, м/с.
 const MAX_REVERSE_SPEED: f32 = 7.0;
