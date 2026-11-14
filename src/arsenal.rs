@@ -29,8 +29,6 @@ pub struct WeaponSpec {
     /// Предел боезапаса. У пулемёта запас бесконечный.
     pub limit: u16,
     /// Сколько даёт ящик.
-    // Читают ящики (задача 5.1).
-    #[allow(dead_code)]
     pub per_crate: u16,
     /// Сколько есть в начале забега. `None` — вида нет.
     pub start: Option<u16>,
@@ -161,8 +159,6 @@ impl Inventory {
     }
 
     /// Добавляет заряды не выше предела и возвращает, сколько добавилось.
-    // Зовут ящики и трофеи (задачи 5.1 и 5.2).
-    #[allow(dead_code)]
     pub fn add(&mut self, weapon: CurrentWeapon, amount: u16) -> u16 {
         let limit = spec(weapon).limit;
         let entry = &mut self.ammo[slot(weapon)];

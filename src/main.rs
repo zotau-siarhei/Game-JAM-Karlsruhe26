@@ -24,6 +24,7 @@ mod laser;
 mod mortar;
 mod obstacles;
 mod music;
+mod pickups;
 mod props;
 mod records;
 mod repair;
@@ -75,6 +76,7 @@ fn main() {
             rockets::RocketsPlugin,
             laser::LaserPlugin,
             airstrike::AirstrikePlugin,
+            pickups::PickupsPlugin,
         ))
         .add_plugins((
             TerrainPlugin,

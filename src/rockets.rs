@@ -59,9 +59,10 @@ pub struct RocketsPlugin;
 
 impl Plugin for RocketsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, create_rocket_assets).add_systems(
+        app.add_message::<FireRocket>().add_systems(Startup, create_rocket_assets).add_systems(
             Update,
             (
+                launch_requested,
                 (fire_rockets, fire_homing, show_locks)
                     .chain()
                     .run_if(in_state(GameState::Playing)),
@@ -70,6 +71,33 @@ impl Plugin for RocketsPlugin {
             )
                 .chain()
                 .after(rover::drive_rover),
+        );
+    }
+}
+
+/// Просьба выпустить обычную ракету: так стреляют враги с ракетами.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct FireRocket {
+    pub origin: Vec3,
+    pub target: Vec3,
+    pub team: Team,
+}
+
+fn launch_requested(mut commands: Commands, mut requests: MessageReader<FireRocket>, assets: Res<RocketAssets>) {
+    for r in requests.read() {
+        let flat = (r.target - r.origin).with_y(0.0).normalize_or(Vec3::NEG_Z);
+        spawn_rocket(
+            &mut commands,
+            &assets,
+            r.origin,
+            Rocket {
+                velocity: flat * ROCKET_SPEED,
+                team: r.team,
+                target: r.target,
+                travelled: 0.0,
+                puff: 0.0,
+                homing: None,
+            },
         );
     }
 }
