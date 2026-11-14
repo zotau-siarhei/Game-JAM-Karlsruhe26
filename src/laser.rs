@@ -72,9 +72,9 @@ impl Plugin for LaserPlugin {
     }
 }
 
-/// Гаснущий луч.
+/// Гаснущий луч. Появление луча — импульс лазера: по нему звучит выстрел.
 #[derive(Component)]
-struct Beam {
+pub struct Beam {
     remaining: f32,
     thickness: f32,
 }

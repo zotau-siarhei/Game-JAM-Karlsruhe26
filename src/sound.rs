@@ -17,6 +17,7 @@ use std::collections::HashSet;
 use bevy::prelude::*;
 
 use crate::rover::Rover;
+use crate::run::GameState;
 use crate::sound_list::{Dice, SoundList};
 
 /// Каталог звуков внутри `assets`.
@@ -40,6 +41,9 @@ const DEFAULT_LIMIT: usize = 4;
 /// Свои пределы одновременных экземпляров по началу идентификатора группы.
 const LIMITS: &[(&str, usize)] = &[
     ("mg_", 6),
+    ("mortar_", 4),
+    ("rocket_", 3),
+    ("hit", 3),
     ("explosion", 5),
     ("building_", 3),
     ("resident_", 4),
@@ -55,7 +59,16 @@ impl Plugin for SoundPlugin {
             .init_resource::<Dice>()
             .add_message::<PlaySound>()
             .add_systems(Startup, load_sounds)
-            .add_systems(Update, (attach_listener, play_sounds));
+            .add_systems(
+                Update,
+                (
+                    attach_listener,
+                    play_sounds,
+                    stretch_world_sounds,
+                    pause_world_sounds.run_if(in_state(GameState::Paused)),
+                ),
+            )
+            .add_systems(OnExit(GameState::Paused), resume_world_sounds);
     }
 }
 
@@ -110,6 +123,15 @@ struct Sounds {
 #[derive(Component)]
 struct SoundInstance {
     group: String,
+    /// Звук игрового мира: замирает на паузе и растягивается замедлением времени.
+    world: bool,
+    /// Случайный разброс высоты этого экземпляра, без учёта замедления времени.
+    pitch: f32,
+}
+
+/// Звук игрового мира, а не интерфейса. Звуки интерфейса начинаются с `ui_`.
+fn is_world_sound(id: &str) -> bool {
+    !id.starts_with("ui_")
 }
 
 fn load_sounds(mut sounds: ResMut<Sounds>, asset_server: Res<AssetServer>) {
@@ -193,11 +215,15 @@ fn play_sounds(
         let Some(sound) = &chosen.sound else {
             continue;
         };
-        // Замедление времени растягивает звук.
-        let speed = dice.range(SPEED_SPREAD.0, SPEED_SPREAD.1) * time.relative_speed().max(0.1);
+        let world = is_world_sound(&request.id);
+        let pitch = dice.range(SPEED_SPREAD.0, SPEED_SPREAD.1);
+        // Замедление времени растягивает звук мира.
+        let speed = if world { pitch * time_stretch(&time) } else { pitch };
         commands.spawn((
             SoundInstance {
                 group: request.id.clone(),
+                world,
+                pitch,
             },
             AudioPlayer::new(sound.clone()),
             PlaybackSettings {
@@ -209,9 +235,59 @@ fn play_sounds(
     }
 }
 
+/// Во сколько раз замедление времени меняет скорость звуков мира.
+fn time_stretch(time: &Time<Virtual>) -> f32 {
+    time.relative_speed().max(0.1)
+}
+
+/// Замедление времени растягивает и те звуки мира, что уже звучат.
+fn stretch_world_sounds(
+    time: Res<Time<Virtual>>,
+    mut applied: Local<Option<f32>>,
+    instances: Query<(&SoundInstance, &AudioSink)>,
+) {
+    let stretch = time_stretch(&time);
+    if *applied == Some(stretch) {
+        return;
+    }
+    *applied = Some(stretch);
+    for (instance, sink) in &instances {
+        if instance.world {
+            sink.set_speed(instance.pitch * stretch);
+        }
+    }
+}
+
+/// На паузе звуки мира замирают. Система идёт каждый кадр паузы: у звука, созданного
+/// в последнем кадре игры, проигрыватель появляется уже на паузе.
+fn pause_world_sounds(instances: Query<(&SoundInstance, &AudioSink)>) {
+    for (instance, sink) in &instances {
+        if instance.world && !sink.is_paused() {
+            sink.pause();
+        }
+    }
+}
+
+/// После паузы звуки мира продолжаются с того же места.
+fn resume_world_sounds(instances: Query<(&SoundInstance, &AudioSink)>) {
+    for (instance, sink) in &instances {
+        if instance.world {
+            sink.play();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interface_sounds_are_not_world_sounds() {
+        assert!(is_world_sound("explosion"));
+        assert!(is_world_sound("rover_hit"));
+        assert!(!is_world_sound("ui_pause"));
+        assert!(!is_world_sound("ui_click"));
+    }
 
     #[test]
     fn volume_falls_with_distance() {

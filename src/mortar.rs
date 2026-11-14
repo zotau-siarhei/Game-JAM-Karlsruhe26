@@ -151,7 +151,7 @@ impl Mortar {
 
 /// Летящий снаряд.
 #[derive(Component)]
-struct Shell {
+pub struct Shell {
     path: Trajectory,
     /// Время с выстрела, с.
     elapsed: f32,
@@ -161,6 +161,13 @@ struct Shell {
     team: Team,
     /// Мощность взрыва.
     power: f32,
+}
+
+impl Shell {
+    /// Точка, в которую нацелен снаряд.
+    pub fn target(&self) -> Vec3 {
+        self.path.position(FLIGHT_TIME)
+    }
 }
 
 /// Просьба выстрелить снарядом мортиры из точки `origin` в точку `target`: так стреляют враги.

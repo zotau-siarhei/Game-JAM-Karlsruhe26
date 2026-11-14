@@ -104,7 +104,7 @@ fn launch_requested(mut commands: Commands, mut requests: MessageReader<FireRock
 
 /// Ракета в полёте.
 #[derive(Component)]
-struct Rocket {
+pub struct Rocket {
     velocity: Vec3,
     team: Team,
     /// Точка прицела: в ней ракета взрывается.

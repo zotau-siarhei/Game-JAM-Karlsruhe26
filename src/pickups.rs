@@ -103,7 +103,7 @@ pub struct CarriedWeapon {
 
 /// Всплывающая надпись подбора.
 #[derive(Component)]
-struct Popup {
+pub struct Popup {
     world: Vec3,
     elapsed: f32,
 }

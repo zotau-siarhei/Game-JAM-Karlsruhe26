@@ -3,10 +3,17 @@
 
 use bevy::prelude::*;
 
+use crate::airstrike::Strike;
+use crate::arsenal::WeaponDenied;
+use crate::buildings::BuildingDestroyed;
 use crate::bullet::FireBullet;
-use crate::combat::{Damage, Died, Health};
+use crate::collapse::CollapseHouse;
+use crate::combat::{Damage, Died, Health, Team};
 use crate::enemy::Enemy;
-use crate::mortar::FireShell;
+use crate::laser::Beam;
+use crate::mortar::{Shell, FLIGHT_TIME};
+use crate::pickups::Popup;
+use crate::rockets::Rocket;
 use crate::waves::{Threat, WaveStarted};
 use crate::explosion::Explosion;
 use crate::hq::{HqMemory, VoiceCue, HqTone};
@@ -22,12 +29,25 @@ const CRITICAL_HEALTH: f32 = 0.3;
 /// Доля здоровья, выше которой критический урон может прозвучать снова.
 const RECOVERED_HEALTH: f32 = 0.5;
 
+/// Взрыв слабее этого — хлопок.
+const SMALL_EXPLOSION_POWER: f32 = 0.5;
+
+/// Взрыв мощнее этого — раскатистый грохот и повод для штаба.
+const BIG_EXPLOSION_POWER: f32 = 1.5;
+
+/// За сколько секунд до падения снаряда начинается свист: длина звука `mortar_whistle`.
+const WHISTLE_LEAD: f32 = 0.95;
+
 /// Подключает озвучку игровых событий.
 pub struct AudioEventsPlugin;
 
 impl Plugin for AudioEventsPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(OnEnter(GameState::Menu), menu_music)
+            .add_systems(OnExit(GameState::Menu), click)
+            .add_systems(OnExit(GameState::GameOver), click)
+            .add_systems(OnEnter(GameState::Paused), pause_blip)
+            .add_systems(OnExit(GameState::Paused), click)
             .add_systems(OnEnter(GameState::Paused), |mut music: ResMut<MusicState>| music.paused = true)
             .add_systems(OnExit(GameState::Paused), |mut music: ResMut<MusicState>| music.paused = false)
             .add_systems(
@@ -38,9 +58,16 @@ impl Plugin for AudioEventsPlugin {
                 voice_rover_death,
                 voice_enemies,
                 sound_shots,
-                sound_enemy_mortars,
+                sound_shells,
+                sound_rockets,
+                sound_special_weapons,
+                sound_pickups,
+                sound_hits,
                 sound_explosions,
+                sound_buildings,
+                voice_weapon_denied,
                 voice_repair,
+                sound_pause_menu.run_if(in_state(GameState::Paused)),
                 music_follows_enemies.run_if(in_state(GameState::Playing)),
                 tone_follows_threat,
             ),
@@ -168,28 +195,154 @@ fn sound_shots(mut shots: MessageReader<FireBullet>, mut sounds: MessageWriter<P
     }
 }
 
-/// Выстрел вражеской мортиры слышен там, где стоит мортирщик.
-fn sound_enemy_mortars(mut shots: MessageReader<FireShell>, mut sounds: MessageWriter<PlaySound>) {
-    for shot in shots.read() {
-        sounds.write(PlaySound::at("mortar_fire", shot.origin));
+/// Выстрел мортиры, своей или вражеской: хлопок у ствола, а перед падением — свист там,
+/// куда летит снаряд. Свист снаряда, летящего в луноход, слышен громче всего.
+fn sound_shells(
+    time: Res<Time>,
+    shells: Query<(&Transform, &Shell), Added<Shell>>,
+    mut whistles: Local<Vec<(f32, Vec3)>>,
+    mut sounds: MessageWriter<PlaySound>,
+) {
+    for (transform, shell) in &shells {
+        sounds.write(PlaySound::at("mortar_fire", transform.translation));
+        whistles.push(((FLIGHT_TIME - WHISTLE_LEAD).max(0.0), shell.target()));
+    }
+    let dt = time.delta_secs();
+    whistles.retain_mut(|(delay, target)| {
+        *delay -= dt;
+        if *delay > 0.0 {
+            return true;
+        }
+        sounds.write(PlaySound::at("mortar_whistle", *target));
+        false
+    });
+}
+
+/// Пуск ракеты — шипение в месте пуска.
+fn sound_rockets(rockets: Query<&Transform, Added<Rocket>>, mut sounds: MessageWriter<PlaySound>) {
+    for transform in &rockets {
+        sounds.write(PlaySound::at("rocket_fire", transform.translation));
+    }
+}
+
+/// Импульс лазера — разряд у лунохода. Вызов авиаудара — пролёт самолёта и подтверждение штаба.
+fn sound_special_weapons(
+    beams: Query<(), Added<Beam>>,
+    strikes: Query<(), Added<Strike>>,
+    mut sounds: MessageWriter<PlaySound>,
+    mut cues: MessageWriter<VoiceCue>,
+) {
+    for _ in &beams {
+        sounds.write(PlaySound::new("laser_fire"));
+    }
+    for _ in &strikes {
+        sounds.write(PlaySound::new("airstrike_flyby"));
+        cues.write(VoiceCue::new("airstrike_call"));
+    }
+}
+
+/// Подбор ящика или трофея: звон и реплика лунохода. Надпись подбора появляется ровно при подборе.
+fn sound_pickups(
+    popups: Query<(), Added<Popup>>,
+    mut sounds: MessageWriter<PlaySound>,
+    mut cues: MessageWriter<VoiceCue>,
+) {
+    for _ in &popups {
+        sounds.write(PlaySound::new("pickup"));
+        cues.write(VoiceCue::new("weapon_pickup"));
+    }
+}
+
+/// Попадание игрока по врагу — лязг по броне там, где стоит враг.
+fn sound_hits(
+    mut damages: MessageReader<Damage>,
+    enemies: Query<&Transform, With<Enemy>>,
+    mut sounds: MessageWriter<PlaySound>,
+) {
+    for damage in damages.read() {
+        if damage.source_team != Team::Player {
+            continue;
+        }
+        if let Ok(transform) = enemies.get(damage.target) {
+            sounds.write(PlaySound::at("hit", transform.translation));
+        }
     }
 }
 
 /// Идентификатор звука взрыва по его мощности: хлопок, взрыв или раскатистый грохот.
 fn explosion_sound(power: f32) -> &'static str {
-    if power < 0.5 {
+    if power < SMALL_EXPLOSION_POWER {
         "explosion_small"
-    } else if power > 1.5 {
+    } else if power > BIG_EXPLOSION_POWER {
         "explosion_big"
     } else {
         "explosion"
     }
 }
 
-/// Взрыв — звук по мощности в месте взрыва.
-fn sound_explosions(mut explosions: MessageReader<Explosion>, mut sounds: MessageWriter<PlaySound>) {
+/// Взрыв — звук по мощности в месте взрыва. Первый взрыв игрока за забег и его мощные взрывы —
+/// поводы для штаба.
+fn sound_explosions(
+    mut started: MessageReader<RunStarted>,
+    mut explosions: MessageReader<Explosion>,
+    mut cratered: Local<bool>,
+    mut sounds: MessageWriter<PlaySound>,
+    mut cues: MessageWriter<VoiceCue>,
+) {
+    if started.read().count() > 0 {
+        *cratered = false;
+    }
     for explosion in explosions.read() {
         sounds.write(PlaySound::at(explosion_sound(explosion.power), explosion.position));
+        if explosion.source_team != Team::Player {
+            continue;
+        }
+        if !*cratered {
+            *cratered = true;
+            cues.write(VoiceCue::new("first_crater"));
+        } else if explosion.power > BIG_EXPLOSION_POWER {
+            cues.write(VoiceCue::new("big_explosion"));
+        }
+    }
+}
+
+/// Дом рушится — грохот там, где он стоял; разрушенный дом — повод для штаба.
+fn sound_buildings(
+    mut collapses: MessageReader<CollapseHouse>,
+    mut destroyed: MessageReader<BuildingDestroyed>,
+    mut sounds: MessageWriter<PlaySound>,
+    mut cues: MessageWriter<VoiceCue>,
+) {
+    for collapse in collapses.read() {
+        sounds.write(PlaySound::at("building_collapse", collapse.base));
+    }
+    if destroyed.read().count() > 0 {
+        cues.write(VoiceCue::new("house_destroyed"));
+    }
+}
+
+/// Выбрано оружие без боезапаса — штаб замечает, что стрелять нечем.
+fn voice_weapon_denied(mut denied: MessageReader<WeaponDenied>, mut cues: MessageWriter<VoiceCue>) {
+    if denied.read().count() > 0 {
+        cues.write(VoiceCue::new("ammo_empty"));
+    }
+}
+
+/// Щелчок интерфейса: старт из меню, выход с паузы и с экрана конца забега.
+fn click(mut sounds: MessageWriter<PlaySound>) {
+    sounds.write(PlaySound::new("ui_click"));
+}
+
+/// Звук постановки на паузу.
+fn pause_blip(mut sounds: MessageWriter<PlaySound>) {
+    sounds.write(PlaySound::new("ui_pause"));
+}
+
+/// Переход по пунктам меню паузы — щелчок.
+fn sound_pause_menu(keys: Res<ButtonInput<KeyCode>>, mut sounds: MessageWriter<PlaySound>) {
+    let moved = keys.any_just_pressed([KeyCode::ArrowUp, KeyCode::ArrowDown, KeyCode::KeyW, KeyCode::KeyS]);
+    if moved {
+        sounds.write(PlaySound::new("ui_click"));
     }
 }
 

@@ -70,6 +70,11 @@ fn strip_number_suffix<'a>(id: &'a str, separator: &str) -> &'a str {
     }
 }
 
+/// Подходит ли запись `id` под запрос `wanted`: это её основа или её полный идентификатор.
+pub fn in_group(id: &str, wanted: &str) -> bool {
+    id == wanted || base_id(id) == wanted
+}
+
 /// Запись списка вместе с загруженным звуком.
 pub struct LoadedSound {
     pub entry: SoundEntry,
@@ -156,15 +161,16 @@ impl SoundList {
         self.order.iter().filter_map(|id| self.entries.get(id))
     }
 
-    /// Озвученные записи группы: сама основа и её варианты с суффиксами.
+    /// Озвученные записи группы: сама основа и её варианты с суффиксами. Полный идентификатор
+    /// записи (`mg_fire_2`) выбирает только её.
     pub fn group<'a>(&'a self, base: &'a str) -> impl Iterator<Item = &'a LoadedSound> + 'a {
         self.iter()
-            .filter(move |loaded| loaded.sound.is_some() && base_id(&loaded.entry.id) == base)
+            .filter(move |loaded| loaded.sound.is_some() && in_group(&loaded.entry.id, base))
     }
 
     /// Есть ли в списке записи группы, пусть даже без звуковых файлов.
     pub fn has_group(&self, base: &str) -> bool {
-        self.iter().any(|loaded| base_id(&loaded.entry.id) == base)
+        self.iter().any(|loaded| in_group(&loaded.entry.id, base))
     }
 }
 
@@ -256,6 +262,14 @@ mod tests {
         assert_eq!(base_id("crit_reply_4"), "crit_reply");
         assert_eq!(base_id("explosion_big_2"), "explosion_big");
         assert_eq!(base_id("_2"), "_2");
+    }
+
+    #[test]
+    fn full_id_selects_single_entry() {
+        assert!(in_group("mg_fire_2", "mg_fire"));
+        assert!(in_group("mg_fire_2", "mg_fire_2"));
+        assert!(!in_group("mg_fire_1", "mg_fire_2"));
+        assert!(!in_group("explosion_big_1", "explosion"));
     }
 
     #[test]

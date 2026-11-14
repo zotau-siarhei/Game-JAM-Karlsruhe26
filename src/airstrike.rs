@@ -61,7 +61,7 @@ impl Plugin for AirstrikePlugin {
 
 /// Вызванный авиаудар.
 #[derive(Component)]
-struct Strike {
+pub struct Strike {
     center: Vec3,
     dir: Vec3,
     elapsed: f32,
