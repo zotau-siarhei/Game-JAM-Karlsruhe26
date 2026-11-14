@@ -15,6 +15,7 @@ mod hq;
 mod hud;
 mod mortar;
 mod music;
+mod props;
 mod records;
 mod repair;
 mod rover;
@@ -57,6 +58,7 @@ fn main() {
             craters::CratersPlugin,
             settlements::SettlementsPlugin,
             buildings::BuildingsPlugin,
+            props::PropsPlugin,
         ))
         .add_plugins((
             combat::CombatPlugin,
