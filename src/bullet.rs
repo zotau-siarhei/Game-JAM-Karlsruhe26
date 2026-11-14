@@ -31,7 +31,7 @@ impl Plugin for BulletPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<FireBullet>()
             .add_systems(Startup, create_bullet_assets)
-            .add_systems(Update, (spawn_bullets, move_bullets).chain());
+            .add_systems(Update, (spawn_bullets, move_bullets, fade_ground_flashes).chain());
     }
 }
 
@@ -58,10 +58,20 @@ struct Bullet {
     damage: f32,
 }
 
+/// Сколько секунд видна вспышка там, где пуля ушла в землю.
+const GROUND_FLASH_SECONDS: f32 = 0.12;
+
+/// Вспышка на земле в месте попадания пули: сжимается и исчезает.
+#[derive(Component)]
+struct GroundFlash {
+    remaining: f32,
+}
+
 /// Общий меш и материалы пуль: все пули рисуются одним пакетом на команду.
 #[derive(Resource)]
 struct BulletAssets {
     mesh: Handle<Mesh>,
+    flash: Handle<Mesh>,
     player: Handle<StandardMaterial>,
     enemy: Handle<StandardMaterial>,
 }
@@ -80,6 +90,7 @@ fn create_bullet_assets(
     commands.insert_resource(BulletAssets {
         // Вытянута вдоль -Z: так пуля читается как трассер.
         mesh: meshes.add(Cuboid::new(0.12, 0.12, 0.9)),
+        flash: meshes.add(Sphere::new(0.35)),
         player: materials.add(glowing(Color::srgb(1.0, 0.9, 0.4), LinearRgba::rgb(6.0, 5.0, 1.5))),
         enemy: materials.add(glowing(Color::srgb(1.0, 0.35, 0.2), LinearRgba::rgb(6.0, 1.2, 0.6))),
     });
@@ -148,6 +159,7 @@ fn move_bullets(
     mut bullets: Query<(Entity, &mut Transform, &mut Bullet)>,
     targets: Query<(Entity, &GlobalTransform, &Collider, &Team, &Health)>,
     mut damage: MessageWriter<Damage>,
+    assets: Option<Res<BulletAssets>>,
 ) {
     let dt = time.delta_secs();
     if dt <= 0.0 {
@@ -158,11 +170,13 @@ fn move_bullets(
         let step = (bullet.velocity * dt).clamp_length_max(bullet.remaining);
         let mut to = from + step;
         let mut stop = false;
+        let mut into_ground = false;
 
         // Рельеф на пути укорачивает отрезок: за холмом пуля уже никого не заденет.
         if let Some(ground) = terrain_hit(&terrain, from, to) {
             to = ground;
             stop = true;
+            into_ground = true;
         }
 
         let hit = targets
@@ -181,6 +195,24 @@ fn move_bullets(
                 source_team: bullet.team,
             });
             stop = true;
+            into_ground = false;
+        }
+
+        // Пуля ушла в землю: короткая вспышка цвета пули показывает, куда она попала.
+        if let (true, Some(assets)) = (into_ground, assets.as_ref()) {
+            let material = match bullet.team {
+                Team::Player => assets.player.clone(),
+                Team::Enemy => assets.enemy.clone(),
+            };
+            commands.spawn((
+                RunScoped,
+                GroundFlash {
+                    remaining: GROUND_FLASH_SECONDS,
+                },
+                Mesh3d(assets.flash.clone()),
+                MeshMaterial3d(material),
+                Transform::from_translation(to),
+            ));
         }
 
         bullet.remaining -= step.length();
@@ -188,6 +220,22 @@ fn move_bullets(
             commands.entity(entity).despawn();
         } else {
             transform.translation = to;
+        }
+    }
+}
+
+/// Вспышка на земле сжимается и удаляется.
+fn fade_ground_flashes(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut flashes: Query<(Entity, &mut GroundFlash, &mut Transform)>,
+) {
+    for (entity, mut flash, mut transform) in &mut flashes {
+        flash.remaining -= time.delta_secs();
+        if flash.remaining <= 0.0 {
+            commands.entity(entity).try_despawn();
+        } else {
+            transform.scale = Vec3::splat(flash.remaining / GROUND_FLASH_SECONDS);
         }
     }
 }
