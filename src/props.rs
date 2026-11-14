@@ -980,7 +980,7 @@ const SWAY_SECONDS: f32 = 1.0;
 
 /// Центр взрыва, который задел объект: дерево падает от него.
 #[derive(Component, Debug, Clone, Copy)]
-struct PropBlastFrom(Vec3);
+pub(crate) struct PropBlastFrom(pub(crate) Vec3);
 
 /// Дерево падает: поворот вокруг основания.
 #[derive(Component)]

@@ -7,7 +7,8 @@
 
 use bevy::prelude::*;
 
-use crate::combat::Collider;
+use crate::combat::{Collider, Damage, Health, Team};
+use crate::enemy::Enemy;
 use crate::rover::{self, Rover};
 use crate::settlements::Footprint;
 use crate::vehicle::{self, GroundVehicle};
@@ -28,7 +29,8 @@ impl Plugin for ObstaclesPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Update,
-            push_vehicles_out
+            (ram_obstacles, push_vehicles_out)
+                .chain()
                 .after(rover::drive_rover)
                 .after(vehicle::move_ground_vehicles),
         );
@@ -148,6 +150,37 @@ pub fn segment_hit<'a>(
 }
 
 /// Выталкивает луноход и машины из препятствий.
+/// Луноход сбивает препятствия со здоровьем на своём пути: деревья падают от него,
+/// камни и кристаллы разлетаются, дома рушатся. Враги не сбиваются.
+fn ram_obstacles(
+    mut commands: Commands,
+    rover: Single<(&Transform, Option<&Collider>), With<Rover>>,
+    obstacles: Query<(Entity, &Obstacle, &Health), Without<Enemy>>,
+    mut damages: MessageWriter<Damage>,
+) {
+    let (transform, collider) = rover.into_inner();
+    let radius = collider.map_or(DEFAULT_VEHICLE_RADIUS, |c| c.radius);
+    let p = Vec2::new(transform.translation.x, transform.translation.z);
+    for (entity, obstacle, health) in &obstacles {
+        if health.is_dead() {
+            continue;
+        }
+        let (center, r) = obstacle.shape.bounds();
+        if center.distance_squared(p) > (r + radius).powi(2) || obstacle.shape.push_out(p, radius).is_none() {
+            continue;
+        }
+        commands.entity(entity).try_insert((
+            crate::props::PropBlastFrom(transform.translation),
+            crate::buildings::BlastFrom(transform.translation),
+        ));
+        damages.write(Damage {
+            target: entity,
+            amount: health.current + 1.0,
+            source_team: Team::Player,
+        });
+    }
+}
+
 fn push_vehicles_out(
     obstacles: Query<&Obstacle>,
     mut vehicles: Query<

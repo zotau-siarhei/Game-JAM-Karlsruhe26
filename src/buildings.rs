@@ -119,7 +119,7 @@ struct LastHit(Team);
 
 /// Центр последнего взрыва, задевшего дом: стены падают от него.
 #[derive(Component, Debug, Clone, Copy)]
-struct BlastFrom(Vec3);
+pub(crate) struct BlastFrom(pub(crate) Vec3);
 
 /// Дом вздрагивает после попадания.
 #[derive(Component, Debug, Clone, Copy)]
