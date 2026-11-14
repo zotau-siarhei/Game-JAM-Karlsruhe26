@@ -6,6 +6,7 @@ mod aim;
 mod audio_events;
 mod camera;
 mod combat;
+mod enemy;
 mod hq;
 mod hud;
 mod music;
@@ -14,6 +15,7 @@ mod rover;
 mod sound;
 mod sound_list;
 mod terrain;
+mod vehicle;
 mod voice;
 
 use bevy::prelude::*;
@@ -37,7 +39,7 @@ fn main() {
             ..default()
         }))
         .add_plugins((TerrainPlugin, RoverPlugin, CameraPlugin, aim::AimPlugin))
-        .add_plugins((combat::CombatPlugin, hud::HudPlugin))
+        .add_plugins((combat::CombatPlugin, hud::HudPlugin, enemy::EnemyPlugin))
         .add_plugins((
             voice::VoicePlugin,
             hq::HqPlugin,

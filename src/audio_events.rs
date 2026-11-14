@@ -4,6 +4,7 @@
 use bevy::prelude::*;
 
 use crate::combat::{Damage, Died, Health};
+use crate::enemy::{Enemy, EnemySpawned};
 use crate::hq::VoiceCue;
 use crate::music::{MusicState, Track};
 use crate::rover::Rover;
@@ -23,7 +24,16 @@ pub struct AudioEventsPlugin;
 
 impl Plugin for AudioEventsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (announce_run_start, voice_rover_damage, voice_rover_death));
+        app.add_systems(
+            Update,
+            (
+                announce_run_start,
+                voice_rover_damage,
+                voice_rover_death,
+                voice_enemies,
+                music_follows_enemies,
+            ),
+        );
     }
 }
 
@@ -79,5 +89,43 @@ fn voice_rover_death(
     if died.read().any(|message| rover.contains(message.entity)) {
         cues.write(VoiceCue::new("death"));
         music.track = Track::GameOver;
+    }
+}
+
+/// Первые враги — реплика о волне; гибель врага — звук и редкий комментарий лунохода.
+fn voice_enemies(
+    mut spawned: MessageReader<EnemySpawned>,
+    mut died: MessageReader<Died>,
+    enemies: Query<&Transform, With<Enemy>>,
+    mut announced: Local<bool>,
+    mut sounds: MessageWriter<PlaySound>,
+    mut cues: MessageWriter<VoiceCue>,
+) {
+    if spawned.read().count() > 0 && !*announced {
+        *announced = true;
+        cues.write(VoiceCue::new("wave_start"));
+    }
+    for message in died.read() {
+        if let Ok(transform) = enemies.get(message.entity) {
+            sounds.write(PlaySound::at("enemy_death", transform.translation));
+            cues.write(VoiceCue::new("kill"));
+        }
+    }
+}
+
+/// Пока рядом есть враги, играет боевая музыка, иначе музыка передышки.
+fn music_follows_enemies(
+    enemies: Query<(), With<Enemy>>,
+    rover: Query<&Health, With<Rover>>,
+    mut music: ResMut<MusicState>,
+) {
+    let alive = rover.iter().any(|health| !health.is_dead());
+    let wanted = match (alive, enemies.is_empty(), music.track) {
+        (false, _, _) | (_, _, Track::Silence) => return,
+        (true, false, _) => Track::Combat,
+        (true, true, _) => Track::Lull,
+    };
+    if music.track != wanted {
+        music.track = wanted;
     }
 }
