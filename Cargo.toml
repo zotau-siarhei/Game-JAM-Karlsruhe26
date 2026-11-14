@@ -1,0 +1,31 @@
+[package]
+name = "lunokhod"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+description = "Game Jam Karlsruhe 2026: луноход на неизвестной планете, аркадный 3D-шутер"
+publish = false
+
+[dependencies]
+bevy = "0.20.1"
+
+# Bevy и её зависимости берут случайные числа через getrandom, в браузере нужен бэкенд wasm_js.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.4", features = ["wasm_js"] }
+
+# Быстрые инкрементальные сборки: свой код почти без оптимизаций, зависимости с полными.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+
+# Меньший размер .wasm для публикации в браузере.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+strip = "debuginfo"

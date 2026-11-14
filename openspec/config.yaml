@@ -1,0 +1,46 @@
+schema: spec-driven
+
+context: |
+  Language: ru
+  All artifacts must be written in ru.
+  Keep OpenSpec structural headings and SHALL/MUST keywords in English.
+
+  Проект: игра для Game Jam Karlsruhe 2026 (https://gamejam-karlsruhe.hackops.tech/).
+  Jam однодневный, 14.11.2026: хакинг с 10:30, сдача до 17:00, затем 3-минутный
+  тизер без слайдов (только игра) и Open Arcade, где все играют в игры друг друга.
+  Команда до 4 человек.
+
+  Идея (рабочее название Lunokhod): луноход попадает на неизвестную планету и,
+  как в аркаде, уничтожает врагов. Геймплей ещё не проработан, сейчас в репозитории
+  только заглушка: окно, поверхность планеты, луноход-кубик, свет и камера.
+
+  Стек:
+  - Rust 1.99 (закреплён в rust-toolchain.toml), edition 2024.
+  - Bevy 0.20.1, 3D, ECS; новые механики оформлять как Bevy-плагины.
+  - Сборки: native (`cargo run`) и браузер (wasm32-unknown-unknown + wasm-bindgen).
+
+  Ограничения jam:
+  - Организаторы принимают ссылку на игру, опубликованную на Rosebud (браузерный
+    конструктор игр). Как сдать Rust/WASM-сборку, не выяснено: уточнить у
+    организаторов, запасной вариант — своя страница с WASM-сборкой.
+  - Инструменты jam: Meshy (3D-модели), ElevenLabs (голос, звуки, музыка).
+
+  Принципы:
+  - Времени несколько часов: играбельность важнее архитектуры, без лишних абстракций.
+  - Каждое изменение оставляет игру собираемой и запускаемой.
+
+rules:
+  tasks:
+    - Каждая задача занимает не больше часа и заканчивается собираемой игрой (`cargo build`).
+
+# Per-operation guidance (optional)
+# Add advisory guidance for how apply and archive work should be conducted.
+# This is separate from artifact rules above.
+# Example:
+#   operations:
+#     apply:
+#       guidance:
+#         - Keep test summaries concise
+#     archive:
+#       guidance:
+#         - Summarize the archive outcome before finishing
