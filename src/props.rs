@@ -16,7 +16,7 @@ use crate::obstacles::{Obstacle, Shape};
 use crate::rover::Rover;
 use crate::run::{RunScoped, RunStarted};
 use crate::vehicle::GroundVehicle;
-use crate::combat::{Collider, Damage, Died, Health, Team, blast_damage};
+use crate::combat::{Collider, Damage, Died, Health, blast_damage};
 use crate::debris::SpawnDebris;
 use crate::explosion::Explosion;
 use crate::settlements::{self, HouseState, REGION_SIZE, Settlements, region_of};
