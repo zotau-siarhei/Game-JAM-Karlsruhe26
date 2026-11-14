@@ -3,7 +3,6 @@
 //! Выбранное оружие лежит в ресурсе [`CurrentWeapon`]. Каждое оружие само проверяет,
 //! выбрано ли оно, прежде чем стрелять по левой кнопке мыши.
 
-use bevy::input::mouse::AccumulatedMouseScroll;
 use bevy::prelude::*;
 
 use crate::aim::AimPoint;
@@ -58,7 +57,7 @@ impl Plugin for WeaponsPlugin {
                 Update,
                 (
                     attach_turret,
-                    (select_weapon, aim_turret, fire_machine_gun)
+                    (aim_turret, fire_machine_gun)
                         .chain()
                         .run_if(in_state(GameState::Playing)),
                 )
@@ -74,25 +73,33 @@ pub enum CurrentWeapon {
     #[default]
     MachineGun,
     Mortar,
+    Rockets,
+    HomingRockets,
+    Laser,
+    Airstrike,
 }
 
 impl CurrentWeapon {
-    /// Всё доступное оружие по порядку клавиш 1, 2.
-    pub const ALL: [CurrentWeapon; 2] = [CurrentWeapon::MachineGun, CurrentWeapon::Mortar];
+    /// Все виды оружия по порядку клавиш 1–6. Боезапас и параметры — в модуле `arsenal`.
+    pub const ALL: [CurrentWeapon; 6] = [
+        CurrentWeapon::MachineGun,
+        CurrentWeapon::Mortar,
+        CurrentWeapon::Rockets,
+        CurrentWeapon::HomingRockets,
+        CurrentWeapon::Laser,
+        CurrentWeapon::Airstrike,
+    ];
 
     /// Название для интерфейса.
     pub fn name(self) -> &'static str {
         match self {
             CurrentWeapon::MachineGun => "MACHINE GUN",
             CurrentWeapon::Mortar => "MORTAR",
+            CurrentWeapon::Rockets => "ROCKETS",
+            CurrentWeapon::HomingRockets => "HOMING ROCKETS",
+            CurrentWeapon::Laser => "LASER",
+            CurrentWeapon::Airstrike => "AIRSTRIKE",
         }
-    }
-
-    /// Соседнее оружие по кругу: `step` больше нуля — следующее, меньше — предыдущее.
-    pub fn cycled(self, step: i32) -> Self {
-        let count = Self::ALL.len() as i32;
-        let index = Self::ALL.iter().position(|weapon| *weapon == self).unwrap_or(0) as i32;
-        Self::ALL[(index + step.signum()).rem_euclid(count) as usize]
     }
 }
 
@@ -156,35 +163,6 @@ fn attach_turret(
                     ));
                 });
         });
-    }
-}
-
-/// Пауза после переключения колесом, с: одна прокрутка растянута на несколько кадров.
-const SCROLL_COOLDOWN: f32 = 0.25;
-
-/// Клавиши 1 и 2 выбирают оружие, колесо мыши листает по кругу: одна прокрутка — одно оружие.
-fn select_weapon(
-    keys: Res<ButtonInput<KeyCode>>,
-    scroll: Res<AccumulatedMouseScroll>,
-    time: Res<Time>,
-    mut cooldown: Local<f32>,
-    mut weapon: ResMut<CurrentWeapon>,
-) {
-    *cooldown = (*cooldown - time.delta_secs()).max(0.0);
-    let mut chosen = *weapon;
-    if keys.just_pressed(KeyCode::Digit1) {
-        chosen = CurrentWeapon::MachineGun;
-    } else if keys.just_pressed(KeyCode::Digit2) {
-        chosen = CurrentWeapon::Mortar;
-    } else if scroll.delta.y != 0.0 {
-        // Пока колесо крутится, пауза продлевается: переключение только в начале прокрутки.
-        if *cooldown == 0.0 {
-            chosen = weapon.cycled(if scroll.delta.y > 0.0 { -1 } else { 1 });
-        }
-        *cooldown = SCROLL_COOLDOWN;
-    }
-    if chosen != *weapon {
-        *weapon = chosen;
     }
 }
 
@@ -271,15 +249,6 @@ mod tests {
     use std::f32::consts::FRAC_PI_2;
 
     use super::*;
-
-    #[test]
-    fn weapons_cycle_in_both_directions() {
-        assert_eq!(CurrentWeapon::default(), CurrentWeapon::MachineGun);
-        assert_eq!(CurrentWeapon::MachineGun.cycled(1), CurrentWeapon::Mortar);
-        assert_eq!(CurrentWeapon::Mortar.cycled(1), CurrentWeapon::MachineGun);
-        assert_eq!(CurrentWeapon::MachineGun.cycled(-1), CurrentWeapon::Mortar);
-        assert_eq!(CurrentWeapon::Mortar.cycled(-5), CurrentWeapon::MachineGun);
-    }
 
     #[test]
     fn machine_gun_fires_eight_shots_a_second_while_held() {

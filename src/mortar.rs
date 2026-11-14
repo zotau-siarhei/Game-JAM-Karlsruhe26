@@ -14,6 +14,7 @@ use crate::explosion::Explosion;
 use crate::rover::Rover;
 use crate::run::{GameState, RunScoped};
 use crate::terrain::Terrain;
+use crate::arsenal::Inventory;
 use crate::weapons::CurrentWeapon;
 
 /// Время полёта снаряда до точки прицела, с.
@@ -255,13 +256,17 @@ fn fire(
     mut mortar: ResMut<Mortar>,
     mut meshes: ResMut<Assets<Mesh>>,
     rover: Single<(&Transform, &Health), With<Rover>>,
+    mut inventory: ResMut<Inventory>,
 ) {
     let (rover, health) = *rover;
-    let trigger =
-        buttons.pressed(MouseButton::Left) && *weapon == CurrentWeapon::Mortar && !health.is_dead();
+    let trigger = buttons.pressed(MouseButton::Left)
+        && *weapon == CurrentWeapon::Mortar
+        && inventory.usable(CurrentWeapon::Mortar)
+        && !health.is_dead();
     if !mortar.try_fire(time.delta_secs(), trigger) {
         return;
     }
+    inventory.spend(CurrentWeapon::Mortar);
     let muzzle = rover.transform_point(MUZZLE_OFFSET);
     spawn_shell(
         &mut commands,

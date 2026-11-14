@@ -3,6 +3,7 @@
 //! Сейчас есть холмистый бесконечный ландшафт, луноход с танковым управлением и камера сверху.
 
 mod aim;
+mod arsenal;
 mod audio_events;
 mod buildings;
 mod bullet;
@@ -66,6 +67,7 @@ fn main() {
             debris::DebrisPlugin,
             collapse::CollapsePlugin,
             subsidence::SubsidencePlugin,
+            arsenal::ArsenalPlugin,
         ))
         .add_plugins((
             TerrainPlugin,
