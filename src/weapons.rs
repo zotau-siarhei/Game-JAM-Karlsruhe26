@@ -10,6 +10,7 @@ use crate::aim::AimPoint;
 use crate::bullet::FireBullet;
 use crate::combat::{Health, Team};
 use crate::rover::{self, Rover};
+use crate::run::GameState;
 use crate::sound_list::Dice;
 use crate::vehicle;
 
@@ -46,7 +47,12 @@ impl Plugin for WeaponsPlugin {
             .init_resource::<Dice>()
             .add_systems(
                 Update,
-                (attach_turret, select_weapon, aim_turret, fire_machine_gun)
+                (
+                    attach_turret,
+                    (select_weapon, aim_turret, fire_machine_gun)
+                        .chain()
+                        .run_if(in_state(GameState::Playing)),
+                )
                     .chain()
                     .after(rover::drive_rover),
             );

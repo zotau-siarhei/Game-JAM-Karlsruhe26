@@ -11,7 +11,7 @@ use crate::hq::{HqMemory, VoiceCue};
 use crate::music::{MusicState, Track};
 use crate::repair::{MedkitPicked, RepairChanged};
 use crate::rover::Rover;
-use crate::run::RunStarted;
+use crate::run::{GameState, RunStarted};
 use crate::sound::PlaySound;
 
 /// Доля здоровья, ниже которой урон считается критическим.
@@ -25,7 +25,7 @@ pub struct AudioEventsPlugin;
 
 impl Plugin for AudioEventsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
+        app.add_systems(OnEnter(GameState::Menu), menu_music).add_systems(
             Update,
             (
                 announce_run_start,
@@ -35,7 +35,7 @@ impl Plugin for AudioEventsPlugin {
                 sound_shots,
                 sound_explosions,
                 voice_repair,
-                music_follows_enemies,
+                music_follows_enemies.run_if(in_state(GameState::Playing)),
             ),
         );
     }
@@ -119,6 +119,11 @@ fn voice_enemies(
             cues.write(VoiceCue::new("kill"));
         }
     }
+}
+
+/// В меню играет своя музыка.
+fn menu_music(mut music: ResMut<MusicState>) {
+    music.track = Track::Menu;
 }
 
 /// Пока рядом есть враги, играет боевая музыка, иначе музыка передышки.

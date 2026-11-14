@@ -5,6 +5,7 @@ use bevy::prelude::*;
 
 use crate::combat::{Health, SurvivalTime};
 use crate::rover::Rover;
+use crate::run::GameState;
 use crate::weapons::CurrentWeapon;
 
 /// Отступ интерфейса от краёв окна.
@@ -22,9 +23,13 @@ pub struct HudPlugin;
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_hud)
-            .add_systems(Update, (update_health_bar, update_time, update_weapon));
+            .add_systems(Update, (update_health_bar, update_time, update_weapon, hide_in_menu));
     }
 }
+
+/// Корень полосы здоровья: прячется в меню вместе с временем и оружием.
+#[derive(Component)]
+struct HealthBar;
 
 /// Заполненная часть полосы здоровья.
 #[derive(Component)]
@@ -46,6 +51,7 @@ fn spawn_hud(mut commands: Commands) {
     // Полоса здоровья.
     commands
         .spawn((
+            HealthBar,
             Node {
                 position_type: PositionType::Absolute,
                 left: Val::Px(MARGIN),
@@ -129,6 +135,23 @@ fn spawn_hud(mut commands: Commands) {
         },
         BackgroundColor(PANEL_COLOR),
     ));
+}
+
+/// В меню интерфейса забега нет.
+fn hide_in_menu(
+    state: Res<State<GameState>>,
+    mut parts: Query<&mut Visibility, Or<(With<HealthBar>, With<TimeText>, With<WeaponText>)>>,
+) {
+    let wanted = if *state.get() == GameState::Menu {
+        Visibility::Hidden
+    } else {
+        Visibility::Inherited
+    };
+    for mut visibility in &mut parts {
+        if *visibility != wanted {
+            *visibility = wanted;
+        }
+    }
 }
 
 fn update_weapon(weapon: Res<CurrentWeapon>, mut text: Query<&mut Text, With<WeaponText>>) {

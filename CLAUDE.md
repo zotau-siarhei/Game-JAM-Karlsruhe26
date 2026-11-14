@@ -11,7 +11,9 @@
 - `openspec/changes/` — изменения в работе: `proposal.md`, `design.md`, `tasks.md` и дельты спецификаций.
 - `assets/voice/`, `assets/sfx/`, `assets/music/` — реплики, звуки и музыка: список JSON и mp3 рядом.
   Формат и соглашение о вариантах — в `assets/voice/README.md`.
-- Забег — `src/run.rs`: состояния `GameState::{Playing, GameOver}`, рестарт по Enter. Сущность, которая
+- Забег — `src/run.rs`: состояния `GameState::{Menu, Playing, Paused, GameOver}`, игра открывается в меню,
+  рестарт по Enter. Ввод игрока, стрельба и появление врагов работают только в `Playing`:
+  новой системе с вводом ставь `.run_if(in_state(GameState::Playing))`. Сущность, которая
   живёт один забег, получает компонент `RunScoped`. Ресурс, который хранит что-то на забег,
   сбрасывается по сообщению `RunStarted { seed }`.
 - Урон — только сообщением `Damage { target, amount, source_team }` из `src/combat.rs`; здоровье

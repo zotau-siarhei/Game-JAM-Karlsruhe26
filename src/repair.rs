@@ -9,7 +9,7 @@ use bevy::prelude::*;
 
 use crate::combat::Health;
 use crate::rover::{self, Rover, SpeedFactor};
-use crate::run::{RunScoped, RunStarted};
+use crate::run::{GameState, RunScoped, RunStarted};
 use crate::sound_list::Dice;
 use crate::terrain::Terrain;
 
@@ -56,8 +56,8 @@ impl Plugin for RepairPlugin {
             .add_systems(
                 Update,
                 (
-                    repair.before(rover::drive_rover),
-                    (spawn_sparks, move_sparks, reset_medkits, spawn_medkits, pick_medkits, spin_medkits)
+                    repair.before(rover::drive_rover).run_if(in_state(GameState::Playing)),
+                    (spawn_sparks, move_sparks, reset_medkits, spawn_medkits.run_if(in_state(GameState::Playing)), pick_medkits, spin_medkits)
                         .chain()
                         .after(rover::drive_rover),
                 ),

@@ -15,6 +15,7 @@ use bevy::prelude::*;
 
 use crate::explosion::Explosion;
 use crate::rover::Rover;
+use crate::run::GameState;
 
 /// Здоровье лунохода.
 pub const ROVER_MAX_HEALTH: f32 = 100.0;
@@ -47,7 +48,7 @@ impl Plugin for CombatPlugin {
                     explosion_damage,
                     apply_damage,
                     update_flash,
-                    count_survival_time,
+                    count_survival_time.run_if(in_state(GameState::Playing)),
                 )
                     .chain(),
             );

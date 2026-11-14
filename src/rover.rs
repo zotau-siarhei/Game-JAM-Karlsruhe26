@@ -2,6 +2,8 @@
 
 use bevy::prelude::*;
 
+use crate::run::GameState;
+
 use crate::terrain::Terrain;
 
 /// Цвет корпуса лунохода.
@@ -73,7 +75,8 @@ pub struct RoverPlugin;
 impl Plugin for RoverPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_rover)
-            .add_systems(Update, drive_rover);
+            // Вне забега луноходом не управляют: в меню его двигает фон, после гибели он стоит.
+            .add_systems(Update, drive_rover.run_if(in_state(GameState::Playing)));
     }
 }
 

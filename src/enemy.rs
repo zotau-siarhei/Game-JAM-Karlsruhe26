@@ -9,7 +9,7 @@ use crate::bullet::{self, FireBullet};
 use crate::combat::{Collider, Damage, Died, Health, Team};
 use crate::explosion::Explosion;
 use crate::rover::{self, Rover};
-use crate::run::{RunScoped, RunStarted};
+use crate::run::{GameState, RunScoped, RunStarted};
 use crate::sound_list::Dice;
 use crate::terrain::Terrain;
 use crate::vehicle::{self, GroundVehicle};
@@ -99,7 +99,7 @@ impl Plugin for EnemyPlugin {
                 Update,
                 (
                     reset_spawning,
-                    spawn_enemies,
+                    spawn_enemies.run_if(in_state(GameState::Playing)),
                     chase_rover,
                     vehicle::move_ground_vehicles,
                     separate_enemies,
