@@ -4,6 +4,7 @@
 
 mod aim;
 mod audio_events;
+mod buildings;
 mod bullet;
 mod camera;
 mod combat;
@@ -18,6 +19,7 @@ mod records;
 mod repair;
 mod rover;
 mod run;
+mod settlements;
 mod sound;
 mod sound_list;
 mod terrain;
@@ -53,6 +55,8 @@ fn main() {
             explosion::ExplosionPlugin,
             mortar::MortarPlugin,
             craters::CratersPlugin,
+            settlements::SettlementsPlugin,
+            buildings::BuildingsPlugin,
         ))
         .add_plugins((
             combat::CombatPlugin,
