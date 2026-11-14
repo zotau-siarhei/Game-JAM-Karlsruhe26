@@ -172,6 +172,7 @@ fn spawn_debris(
         if request.size.max_element() < SHADOW_SIZE {
             entity.insert(NotShadowCaster);
         }
+        let parent = entity.id();
         if request.burning && burning_count < MAX_BURNING {
             burning_count += 1;
             let flame = commands
@@ -182,7 +183,6 @@ fn spawn_debris(
                     Transform::from_xyz(0.0, 0.6, 0.0).with_scale(Vec3::splat(1.1)),
                 ))
                 .id();
-            let parent = entity.id();
             commands.entity(parent).add_child(flame).insert(Burning {
                 remaining: 3.0 + (k * 0.37).fract() * 3.0,
                 flame,

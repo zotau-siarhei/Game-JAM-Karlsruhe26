@@ -459,7 +459,7 @@ fn react_to_hits(
             state.health = (health.current - hit.amount).max(0.0);
         }
         let rest = wobble.map_or(*transform, |w| w.rest);
-        let angle = (hit.target.index() as f32 * 1.7 + health.current).sin() * std::f32::consts::PI;
+        let angle = ((hit.target.to_bits() % 1024) as f32 * 1.7 + health.current).sin() * std::f32::consts::PI;
         commands.entity(hit.target).try_insert((
             LastHit(hit.source_team),
             Wobble {
