@@ -18,7 +18,7 @@ use crate::rover::Rover;
 use crate::run::GameState;
 
 /// Здоровье лунохода.
-pub const ROVER_MAX_HEALTH: f32 = 100.0;
+pub const ROVER_MAX_HEALTH: f32 = 300.0;
 
 /// Радиус коллайдера лунохода, м.
 pub const ROVER_COLLIDER_RADIUS: f32 = 1.2;
