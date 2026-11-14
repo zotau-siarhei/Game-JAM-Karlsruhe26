@@ -54,8 +54,8 @@ Paused → Menu по «В меню». GameOver → Playing по Enter после
 Альтернатива — свой текстовый формат: был нужен, пока в проекте не было `serde`.
 
 ### Путь к файлу
-macOS: `$HOME/Library/Application Support/Lunokhod/records.json`. Linux:
-`$XDG_DATA_HOME/lunokhod/records.json`, иначе `$HOME/.local/share/lunokhod/records.json`.
+macOS: `$HOME/Library/Application Support/Space Guard/records.json`. Linux:
+`$XDG_DATA_HOME/space-guard/records.json`, иначе `$HOME/.local/share/space-guard/records.json`.
 Каталог создаётся при первой записи. Если `HOME` нет, рекорды живут только в памяти.
 Альтернатива — крейт `dirs`: делает то же самое, но это ещё одна зависимость.
 

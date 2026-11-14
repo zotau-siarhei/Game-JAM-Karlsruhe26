@@ -34,7 +34,7 @@ impl Plugin for ExplosionPlugin {
     }
 }
 
-/// Пишет каждый взрыв в отладочный лог: видно при `RUST_LOG=lunokhod=debug`.
+/// Пишет каждый взрыв в отладочный лог: видно при `RUST_LOG=space_guard=debug`.
 fn log_explosions(mut explosions: MessageReader<Explosion>) {
     for e in explosions.read() {
         debug!(

@@ -135,7 +135,7 @@ fn records_path_from(home: Option<&str>, xdg_data_home: Option<&str>, macos: boo
     if macos {
         return Some(
             Path::new(home?)
-                .join("Library/Application Support/Lunokhod")
+                .join("Library/Application Support/Space Guard")
                 .join(FILE_NAME),
         );
     }
@@ -143,7 +143,7 @@ fn records_path_from(home: Option<&str>, xdg_data_home: Option<&str>, macos: boo
         Some(data) => PathBuf::from(data),
         None => Path::new(home?).join(".local/share"),
     };
-    Some(data.join("lunokhod").join(FILE_NAME))
+    Some(data.join("space-guard").join(FILE_NAME))
 }
 
 /// Путь к файлу рекордов на этой системе. `None` — рекорды живут только в памяти.
@@ -210,7 +210,7 @@ mod tests {
     #[test]
     fn unparsable_file_gives_an_error_and_load_gives_empty_table() {
         assert!(Records::parse("не json").is_err());
-        let path = std::env::temp_dir().join(format!("lunokhod-broken-{}.json", std::process::id()));
+        let path = std::env::temp_dir().join(format!("space-guard-broken-{}.json", std::process::id()));
         std::fs::write(&path, "{ испорчено").unwrap();
         assert_eq!(Records::load(&path), Records::default());
         std::fs::remove_file(&path).unwrap();
@@ -248,7 +248,7 @@ mod tests {
 
     #[test]
     fn save_and_load_give_the_same_table() {
-        let directory = std::env::temp_dir().join(format!("lunokhod-records-{}", std::process::id()));
+        let directory = std::env::temp_dir().join(format!("space-guard-records-{}", std::process::id()));
         let path = directory.join("nested").join(FILE_NAME);
         let mut table = table_with(4);
         table.insert("IVA", 187.25);
@@ -266,15 +266,15 @@ mod tests {
     fn path_depends_on_the_system() {
         assert_eq!(
             records_path_from(Some("/Users/a"), None, true),
-            Some(PathBuf::from("/Users/a/Library/Application Support/Lunokhod/records.json"))
+            Some(PathBuf::from("/Users/a/Library/Application Support/Space Guard/records.json"))
         );
         assert_eq!(
             records_path_from(Some("/home/a"), Some("/data"), false),
-            Some(PathBuf::from("/data/lunokhod/records.json"))
+            Some(PathBuf::from("/data/space-guard/records.json"))
         );
         assert_eq!(
             records_path_from(Some("/home/a"), None, false),
-            Some(PathBuf::from("/home/a/.local/share/lunokhod/records.json"))
+            Some(PathBuf::from("/home/a/.local/share/space-guard/records.json"))
         );
         assert_eq!(records_path_from(None, None, true), None);
         assert_eq!(records_path_from(None, None, false), None);
