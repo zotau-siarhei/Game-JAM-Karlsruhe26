@@ -65,3 +65,13 @@ fn on_house_destroyed(mut cues: MessageWriter<VoiceCue>) {
 sounds.write(PlaySound::at("explosion", position)); // случайный из explosion_1, explosion_2, ...
 music.track = Track::Combat;                        // ResMut<MusicState>, смена с затуханием
 ```
+
+Идентификатор в `PlaySound` — либо основа группы (`mg_fire` — случайный из `mg_fire_1`, `mg_fire_2`, …),
+либо полный идентификатор записи (`mg_fire_7` — именно этот файл). Вторым способом разным видам
+оружия дают разные звуки из одной группы.
+
+У части звуков есть отдельные группы, которые в случайную ротацию основной группы не входят:
+
+- `<группа>_long` — варианты длиннее пяти секунд: `explosion_long`, `mortar_whistle_long`, `train_crash_long`;
+- `<группа>_short` — короткие (до двух секунд) варианты звуков, которым положено быть долгими:
+  `explosion_big_short`, `building_collapse_short`, `airstrike_flyby_short`, `train_crash_short`.
