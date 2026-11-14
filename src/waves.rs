@@ -11,6 +11,7 @@ use crate::capsule::DropCapsule;
 use crate::enemy::{Enemy, EnemyKind, SpawnEnemy, SpawnPlace};
 use crate::explosion::Explosion;
 use crate::rover::Rover;
+use crate::buildings::{BuildingDestroyed, DestroyCause};
 use crate::run::{GameState, RunScoped, RunStarted};
 use crate::sound_list::Dice;
 
@@ -19,9 +20,7 @@ pub mod balance {
     /// Вес кратера в разрушениях.
     pub const CRATER_WEIGHT: f32 = 1.0;
 
-    // Дома и объекты начнут давать угрозу, когда появится сообщение об их разрушении.
-    #[allow(dead_code)]
-    /// Вес снесённого дома в разрушениях.
+    /// Вес дома, снесённого игроком, в разрушениях.
     pub const HOUSE_WEIGHT: f32 = 4.0;
 
     /// Сколько разрушений равны одной минуте забега.
@@ -187,12 +186,22 @@ fn reset_waves(mut started: MessageReader<RunStarted>, mut threat: ResMut<Threat
     }
 }
 
-/// Угроза растёт со временем и с каждым кратером от оружия игрока.
-fn grow_threat(time: Res<Time>, mut explosions: MessageReader<Explosion>, mut threat: ResMut<Threat>) {
+/// Угроза растёт со временем, с каждым кратером от оружия игрока и с каждым снесённым им домом.
+fn grow_threat(
+    time: Res<Time>,
+    mut explosions: MessageReader<Explosion>,
+    mut houses: MessageReader<BuildingDestroyed>,
+    mut threat: ResMut<Threat>,
+) {
     threat.add_time(time.delta_secs());
     for explosion in explosions.read() {
         if explosion.source_team == Team::Player {
             threat.add_destruction(balance::CRATER_WEIGHT);
+        }
+    }
+    for house in houses.read() {
+        if house.cause == DestroyCause::Player {
+            threat.add_destruction(balance::HOUSE_WEIGHT);
         }
     }
 }

@@ -4,6 +4,7 @@
 
 mod aim;
 mod airstrike;
+mod alarm;
 mod arsenal;
 mod audio_events;
 mod buildings;
@@ -99,6 +100,7 @@ fn main() {
             bullet::BulletPlugin,
             enemy::EnemyPlugin,
             waves::WavesPlugin,
+            alarm::AlarmPlugin,
             capsule::CapsulePlugin,
             weapons::WeaponsPlugin,
             run::RunPlugin,

@@ -24,6 +24,10 @@
 - Волны — `src/waves.rs`: угроза `Threat`, директор волн, все числа баланса в `waves::balance`.
   Врага ставит сообщение `SpawnEnemy { place }` из `src/enemy.rs`, десантную капсулу — `DropCapsule { angle }`
   из `src/capsule.rs`, начало волны — `WaveStarted { number }`.
+- Тревога — ресурс `Alarm` из `src/alarm.rs` (ступени 0–5, `alarm.level()`): растёт от `BuildingDestroyed`,
+  управляет только Службой защиты жителей, волны от неё не зависят. Очки добавляет `Alarm::add`.
+- Враги ведут машину через `Steering` из `src/steering.rs` (желаемый курс и скорость): объезд домов и
+  выход из застревания делает общая система; видимость для стрельбы — `steering::has_los`.
 - Выбранное оружие — ресурс `CurrentWeapon` из `src/weapons.rs`. Каждое оружие перед выстрелом по
   левой кнопке мыши проверяет, что выбрано именно оно.
 - Снаряд мортиры не от игрока — сообщением `FireShell { origin, target, team, power }` из `src/mortar.rs`.

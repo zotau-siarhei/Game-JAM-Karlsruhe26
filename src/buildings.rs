@@ -106,10 +106,10 @@ pub enum DestroyCause {
 /// Дом разрушен. Отправляется ровно один раз на дом: на него подпишутся тревога, жители и ящики.
 #[derive(Message, Debug, Clone, Copy)]
 pub struct BuildingDestroyed {
-    // Читают тревога, жители и ящики из следующих изменений.
+    // Читают жители и ящики из следующих изменений.
     #[allow(dead_code)]
     pub position: Vec3,
-    #[allow(dead_code)]
+    /// Читают угроза (`src/waves.rs`) и тревога (`src/alarm.rs`).
     pub cause: DestroyCause,
 }
 
