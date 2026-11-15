@@ -10,6 +10,10 @@
 //! | Вспышка | `PointLight` без теней, яркость гаснет по экспоненте | 0–0,15 с |
 //! | Огненный шар | несколько неосвещённых сфер, растут, желтеют, краснеют и темнеют; поверх частицы огня | 0–0,7 с |
 //! | Ударная волна | кольцо, лежащее на рельефе, быстро расходится и тает; по краю частицы пыли | 0–0,4 с |
+//! | Выброс грунта | частицы с гравитацией и крупные комья-обломки | 0–1,5 с |
+//! | Искры | яркие короткие частицы с гравитацией | 0–0,6 с |
+//! | Горящие осколки | горящие обломки со шлейфом дыма, догорают на земле | 0–5 с |
+//! | Дым | крупные полупрозрачные частицы, подъём, расширение, снос ветром | 0,3–4 с |
 
 use bevy::camera::visibility::NoFrustumCulling;
 use bevy::mesh::{Indices, PrimitiveTopology};
@@ -17,12 +21,13 @@ use bevy::prelude::*;
 use bevy::render::render_resource::Face;
 use bevy_hanabi::prelude::*;
 
+use crate::debris::SpawnDebris;
 use crate::explosion::Explosion;
 use crate::run::RunScoped;
 use crate::terrain::Terrain;
 
 /// Сколько живёт корень взрыва, с: дольше всех слоёв, включая частицы пыли.
-const FX_LIFETIME: f32 = 1.6;
+const FX_LIFETIME: f32 = 4.5;
 
 /// Пиковая яркость вспышки при мощности 1, лм.
 const FLASH_PEAK: f32 = 3.0e7;
@@ -76,6 +81,22 @@ const SHOCK_COLOR: [f32; 3] = [0.9, 0.85, 0.75];
 const FIRE_PARTICLES: f32 = 60.0;
 /// Частиц пыли ударной волны на взрыв мощности 1.
 const DUST_PARTICLES: f32 = 90.0;
+/// Частиц выброшенного грунта на взрыв мощности 1.
+const EJECTA_PARTICLES: f32 = 150.0;
+/// Искр на взрыв мощности 1.
+const SPARK_PARTICLES: f32 = 70.0;
+/// Клубов дыма на взрыв мощности 1.
+const SMOKE_PARTICLES: f32 = 40.0;
+/// Комьев грунта на взрыв: от и до.
+const CLODS: (u32, u32) = (6, 10);
+/// Горящих осколков на взрыв: от и до.
+const BURNING_SHARDS: (u32, u32) = (4, 6);
+/// Взрыв слабее этого комьев и осколков не разбрасывает: пули и мелочь не засоряют поле.
+const DEBRIS_MIN_POWER: f32 = 0.3;
+/// Цвет комьев грунта.
+const CLOD_COLOR: Color = Color::srgb(0.36, 0.25, 0.16);
+/// Цвет горящих осколков: обугленный.
+const SHARD_COLOR: Color = Color::srgb(0.14, 0.11, 0.09);
 
 /// Плагин эффектов взрыва.
 pub struct ExplosionFxPlugin;
@@ -137,6 +158,9 @@ struct ExplosionFxAssets {
     sphere: Handle<Mesh>,
     fire: Handle<EffectAsset>,
     dust: Handle<EffectAsset>,
+    ejecta: Handle<EffectAsset>,
+    sparks: Handle<EffectAsset>,
+    smoke: Handle<EffectAsset>,
 }
 
 /// Яркость вспышки в момент `age`, лм.
@@ -230,6 +254,9 @@ fn create_assets(
         ),
         fire: effects.add(fire_effect()),
         dust: effects.add(dust_effect()),
+        ejecta: effects.add(ejecta_effect()),
+        sparks: effects.add(spark_effect()),
+        smoke: effects.add(smoke_effect()),
     });
 }
 
@@ -358,6 +385,175 @@ fn dust_effect() -> EffectAsset {
     })
 }
 
+/// Выброшенный грунт: летит вверх конусом, падает по гравитации, бурый.
+fn ejecta_effect() -> EffectAsset {
+    let writer = ExprWriter::new();
+    let power = writer.add_property("power", Value::Scalar(1.0.into()));
+
+    let init_pos = SetPositionSphereModifier {
+        center: writer.lit(Vec3::Y * 0.3).expr(),
+        radius: (writer.lit(0.8) * writer.prop(power)).expr(),
+        dimension: ShapeDimension::Volume,
+    };
+    // Скорость вверх и вбок: случайный вектор в верхней полусфере, вытянутый вверх.
+    let side = writer.rand(VectorType::VEC3F) * writer.lit(Vec3::new(2.0, 0.0, 2.0))
+        - writer.lit(Vec3::new(1.0, 0.0, 1.0));
+    let up = writer.lit(Vec3::Y) * writer.lit(1.2).uniform(writer.lit(2.2));
+    let speed = writer.lit(7.0).uniform(writer.lit(13.0)) * writer.prop(power);
+    let init_vel = SetAttributeModifier::new(Attribute::VELOCITY, ((side + up) * speed).expr());
+    let init_lifetime = SetAttributeModifier::new(
+        Attribute::LIFETIME,
+        writer.lit(0.9).uniform(writer.lit(1.5)).expr(),
+    );
+    let init_age = SetAttributeModifier::new(Attribute::AGE, writer.lit(0.0).expr());
+    let update_gravity = AccelModifier::new(writer.lit(Vec3::Y * -30.0).expr());
+    let update_drag = LinearDragModifier::new(writer.lit(0.6).expr());
+
+    let mut color = bevy_hanabi::Gradient::new();
+    color.add_key(0.0, Vec4::new(0.42, 0.3, 0.19, 1.0));
+    color.add_key(0.8, Vec4::new(0.36, 0.26, 0.17, 0.9));
+    color.add_key(1.0, Vec4::new(0.36, 0.26, 0.17, 0.0));
+
+    let mut size = bevy_hanabi::Gradient::new();
+    size.add_key(0.0, Vec3::splat(0.35));
+    size.add_key(1.0, Vec3::splat(0.2));
+
+    EffectAsset::new(
+        512,
+        SpawnerSettings::once(EJECTA_PARTICLES.into()),
+        writer.finish(),
+    )
+    .with_name("explosion_ejecta")
+    .init(init_pos)
+    .init(init_vel)
+    .init(init_lifetime)
+    .init(init_age)
+    .update(update_gravity)
+    .update(update_drag)
+    .render(OrientModifier::new(OrientMode::FaceCameraPosition))
+    .render(ColorOverLifetimeModifier {
+        gradient: color,
+        blend: ColorBlendMode::Overwrite,
+        mask: ColorBlendMask::RGBA,
+    })
+    .render(SizeOverLifetimeModifier {
+        gradient: size,
+        screen_space_size: false,
+    })
+}
+
+/// Искры: быстрые, яркие, короткие, вытянуты по скорости.
+fn spark_effect() -> EffectAsset {
+    let writer = ExprWriter::new();
+    let power = writer.add_property("power", Value::Scalar(1.0.into()));
+
+    let init_pos = SetPositionSphereModifier {
+        center: writer.lit(Vec3::Y * 0.5).expr(),
+        radius: writer.lit(0.4).expr(),
+        dimension: ShapeDimension::Volume,
+    };
+    let init_vel = SetVelocitySphereModifier {
+        center: writer.lit(Vec3::Y * -0.6).expr(),
+        speed: (writer.lit(14.0).uniform(writer.lit(30.0)) * writer.prop(power)).expr(),
+    };
+    let init_lifetime = SetAttributeModifier::new(
+        Attribute::LIFETIME,
+        writer.lit(0.25).uniform(writer.lit(0.6)).expr(),
+    );
+    let init_age = SetAttributeModifier::new(Attribute::AGE, writer.lit(0.0).expr());
+    let update_gravity = AccelModifier::new(writer.lit(Vec3::Y * -25.0).expr());
+    let update_drag = LinearDragModifier::new(writer.lit(2.0).expr());
+
+    let mut color = bevy_hanabi::Gradient::new();
+    color.add_key(0.0, Vec4::new(4.0, 3.2, 1.6, 1.0));
+    color.add_key(0.6, Vec4::new(2.5, 1.0, 0.3, 1.0));
+    color.add_key(1.0, Vec4::new(1.0, 0.25, 0.05, 0.0));
+
+    EffectAsset::new(
+        256,
+        SpawnerSettings::once(SPARK_PARTICLES.into()),
+        writer.finish(),
+    )
+    .with_name("explosion_sparks")
+    .with_alpha_mode(bevy_hanabi::AlphaMode::Add)
+    .init(init_pos)
+    .init(init_vel)
+    .init(init_lifetime)
+    .init(init_age)
+    .update(update_gravity)
+    .update(update_drag)
+    .render(OrientModifier::new(OrientMode::AlongVelocity))
+    .render(SetSizeModifier {
+        size: Vec3::new(0.6, 0.08, 1.0).into(),
+    })
+    .render(ColorOverLifetimeModifier {
+        gradient: color,
+        blend: ColorBlendMode::Overwrite,
+        mask: ColorBlendMask::RGBA,
+    })
+}
+
+/// Дым: клубы поднимаются, расширяются, сносятся ветром и тают за несколько секунд.
+fn smoke_effect() -> EffectAsset {
+    let writer = ExprWriter::new();
+    let power = writer.add_property("power", Value::Scalar(1.0.into()));
+
+    let init_pos = SetPositionSphereModifier {
+        center: writer.lit(Vec3::Y * 1.0).expr(),
+        radius: (writer.lit(1.5) * writer.prop(power)).expr(),
+        dimension: ShapeDimension::Volume,
+    };
+    let init_vel = SetVelocitySphereModifier {
+        center: writer.lit(Vec3::Y * -1.0).expr(),
+        speed: (writer.lit(1.5).uniform(writer.lit(4.0)) * writer.prop(power)).expr(),
+    };
+    let init_lifetime = SetAttributeModifier::new(
+        Attribute::LIFETIME,
+        writer.lit(2.5).uniform(writer.lit(4.0)).expr(),
+    );
+    let init_age = SetAttributeModifier::new(Attribute::AGE, writer.lit(0.0).expr());
+    // Подъём и ветер в одну сторону: дым сносит, а не стоит столбом.
+    let update_wind = AccelModifier::new(writer.lit(Vec3::new(1.2, 1.0, -0.5)).expr());
+    let update_drag = LinearDragModifier::new(writer.lit(1.2).expr());
+    let round = RoundModifier {
+        roundness: writer.lit(1.0).expr(),
+    };
+
+    let mut color = bevy_hanabi::Gradient::new();
+    color.add_key(0.0, Vec4::new(0.2, 0.18, 0.16, 0.0));
+    color.add_key(0.12, Vec4::new(0.22, 0.2, 0.18, 0.55));
+    color.add_key(0.5, Vec4::new(0.35, 0.33, 0.31, 0.35));
+    color.add_key(1.0, Vec4::new(0.5, 0.48, 0.46, 0.0));
+
+    let mut size = bevy_hanabi::Gradient::new();
+    size.add_key(0.0, Vec3::splat(1.2));
+    size.add_key(1.0, Vec3::splat(5.0));
+
+    EffectAsset::new(
+        128,
+        SpawnerSettings::once(SMOKE_PARTICLES.into()),
+        writer.finish(),
+    )
+    .with_name("explosion_smoke")
+    .init(init_pos)
+    .init(init_vel)
+    .init(init_lifetime)
+    .init(init_age)
+    .update(update_wind)
+    .update(update_drag)
+    .render(OrientModifier::new(OrientMode::FaceCameraPosition))
+    .render(round)
+    .render(ColorOverLifetimeModifier {
+        gradient: color,
+        blend: ColorBlendMode::Overwrite,
+        mask: ColorBlendMask::RGBA,
+    })
+    .render(SizeOverLifetimeModifier {
+        gradient: size,
+        screen_space_size: false,
+    })
+}
+
 /// Неосвещённый полупрозрачный материал, видимый с обеих сторон.
 fn unlit_material(color: Color) -> StandardMaterial {
     StandardMaterial {
@@ -377,6 +573,7 @@ fn spawn_explosions(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut explosions: MessageReader<Explosion>,
+    mut debris: MessageWriter<SpawnDebris>,
 ) {
     for (index, e) in explosions.read().enumerate() {
         let seed = explosion_seed(e.position, time.elapsed_secs() + index as f32);
@@ -448,7 +645,13 @@ fn spawn_explosions(
         // Огонь и пыль частицами, у каждого взрыва свой сид разброса.
         let properties = EffectProperties::default()
             .with_properties([("power".to_string(), Value::Scalar(scale.into()))]);
-        for (effect, salt) in [(&assets.fire, 1u32), (&assets.dust, 2u32)] {
+        for (effect, salt) in [
+            (&assets.fire, 1u32),
+            (&assets.dust, 2),
+            (&assets.ejecta, 3),
+            (&assets.sparks, 4),
+            (&assets.smoke, 5),
+        ] {
             commands.spawn((
                 ParticleEffect {
                     prng_seed: Some(seed.wrapping_add(salt)),
@@ -458,6 +661,37 @@ fn spawn_explosions(
                 Transform::default(),
                 ChildOf(root),
             ));
+        }
+
+        // Комья грунта и горящие осколки: настоящие обломки, ложатся на рельеф.
+        if power >= DEBRIS_MIN_POWER {
+            let throw = |rng: &mut Rng, up: (f32, f32), side: (f32, f32)| {
+                let angle = rng.range(0.0, std::f32::consts::TAU);
+                let side = rng.range(side.0, side.1) * scale;
+                Vec3::new(angle.cos() * side, rng.range(up.0, up.1) * scale, angle.sin() * side)
+            };
+            let clods = rng.range(CLODS.0 as f32, CLODS.1 as f32 + 0.999) as u32;
+            for _ in 0..clods {
+                let s = rng.range(0.25, 0.55) * scale;
+                debris.write(SpawnDebris {
+                    position: e.position + Vec3::Y * 0.5,
+                    velocity: throw(&mut rng, (8.0, 15.0), (3.0, 9.0)),
+                    size: Vec3::new(s, s * rng.range(0.6, 0.9), s * rng.range(0.7, 1.0)),
+                    color: CLOD_COLOR,
+                    burning: false,
+                });
+            }
+            let shards = rng.range(BURNING_SHARDS.0 as f32, BURNING_SHARDS.1 as f32 + 0.999) as u32;
+            for _ in 0..shards {
+                let s = rng.range(0.15, 0.3) * scale;
+                debris.write(SpawnDebris {
+                    position: e.position + Vec3::Y * 0.8,
+                    velocity: throw(&mut rng, (10.0, 18.0), (4.0, 11.0)),
+                    size: Vec3::new(s, s * 0.5, s * 1.4),
+                    color: SHARD_COLOR,
+                    burning: true,
+                });
+            }
         }
 
         // Кольцо ударной волны. Меш свой у каждого взрыва: вершины кладутся на рельеф.

@@ -25,7 +25,7 @@ impl Plugin for CameraPlugin {
 }
 
 /// Ставит камеру над луноходом. Поворот задаётся один раз и больше не меняется.
-fn spawn_camera(mut commands: Commands, rover: Single<&Transform, With<Rover>>) {
+pub fn spawn_camera(mut commands: Commands, rover: Single<&Transform, With<Rover>>) {
     let target = rover.translation;
     commands.spawn((
         GameCamera,

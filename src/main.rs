@@ -20,6 +20,7 @@ mod explosion;
 mod explosion_fx;
 mod hq;
 mod hud;
+mod impact;
 mod minimap;
 mod laser;
 mod mortar;
@@ -92,6 +93,7 @@ fn main() {
             explosion_fx::ExplosionFxPlugin,
             mortar::MortarPlugin,
             craters::CratersPlugin,
+            impact::ImpactPlugin,
         ))
         .add_plugins((
             combat::CombatPlugin,
