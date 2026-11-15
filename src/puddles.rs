@@ -170,7 +170,7 @@ impl Plugin for PuddlesPlugin {
                     // После кратеров этого кадра: задетая вода пропадает по новому рельефу.
                     soak_blasts.after(craters::dig_craters).in_set(GameSet::Damage),
                     fill_craters.in_set(GameSet::Simulation),
-                    (wade, animate_ripples, expire_splashes).chain().in_set(GameSet::Presentation),
+                    (prewarm_water, wade, animate_ripples, expire_splashes).chain().in_set(GameSet::Presentation),
                 ),
             );
     }
@@ -850,6 +850,28 @@ fn animate_ripples(
             material.base_color.set_alpha(RIPPLE_ALPHA * (1.0 - t));
         }
     }
+}
+
+/// Прогрев: через секунду после запуска брызги, рябь, столб брызг и пар один раз рисуются под
+/// землёй у фокуса. Их шейдеры компилируются ещё в меню, а не на первом въезде в лужу:
+/// иначе игра на нём подвисает.
+fn prewarm_water(
+    mut commands: Commands,
+    real: Res<Time<Real>>,
+    focus: Res<Focus>,
+    terrain: Res<Terrain>,
+    assets: Res<WaterAssets>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut done: Local<bool>,
+) {
+    if *done || real.elapsed_secs() < 1.0 {
+        return;
+    }
+    *done = true;
+    let at = focus.0.with_y(terrain.height_at(focus.0.x, focus.0.z) - 8.0);
+    spawn_splash(&mut commands, &assets, &mut materials, at);
+    spawn_burst(&mut commands, &assets.column, at, 1.0, 0.5);
+    spawn_burst(&mut commands, &assets.steam, at, 1.0, 0.5);
 }
 
 /// Удаляет отыгравшие разовые эффекты брызг.

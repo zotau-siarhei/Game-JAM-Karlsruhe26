@@ -57,7 +57,7 @@ impl Plugin for FirePlugin {
                 (
                     reset_lights.in_set(GameSet::Reset),
                     age_fires.in_set(GameSet::Simulation),
-                    (light_fires, follow_fires, end_smoke)
+                    (prewarm_fire, light_fires, follow_fires, end_smoke)
                         .chain()
                         .in_set(GameSet::Presentation),
                 ),
@@ -543,6 +543,32 @@ fn follow_fires(
             }
         }
     }
+}
+
+/// Прогрев: через секунду после запуска огонь на полсекунды горит под землёй у фокуса, чтобы
+/// шейдер пламени и эффекты искр и дыма скомпилировались в меню, а не на первом пожаре.
+fn prewarm_fire(
+    mut commands: Commands,
+    real: Res<Time<Real>>,
+    focus: Res<crate::camera::Focus>,
+    terrain: Res<crate::terrain::Terrain>,
+    mut warm: Local<Option<(Entity, f32)>>,
+    mut done: Local<bool>,
+) {
+    let now = real.elapsed_secs();
+    if let Some((entity, at)) = *warm
+        && now - at > 0.5
+    {
+        commands.entity(entity).try_despawn();
+        *warm = None;
+    }
+    if *done || now < 1.0 {
+        return;
+    }
+    *done = true;
+    let at = focus.0.with_y(terrain.height_at(focus.0.x, focus.0.z) - 8.0);
+    let entity = commands.spawn((Fire::new(1.0, 1.0), RunScoped, Transform::from_translation(at))).id();
+    *warm = Some((entity, now));
 }
 
 /// Пул света: столько источников, сколько разрешает ступень качества.
