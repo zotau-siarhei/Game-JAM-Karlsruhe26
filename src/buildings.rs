@@ -337,9 +337,9 @@ fn house_model(kind: HouseKind) -> &'static str {
 /// чтобы её стены совпали со стенами из `half_extents` (двери, проёмы, препятствие, руины).
 fn house_fit(kind: HouseKind) -> Vec3 {
     match kind {
-        HouseKind::Hut => Vec3::new(0.83, 1.0, 1.07),
-        HouseKind::TwoStory => Vec3::new(0.87, 1.0, 1.11),
-        HouseKind::Barrack => Vec3::new(0.82, 1.0, 1.0),
+        HouseKind::Hut => Vec3::new(0.985, 1.0, 1.092),
+        HouseKind::TwoStory => Vec3::new(0.822, 1.0, 0.883),
+        HouseKind::Barrack => Vec3::new(0.925, 1.25, 0.95),
     }
 }
 

@@ -51,9 +51,9 @@
     {
       "id": "house_small",
       "file": "house_small.glb",
-      "scale": 3.158,
+      "scale": 6.3,
       "rotation_y": 0.0,
-      "offset_y": 2.305,
+      "offset_y": 3.005,
       "budget": 4000
     },
     {
@@ -171,17 +171,17 @@
     {
       "id": "house_two_story",
       "file": "house_two_story.glb",
-      "scale": 7.3,
-      "rotation_y": 0.0,
-      "offset_y": 3.48,
+      "scale": 9.0,
+      "rotation_y": 1.5708,
+      "offset_y": 3.96,
       "budget": 4000
     },
     {
       "id": "house_barrack",
       "file": "house_barrack.glb",
-      "scale": 12.6,
+      "scale": 14.0,
       "rotation_y": 1.5708,
-      "offset_y": 1.83,
+      "offset_y": 2.09,
       "budget": 4000
     },
     {
