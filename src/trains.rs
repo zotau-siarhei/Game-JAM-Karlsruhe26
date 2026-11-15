@@ -6,25 +6,34 @@
 //!
 //! Вагон сбивает машины: урон и отброс в сторону от пути. Разрушенное звено впереди или гибель
 //! вагона сбрасывает состав с рельсов: вагоны становятся свободными телами с хореографией гармошки,
-//! разворотов и переворотов, локомотив и цистерны взрываются, остальные горят. Остановившийся
-//! вагон — обугленный остов-препятствие, он хранится до конца забега.
+//! разворотов и переворотов, локомотив и цистерны взрываются по очереди, остальные горят.
+//! Остановившийся вагон — обугленный остов-препятствие, он хранится до конца забега; остовов не
+//! больше [`MAX_WRECKS`], старые уходят первыми. Вагоны внутри невскрытого туннеля при сходе
+//! остаются в горе и исчезают.
+//!
+//! Вагон можно уничтожить чем угодно: у него есть здоровье, коллайдер и команда `Neutral`.
+//! Уничтоженный или сошедший грузовой вагон роняет ящики, пассажирский поднимает тревогу, если
+//! его уничтожил игрок. Взрывы крушения записываются на того, кто его вызвал: порвал путь или
+//! добил вагон.
+//!
+//! Наружу поезда сообщают [`TrainIncoming`] и [`TrainDerailed`].
 
 use std::collections::HashMap;
 
 use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 
-use crate::buildings::{BuildingDestroyed, DestroyCause};
+use crate::alarm::Alarm;
 use crate::camera::GameCamera;
-use crate::combat::{Collider, Damage, Died, Health, Team, blast_damage};
+use crate::combat::{Collider, Damage, Died, Health, ROVER_MAX_HEALTH, Team, blast_damage};
 use crate::explosion::Explosion;
-use crate::frame::GameSet;
+use crate::frame::{GameSet, RunMessages};
 use crate::obstacles::{Obstacle, Shape};
 use crate::pickups::{SpawnLoot, crate_weapons};
-use crate::rails::TrackDamage;
+use crate::rails::{LINK_LENGTH, TrackDamage};
 use crate::railway::{LineId, Lines};
 use crate::rng::GameRng;
-use crate::rover::Rover;
+use crate::rover::{Rover, RoverMotion};
 use crate::run::{RunScoped, WorldRebuilt};
 use crate::settlements::Footprint;
 use crate::sound_list::Dice;
@@ -54,11 +63,17 @@ const CAR_WIDTH: f32 = 3.0;
 /// Высота пола вагона над путями, м.
 const FLOOR: f32 = 0.6;
 
-/// Урон машине от удара вагона и скорость отброса, м/с.
-const HIT_DAMAGE: f32 = 60.0;
+/// Урон машине от удара вагона: пятая часть здоровья лунохода (было 60 при здоровье 300).
+const HIT_DAMAGE: f32 = ROVER_MAX_HEALTH * 0.2;
+/// Скорость отброса, м/с.
 const KNOCK_SPEED: f32 = 15.0;
-/// Урон от кувыркающегося вагона.
-const TUMBLE_DAMAGE: f32 = 40.0;
+/// Урон от кувыркающегося вагона: 2/15 здоровья лунохода (было 40 при здоровье 300).
+const TUMBLE_DAMAGE: f32 = ROVER_MAX_HEALTH * 2.0 / 15.0;
+/// Радиус коллайдера вагона для пуль и лазера: половина ширины и четверть длины, м. Круг не
+/// повторяет кузов: середину ловит целиком, концы — частично, рядом с бортом немного лишнего.
+fn car_collider(kind: CarKind) -> f32 {
+    CAR_WIDTH * 0.5 + kind.size().0 * 0.25
+}
 
 /// Взрыв схода: мощность выше порога замедления, малый радиус.
 const DERAIL_BLAST: (f32, f32) = (3.0, 1.55);
@@ -68,10 +83,24 @@ const TANK_BLAST: (f32, f32) = (7.0, 2.0);
 /// Локомотив взрывается через столько после схода, цистерна — не позже, с.
 const LOCO_DELAY: f32 = 0.3;
 const TANK_DELAY: f32 = 1.2;
+/// Каждая следующая цистерна состава рвётся позже предыдущей на столько, с.
+const TANK_STAGGER: f32 = 0.35;
+/// Взрывы вагонов идут не чаще, чем через столько, с: семь цистерн не рвутся в одном кадре.
+const BLAST_GAP: f32 = 0.25;
 /// Сколько горят вагоны, с.
 const BURN_TIME: f32 = 6.0;
-/// Вес крушения в угрозе.
+/// Вес крушения в угрозе: только крушения от игрока.
 const WRECK_THREAT: f32 = 6.0;
+/// Очков тревоги за пассажирский вагон, уничтоженный игроком: как за дом.
+const PASSENGER_ALARM: f32 = 6.0;
+/// Больше остовов забег не хранит: старые исчезают первыми.
+const MAX_WRECKS: usize = 40;
+/// Угол кузова ушёл под рельеф глубже этого за кадр — это стена (склон горы у портала), а не
+/// земля: вагон в неё упирается, а не взлетает на вершину, м.
+const WALL_STEP: f32 = 1.5;
+/// Поезд ставится, только если путь свободен от разрывов и остовов на столько вперёд от лунохода
+/// по ходу поезда: вся дорога до его ухода, м.
+const CLEAR_AHEAD: f32 = 260.0;
 
 /// Плагин поездов.
 pub struct TrainsPlugin;
@@ -80,6 +109,8 @@ impl Plugin for TrainsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Schedule>()
             .init_resource::<WreckStore>()
+            .add_run_message::<TrainIncoming>()
+            .add_run_message::<TrainDerailed>()
             .add_systems(Startup, create_assets)
             .add_systems(
                 Update,
@@ -105,6 +136,19 @@ impl Plugin for TrainsPlugin {
                 ),
             );
     }
+}
+
+/// Объявлен поезд: у края экрана мигает метка. `position` — где появится голова.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct TrainIncoming {
+    pub position: Vec3,
+}
+
+/// Поезд сошёл с рельсов. `position` — первый видимый сошедший вагон, `cause` — кто вызвал сход.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct TrainDerailed {
+    pub position: Vec3,
+    pub cause: Team,
 }
 
 /// Вид вагона.
@@ -164,6 +208,8 @@ struct OnTrack {
 #[derive(Component)]
 pub struct Car {
     kind: CarKind,
+    /// Груз уже выпал, тревога уже поднята: вагон уничтожен один раз.
+    spent: bool,
 }
 
 /// Сошедший вагон: свободное тело.
@@ -173,8 +219,12 @@ struct Wreck {
     /// Угловая скорость в осях вагона, рад/с.
     spin: Vec3,
     age: f32,
+    /// Когда взорваться, с от схода; у вагонов, которые не взрываются, — бесконечность.
+    due: f32,
     /// Взорвался ли уже: у локомотива и цистерны.
     exploded: bool,
+    /// Кто вызвал сход: на него записываются взрывы вагона.
+    cause: Team,
     /// Пауза до следующего урона от кувыркания, с.
     hit_cooldown: f32,
     still: f32,
@@ -202,21 +252,76 @@ struct TrainHitCooldown(f32);
 /// Остов в хранилище.
 #[derive(Clone, Copy)]
 struct WreckRecord {
+    /// Порядковый номер: чем меньше, тем старше.
+    serial: u64,
     kind: CarKind,
     transform: Transform,
 }
 
-/// Остовы забега по участкам рельефа и те, что сейчас в сцене.
+/// Остовы забега по участкам рельефа и те, что сейчас в сцене: номер записи и сущность.
 #[derive(Resource, Default)]
 struct WreckStore {
     records: HashMap<IVec2, Vec<WreckRecord>>,
-    shown: HashMap<IVec2, Vec<Entity>>,
+    shown: HashMap<IVec2, Vec<(u64, Entity)>>,
+    next: u64,
 }
 
 impl WreckStore {
     fn is_empty(&self) -> bool {
         self.records.is_empty()
     }
+
+    fn len(&self) -> usize {
+        self.records.values().map(Vec::len).sum()
+    }
+
+    /// Записывает остов, показанный сущностью `entity`. Сверх [`MAX_WRECKS`] самый старый
+    /// забывается; его сущность, если она в сцене, возвращается для удаления.
+    fn push(&mut self, coord: IVec2, kind: CarKind, transform: Transform, entity: Entity) -> Option<Entity> {
+        let serial = self.next;
+        self.next += 1;
+        self.records.entry(coord).or_default().push(WreckRecord { serial, kind, transform });
+        self.shown.entry(coord).or_default().push((serial, entity));
+        if self.len() <= MAX_WRECKS {
+            return None;
+        }
+        let (&oldest_coord, oldest) = self
+            .records
+            .iter()
+            .filter_map(|(c, list)| list.iter().map(|r| r.serial).min().map(|s| (c, s)))
+            .min_by_key(|&(_, s)| s)?;
+        let list = self.records.get_mut(&oldest_coord)?;
+        list.retain(|r| r.serial != oldest);
+        if list.is_empty() {
+            self.records.remove(&oldest_coord);
+        }
+        let shown = self.shown.get_mut(&oldest_coord)?;
+        let at = shown.iter().position(|&(s, _)| s == oldest)?;
+        Some(shown.remove(at).1)
+    }
+
+    /// Лежит ли остов на оси линии между параметрами `from` и `to`.
+    fn on_line(&self, terrain: &Terrain, line: LineId, from: f32, to: f32) -> bool {
+        let (lo, hi) = (from.min(to), from.max(to));
+        self.records.values().flatten().any(|r| {
+            let p = Vec2::new(r.transform.translation.x, r.transform.translation.z);
+            let s = Lines::param(line, p);
+            (lo..=hi).contains(&s) && terrain.lines().point(line, s).distance(p) < CAR_WIDTH + 2.0
+        })
+    }
+}
+
+/// Свободен ли путь между параметрами `from` и `to`: нет разрывов и остовов на оси.
+fn line_clear(terrain: &Terrain, damage: &TrackDamage, store: &WreckStore, line: LineId, from: f32, to: f32) -> bool {
+    let (lo, hi) = (from.min(to), from.max(to));
+    let mut s = lo;
+    while s <= hi + LINK_LENGTH {
+        if damage.is_broken(line, s) {
+            return false;
+        }
+        s += LINK_LENGTH;
+    }
+    !store.on_line(terrain, line, lo, hi)
 }
 
 /// Расписание поездов.
@@ -291,6 +396,10 @@ fn reset_trains(
 }
 
 /// Ставит поезд у ближайшей линии: пауза, мигающая метка у края экрана, затем состав.
+///
+/// Поезд идёт только по свободному пути: если вперёд и назад путь порван или на нём остовы,
+/// поезда на этой линии нет, пока луноход не уедет к другой. Путь, порванный после объявления
+/// поезда, сбрасывает его с рельсов — так и задумано.
 #[allow(clippy::too_many_arguments)]
 fn run_schedule(
     mut commands: Commands,
@@ -298,7 +407,10 @@ fn run_schedule(
     mut dice: ResMut<GameRng>,
     mut schedule: ResMut<Schedule>,
     terrain: Res<Terrain>,
+    damage: Res<TrackDamage>,
+    store: Res<WreckStore>,
     assets: Res<TrainAssets>,
+    mut incoming: MessageWriter<TrainIncoming>,
     trains: Query<(), With<Train>>,
     rover: Single<&Transform, With<Rover>>,
     camera: Single<(&Camera, &GlobalTransform), With<GameCamera>>,
@@ -363,9 +475,21 @@ fn run_schedule(
         return;
     }
     schedule.timer = None;
-    let dir = if dice.range(0.0, 1.0) < 0.5 { 1.0 } else { -1.0 };
-    let s = Lines::param(near.line, p) - dir * SPAWN_BEHIND;
+    let first = if dice.range(0.0, 1.0) < 0.5 { 1.0 } else { -1.0 };
+    let rover_s = Lines::param(near.line, p);
+    let Some(dir) = [first, -first]
+        .into_iter()
+        .find(|&dir| line_clear(&terrain, &damage, &store, near.line, rover_s - dir * SPAWN_BEHIND, rover_s + dir * CLEAR_AHEAD))
+    else {
+        // Путь порван в обе стороны: следующая попытка — после новой паузы.
+        return;
+    };
+    let s = rover_s - dir * SPAWN_BEHIND;
     schedule.pending = Some((near.line, s, dir, WARNING_TIME));
+    let at = terrain.lines().point(near.line, s);
+    incoming.write(TrainIncoming {
+        position: Vec3::new(at.x, terrain.track_level(near.line, s), at.y),
+    });
 }
 
 /// Создаёт состав: локомотив и вагоны со случайными долями видов.
@@ -390,7 +514,14 @@ fn spawn_train(commands: &mut Commands, assets: &TrainAssets, dice: &mut Dice, l
             }
         };
         let car = spawn_car(commands, assets, kind, Transform::default());
-        commands.entity(car).insert((OnTrack { train, offset }, Health::new(kind.health())));
+        commands.entity(car).insert((
+            OnTrack { train, offset },
+            Health::new(kind.health()),
+            Team::Neutral,
+            Collider {
+                radius: car_collider(kind),
+            },
+        ));
         cars.push(car);
         offset += kind.size().0 + COUPLING;
     }
@@ -402,7 +533,7 @@ fn spawn_car(commands: &mut Commands, assets: &TrainAssets, kind: CarKind, trans
     let (length, height) = kind.size();
     let body_h = height - FLOOR;
     let mut entity = commands.spawn((
-        Car { kind },
+        Car { kind, spent: false },
         RunScoped,
         transform,
         Visibility::default(),
@@ -477,7 +608,14 @@ fn move_trains(
     }
 }
 
-/// Ставит вагоны на путь по двум тележкам и прячет их внутри невскрытого туннеля.
+/// Концы вагона по пути: параметры переднего и заднего конца.
+fn car_span(train: &Train, on: &OnTrack, kind: CarKind) -> (f32, f32) {
+    let front = train.head - train.dir * on.offset;
+    (front, front - train.dir * kind.size().0)
+}
+
+/// Ставит вагоны на путь по двум тележкам и прячет их, когда они целиком в невскрытом туннеле.
+/// Вагон, въехавший в туннель наполовину, виден: часть в горе закрывает сам склон.
 fn place_cars(
     terrain: Res<Terrain>,
     damage: Res<TrackDamage>,
@@ -488,9 +626,7 @@ fn place_cars(
         let Ok(train) = trains.get(on.train) else {
             continue;
         };
-        let (length, _) = car.kind.size();
-        let front = train.head - train.dir * on.offset;
-        let back = front - train.dir * length;
+        let (front, back) = car_span(train, on, car.kind);
         let bogie = |s: f32| {
             let p = terrain.lines().point(train.line, s);
             Vec3::new(p.x, terrain.track_level(train.line, s) + 0.3, p.y)
@@ -500,8 +636,8 @@ fn place_cars(
         let forward = (f - b).normalize_or(Vec3::Z);
         transform.translation = (f + b) * 0.5;
         transform.rotation = Quat::from_rotation_arc(Vec3::Z, forward);
-        let mid = (front + back) * 0.5;
-        *visibility = if damage.in_tunnel(&terrain, train.line, mid) { Visibility::Hidden } else { Visibility::Inherited };
+        let hidden = damage.in_tunnel(&terrain, train.line, front) && damage.in_tunnel(&terrain, train.line, back);
+        *visibility = if hidden { Visibility::Hidden } else { Visibility::Inherited };
     }
 }
 
@@ -516,12 +652,15 @@ fn car_footprint(transform: &Transform, kind: CarKind) -> Footprint {
 }
 
 /// Вагоны на ходу сбивают машины и сносят мелкие объекты на пути.
+///
+/// Вагон — стена для машин: каждый кадр машина выталкивается из кузова на свою сторону пути,
+/// поэтому состав нельзя проехать насквозь. Удар — урон, отброс от пути и остановка лунохода.
 #[allow(clippy::type_complexity)]
 fn hit_vehicles(
     mut commands: Commands,
     cars: Query<(&Transform, &Car, &Visibility), With<OnTrack>>,
-    vehicles: Query<
-        (Entity, &Transform, &Collider, Option<&TrainHitCooldown>),
+    mut vehicles: Query<
+        (Entity, &mut Transform, &Collider, Option<&TrainHitCooldown>, Option<&mut RoverMotion>),
         (Or<(With<Rover>, With<GroundVehicle>)>, Without<Car>),
     >,
     obstacles: Query<(Entity, &Obstacle, &Health), Without<Car>>,
@@ -533,9 +672,19 @@ fn hit_vehicles(
         }
         let footprint = car_footprint(transform, car.kind);
         let shape = Shape::Rect(footprint);
-        for (entity, vehicle, collider, cooldown) in &vehicles {
+        let roof = transform.translation.y + car.kind.size().1 + 1.0;
+        for (entity, mut vehicle, collider, cooldown, motion) in &mut vehicles {
             let p = Vec2::new(vehicle.translation.x, vehicle.translation.z);
-            if cooldown.is_some() || footprint.distance(p) > collider.radius {
+            // Машина над вагоном — на горе над туннелем: вагон под ней её не задевает.
+            if footprint.distance(p) > collider.radius || vehicle.translation.y > roof {
+                continue;
+            }
+            // Сбоку от кузова — на свою сторону; спереди и сзади — куда ближе.
+            if let Some(push) = shape.push_out(p, collider.radius) {
+                vehicle.translation.x += push.x;
+                vehicle.translation.z += push.y;
+            }
+            if cooldown.is_some() {
                 continue;
             }
             let local = footprint.to_local(p);
@@ -548,10 +697,14 @@ fn hit_vehicles(
                 },
                 TrainHitCooldown(1.0),
             ));
+            // Луноход останавливается: удар гасит его разгон.
+            if let Some(mut motion) = motion {
+                motion.speed = 0.0;
+            }
             damage.write(Damage {
                 target: entity,
                 amount: HIT_DAMAGE,
-                source_team: Team::Enemy,
+                source_team: Team::Neutral,
             });
         }
         for (entity, obstacle, health) in &obstacles {
@@ -564,14 +717,15 @@ fn hit_vehicles(
                 damage.write(Damage {
                     target: entity,
                     amount: health.current + 1.0,
-                    source_team: Team::Player,
+                    source_team: Team::Neutral,
                 });
             }
         }
     }
 }
 
-/// Взрывы ранят вагоны: у вагонов нет команды, поэтому урон считается здесь, как у домов.
+/// Взрывы ранят вагоны вдвое: общий урон взрыва по команде вагона считает `combat`, здесь —
+/// столько же сверху, чтобы прочность вагонов против взрывов осталась прежней.
 fn blast_cars(
     mut explosions: MessageReader<Explosion>,
     cars: Query<(Entity, &GlobalTransform, &Health), With<Car>>,
@@ -582,7 +736,7 @@ fn blast_cars(
             if health.is_dead() {
                 continue;
             }
-            let amount = blast_damage(e.power, e.radius, transform.translation().distance(e.position), false) * 2.0;
+            let amount = blast_damage(e.power, e.radius, transform.translation().distance(e.position), false);
             if amount > 0.0 {
                 damage.write(Damage {
                     target: entity,
@@ -594,7 +748,43 @@ fn blast_cars(
     }
 }
 
+/// Вагон уничтожен — погиб или сошёл с рельсов: грузовой роняет ящики, пассажирский поднимает
+/// тревогу, если его уничтожил игрок. Срабатывает один раз на вагон.
+#[allow(clippy::too_many_arguments)]
+fn car_destroyed(
+    car: &mut Car,
+    at: Vec3,
+    by: Team,
+    survival: f32,
+    dice: &mut Dice,
+    alarm: &mut Alarm,
+    loot: &mut MessageWriter<SpawnLoot>,
+) {
+    if car.spent {
+        return;
+    }
+    car.spent = true;
+    match car.kind {
+        CarKind::Freight => {
+            let weapons = crate_weapons(survival);
+            for k in 0..1 + dice.below(2) {
+                let weapon = weapons[dice.below(weapons.len())];
+                loot.write(SpawnLoot {
+                    position: at + Vec3::new(2.0 + k as f32 * 1.5, 1.0, 1.5),
+                    weapon,
+                });
+            }
+        }
+        CarKind::Passenger if by == Team::Player => alarm.add(PASSENGER_ALARM),
+        _ => {}
+    }
+}
+
 /// Сход с рельсов: разрушенное звено перед головой — весь состав; гибель вагона — он и все позади.
+///
+/// Сход записывается на того, кто его вызвал: на порвавшего путь или на добившего вагон. Вагоны,
+/// которые в этот момент целиком в невскрытом туннеле, остаются в горе: они исчезают, а не
+/// выходят на её поверхность.
 #[allow(clippy::too_many_arguments)]
 fn derail_trains(
     mut commands: Commands,
@@ -603,54 +793,37 @@ fn derail_trains(
     survival: Res<SurvivalTime>,
     mut dice: ResMut<GameRng>,
     mut threat: ResMut<Threat>,
+    mut alarm: ResMut<Alarm>,
     mut died: MessageReader<Died>,
     mut trains: Query<(Entity, &mut Train)>,
-    cars: Query<(&OnTrack, &Car, &Transform)>,
-    dead_cars: Query<(&Car, &GlobalTransform)>,
+    mut cars: Query<(&mut Car, &Transform, &GlobalTransform, Option<&OnTrack>)>,
     mut explosions: MessageWriter<Explosion>,
     mut loot: MessageWriter<SpawnLoot>,
-    mut destroyed: MessageWriter<BuildingDestroyed>,
+    mut derailed: MessageWriter<TrainDerailed>,
 ) {
-    let mut derails: Vec<(Entity, usize)> = Vec::new();
+    let mut derails: Vec<(Entity, usize, Team)> = Vec::new();
     for death in died.read() {
-        // Погибший вагон: груз и тревога.
-        if let Ok((car, transform)) = dead_cars.get(death.entity) {
-            let at = transform.translation();
-            match car.kind {
-                CarKind::Freight => {
-                    let weapons = crate_weapons(survival.0);
-                    for k in 0..1 + dice.below(2) {
-                        let weapon = weapons[dice.below(weapons.len())];
-                        loot.write(SpawnLoot {
-                            position: at + Vec3::new(2.0 + k as f32 * 1.5, 1.0, 1.5),
-                            weapon,
-                        });
-                    }
-                }
-                CarKind::Passenger => {
-                    destroyed.write(BuildingDestroyed {
-                        position: at,
-                        cause: DestroyCause::Player,
-                    });
-                }
-                _ => {}
-            }
-        }
-        if let Ok((on, ..)) = cars.get(death.entity)
-            && let Ok((_, train)) = trains.get(on.train)
+        let Ok((mut car, _, global, on)) = cars.get_mut(death.entity) else {
+            continue;
+        };
+        let on_train = on.map(|on| on.train);
+        car_destroyed(&mut car, global.translation(), death.killer, survival.0, &mut dice, &mut alarm, &mut loot);
+        if let Some(train_entity) = on_train
+            && let Ok((_, train)) = trains.get(train_entity)
             && let Some(index) = train.cars.iter().position(|&c| c == death.entity)
         {
-            derails.push((on.train, index));
+            derails.push((train_entity, index, death.killer));
         }
     }
     for (entity, train) in &trains {
         let ahead = train.head + train.dir * TRAIN_SPEED * 0.2;
         let blocked = damage.is_broken(train.line, ahead) && !damage.in_tunnel(&terrain, train.line, ahead);
         if blocked {
-            derails.push((entity, 0));
+            let cause = damage.broken_by(train.line, ahead).unwrap_or(Team::Neutral);
+            derails.push((entity, 0, cause));
         }
     }
-    for (entity, from) in derails {
+    for (entity, from, cause) in derails {
         let Ok((_, mut train)) = trains.get_mut(entity) else {
             continue;
         };
@@ -662,19 +835,39 @@ fn derail_trains(
         let forward = Vec3::new(tangent.x, 0.0, tangent.y);
         let side = forward.cross(Vec3::Y);
         let mut first = true;
+        let mut tanks = 0;
         for (j, car_entity) in fallen.into_iter().enumerate() {
-            let Ok((_, car, transform)) = cars.get(car_entity) else {
+            let Ok((car, transform, _, Some(on))) = cars.get(car_entity) else {
                 continue;
             };
+            // Вагон целиком в туннеле: остаётся в горе.
+            let (front, back) = car_span(&train, on, car.kind);
+            if damage.in_tunnel(&terrain, train.line, front) && damage.in_tunnel(&terrain, train.line, back) {
+                commands.entity(car_entity).try_despawn();
+                continue;
+            }
             if first {
                 first = false;
                 explosions.write(Explosion {
                     position: transform.translation,
                     radius: DERAIL_BLAST.0,
                     power: DERAIL_BLAST.1,
-                    source_team: Team::Player,
+                    source_team: cause,
+                });
+                derailed.write(TrainDerailed {
+                    position: transform.translation,
+                    cause,
                 });
             }
+            // Цистерны состава рвутся по очереди, а не в одном кадре.
+            let due = match car.kind {
+                CarKind::Locomotive => LOCO_DELAY,
+                CarKind::Tank => {
+                    tanks += 1;
+                    TANK_DELAY + (tanks - 1) as f32 * TANK_STAGGER
+                }
+                _ => f32::MAX,
+            };
             // Хореография: гармошка — бок чередуется, разворот, у каждого второго — переворот.
             let sign = if j % 2 == 0 { 1.0 } else { -1.0 };
             let speed = TRAIN_SPEED * (1.0 - 0.04 * j as f32).max(0.5);
@@ -689,7 +882,9 @@ fn derail_trains(
                         velocity,
                         spin,
                         age: 0.0,
+                        due,
                         exploded: !matches!(car.kind, CarKind::Locomotive | CarKind::Tank),
+                        cause,
                         hit_cooldown: 0.0,
                         still: 0.0,
                         lit: false,
@@ -697,7 +892,10 @@ fn derail_trains(
                     Visibility::Inherited,
                 ));
         }
-        threat.add_destruction(WRECK_THREAT);
+        // В угрозу идут только крушения, которые устроил игрок.
+        if cause == Team::Player && !first {
+            threat.add_destruction(WRECK_THREAT);
+        }
     }
 }
 
@@ -719,6 +917,9 @@ fn corners(transform: &Transform, kind: CarKind) -> [Vec3; 8] {
 }
 
 /// Свободные вагоны: гравитация, трение о рельеф по углам кузова, расталкивание, взрывы.
+///
+/// Угол, ушедший под рельеф глубже [`WALL_STEP`], упёрся в стену — склон горы у портала или
+/// обрыв: вагон не взбирается на неё, а отскакивает назад. Вагон, целиком ушедший в гору, исчезает.
 #[allow(clippy::too_many_arguments)]
 fn move_wrecks(
     mut commands: Commands,
@@ -726,24 +927,40 @@ fn move_wrecks(
     terrain: Res<Terrain>,
     mut wrecks: Query<(Entity, &Car, &mut Transform, &mut Wreck)>,
     mut explosions: MessageWriter<Explosion>,
+    mut blast_wait: Local<f32>,
 ) {
     let dt = time.delta_secs();
     if dt <= 0.0 {
         return;
     }
+    *blast_wait -= dt;
+    let depths = |transform: &Transform, kind: CarKind| {
+        corners(transform, kind).map(|c| terrain.height_at(c.x, c.z) - c.y)
+    };
     for (entity, car, mut transform, mut wreck) in &mut wrecks {
         wreck.age += dt;
         wreck.velocity.y -= 25.0 * dt;
+        let before = transform.translation;
         transform.translation += wreck.velocity * dt;
         let spin = wreck.spin;
         transform.rotation = (transform.rotation * Quat::from_scaled_axis(spin * dt)).normalize();
-        // Контакт: самый низкий угол кузова не уходит под рельеф.
-        let lowest = corners(&transform, car.kind)
-            .iter()
-            .map(|c| c.y - terrain.height_at(c.x, c.z))
-            .fold(f32::MAX, f32::min);
-        if lowest < 0.0 {
-            transform.translation.y -= lowest;
+        // Стена: шаг по плану отменяется, скорость вдоль плана гасится с отскоком.
+        if depths(&transform, car.kind).iter().any(|&d| d > WALL_STEP) {
+            transform.translation.x = before.x;
+            transform.translation.z = before.z;
+            wreck.velocity.x *= -0.2;
+            wreck.velocity.z *= -0.2;
+        }
+        let depths = depths(&transform, car.kind);
+        if depths.iter().all(|&d| d > WALL_STEP) {
+            // Вагон целиком в горе.
+            commands.entity(entity).try_despawn();
+            continue;
+        }
+        // Контакт: самый низкий угол кузова не уходит под рельеф; углы в стене не в счёт.
+        let lift = depths.iter().copied().filter(|&d| d <= WALL_STEP).fold(f32::MIN, f32::max);
+        if lift > 0.0 {
+            transform.translation.y += lift;
             let impact = -wreck.velocity.y;
             if impact > 0.0 {
                 wreck.velocity.y = impact * 0.15;
@@ -752,24 +969,21 @@ fn move_wrecks(
             wreck.velocity.x *= friction;
             wreck.velocity.z *= friction;
             wreck.spin *= (1.0 - 2.5 * dt).max(0.0);
-            // Цистерна рвётся при сильном ударе о землю.
+            // Цистерна рвётся при сильном ударе о землю — в свою очередь, не раньше.
             if car.kind == CarKind::Tank && impact > 6.0 && !wreck.exploded {
-                wreck.age = wreck.age.max(TANK_DELAY);
+                wreck.due = wreck.due.min(wreck.age);
             }
         }
-        let due = match car.kind {
-            CarKind::Locomotive => LOCO_DELAY,
-            CarKind::Tank => TANK_DELAY,
-            _ => f32::MAX,
-        };
-        if !wreck.exploded && wreck.age >= due {
+        // Взрывы вагонов разнесены по времени: не чаще одного за BLAST_GAP.
+        if !wreck.exploded && wreck.age >= wreck.due && *blast_wait <= 0.0 {
             wreck.exploded = true;
+            *blast_wait = BLAST_GAP;
             let (radius, power) = if car.kind == CarKind::Tank { TANK_BLAST } else { LOCO_BLAST };
             explosions.write(Explosion {
                 position: transform.translation,
                 radius,
                 power,
-                source_team: Team::Player,
+                source_team: wreck.cause,
             });
         }
         // Вагон загорается сразу после схода.
@@ -832,7 +1046,7 @@ fn tumble_damage(
                 damage.write(Damage {
                     target: entity,
                     amount: TUMBLE_DAMAGE,
-                    source_team: Team::Enemy,
+                    source_team: Team::Neutral,
                 });
             }
         }
@@ -840,16 +1054,21 @@ fn tumble_damage(
 }
 
 /// Остановившийся вагон становится обугленным остовом-препятствием и записывается в хранилище.
+/// Сошедший вагон уничтожен: груз и тревога — как при гибели, если их ещё не было.
 #[allow(clippy::too_many_arguments)]
 fn settle_wrecks(
     mut commands: Commands,
     time: Res<Time>,
     assets: Res<TrainAssets>,
+    survival: Res<SurvivalTime>,
+    mut dice: ResMut<GameRng>,
+    mut alarm: ResMut<Alarm>,
     mut store: ResMut<WreckStore>,
-    mut wrecks: Query<(Entity, &Car, &Transform, &mut Wreck, &Children)>,
+    mut wrecks: Query<(Entity, &mut Car, &Transform, &mut Wreck, &Children)>,
     mut materials: Query<&mut MeshMaterial3d<StandardMaterial>>,
+    mut loot: MessageWriter<SpawnLoot>,
 ) {
-    for (entity, car, transform, mut wreck, children) in &mut wrecks {
+    for (entity, mut car, transform, mut wreck, children) in &mut wrecks {
         if wreck.velocity.length() < 0.6 && wreck.spin.length() < 0.4 {
             wreck.still += time.delta_secs();
         } else {
@@ -858,12 +1077,11 @@ fn settle_wrecks(
         if wreck.still < 0.5 || wreck.age < 1.5 || !wreck.exploded {
             continue;
         }
+        car_destroyed(&mut car, transform.translation, wreck.cause, survival.0, &mut dice, &mut alarm, &mut loot);
         let coord = chunk_coord_at(transform.translation.x, transform.translation.z);
-        store.records.entry(coord).or_default().push(WreckRecord {
-            kind: car.kind,
-            transform: *transform,
-        });
-        store.shown.entry(coord).or_default().push(entity);
+        if let Some(oldest) = store.push(coord, car.kind, *transform, entity) {
+            commands.entity(oldest).try_despawn();
+        }
         for child in children.iter() {
             if let Ok(mut material) = materials.get_mut(child)
                 && material.0 != assets.window
@@ -874,7 +1092,7 @@ fn settle_wrecks(
         let top = corners(transform, car.kind).iter().map(|c| c.y).fold(f32::MIN, f32::max);
         commands
             .entity(entity)
-            .remove::<(Wreck, Health)>()
+            .remove::<(Wreck, Health, Team, Collider)>()
             .insert(Obstacle {
                 shape: Shape::Rect(car_footprint(transform, car.kind)),
                 top,
@@ -896,7 +1114,7 @@ fn stream_wrecks(
     store.shown.retain(|&coord, entities| {
         let keep = visible.entity(coord).is_some();
         if !keep {
-            for &e in entities.iter() {
+            for &(_, e) in entities.iter() {
                 commands.entity(e).try_despawn();
             }
         }
@@ -910,11 +1128,17 @@ fn stream_wrecks(
         for record in records {
             let e = spawn_car(&mut commands, &assets, record.kind, record.transform);
             let top = corners(&record.transform, record.kind).iter().map(|c| c.y).fold(f32::MIN, f32::max);
-            commands.entity(e).insert(Obstacle {
-                shape: Shape::Rect(car_footprint(&record.transform, record.kind)),
-                top,
-            });
-            entities.push(e);
+            commands.entity(e).insert((
+                Car {
+                    kind: record.kind,
+                    spent: true,
+                },
+                Obstacle {
+                    shape: Shape::Rect(car_footprint(&record.transform, record.kind)),
+                    top,
+                },
+            ));
+            entities.push((record.serial, e));
         }
         store.shown.insert(coord, entities);
     }
@@ -971,6 +1195,7 @@ mod tests {
         app.world_mut().resource_mut::<WreckStore>().records.insert(
             IVec2::ZERO,
             vec![WreckRecord {
+                serial: 0,
                 kind: CarKind::Tank,
                 transform: Transform::default(),
             }],
@@ -978,5 +1203,28 @@ mod tests {
         app.world_mut().write_message(WorldRebuilt { seed: 1 });
         app.update();
         assert!(app.world().resource::<WreckStore>().is_empty());
+    }
+
+    #[test]
+    fn остовов_не_больше_предела_и_старые_уходят_первыми() {
+        let mut store = WreckStore::default();
+        let mut evicted = Vec::new();
+        for i in 0..MAX_WRECKS + 3 {
+            let coord = IVec2::new(i as i32 % 3, 0);
+            let entity = Entity::from_raw_u32(i as u32 + 1).unwrap();
+            if let Some(old) = store.push(coord, CarKind::Freight, Transform::default(), entity) {
+                evicted.push(old);
+            }
+        }
+        assert_eq!(store.len(), MAX_WRECKS);
+        let first: Vec<Entity> = (1..=3).map(|i| Entity::from_raw_u32(i).unwrap()).collect();
+        assert_eq!(evicted, first);
+        assert!(store.records.values().flatten().all(|r| r.serial >= 3));
+    }
+
+    #[test]
+    fn удар_поезда_и_кувыркание_держат_прежнюю_долю_здоровья() {
+        assert!((HIT_DAMAGE / ROVER_MAX_HEALTH - 60.0 / 300.0).abs() < 1e-6);
+        assert!((TUMBLE_DAMAGE / ROVER_MAX_HEALTH - 40.0 / 300.0).abs() < 1e-6);
     }
 }

@@ -17,6 +17,7 @@ use std::collections::{HashMap, HashSet};
 use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 
+use crate::combat::Team;
 use crate::craters;
 use crate::explosion::Explosion;
 use crate::debris::SpawnDebris;
@@ -54,6 +55,21 @@ const PORTAL_HALF_WIDTH: f32 = 3.4;
 const PORTAL_HEIGHT: f32 = 6.5;
 const PORTAL_DEPTH: f32 = 2.0;
 
+/// Насколько портал заходит в склон за границей туннеля, м: проём вплотную к стене горы.
+const PORTAL_INSET: f32 = 0.3;
+
+/// Целое звено ложится на рельеф, пока тот не выше уровня путей на столько; выше — склон горы
+/// у входа в туннель, и звено идёт на уровне путей, а не взбирается на обрыв, м.
+const RAIL_CLAMP: f32 = 2.0;
+
+/// Через сколько метров вдоль звена проверяется просадка: траншея поперёк звена не проскочит
+/// между точками, м.
+const SAG_STEP: f32 = 1.0;
+
+/// Сколько участков звеньев создаётся за кадр: остальные — в следующих кадрах, без рывка на
+/// границе участка.
+const CHUNKS_PER_FRAME: usize = 2;
+
 /// Подключает звенья путей.
 pub struct RailsPlugin;
 
@@ -80,7 +96,8 @@ pub type LinkKey = (LineId, i32);
 /// Разрушенные звенья забега.
 #[derive(Resource, Default)]
 pub struct TrackDamage {
-    broken: HashSet<LinkKey>,
+    /// Разрушенные звенья и чья атака их порвала: от этого зависит, на кого записать крушение.
+    broken: HashMap<LinkKey, Team>,
     /// Вскрытые участки туннелей: линия и номер участка длиной [`TUNNEL_SEGMENT`].
     opened: HashSet<LinkKey>,
 }
@@ -94,16 +111,61 @@ impl TrackDamage {
     }
 
     /// Разрушено ли звено, на которое приходится параметр пути `s`.
-    // Читают поезда (задача 4.1).
-    #[allow(dead_code)]
     pub fn is_broken(&self, line: LineId, s: f32) -> bool {
-        self.broken.contains(&(line, (s / LINK_LENGTH).floor() as i32))
+        self.broken.contains_key(&link_at(line, s))
     }
 
-    /// Отмечает звено разрушенным; `true`, если раньше оно было целым.
-    pub fn break_link(&mut self, key: LinkKey) -> bool {
-        self.broken.insert(key)
+    /// Кто порвал звено на параметре `s`, если оно разрушено.
+    pub fn broken_by(&self, line: LineId, s: f32) -> Option<Team> {
+        self.broken.get(&link_at(line, s)).copied()
     }
+
+    /// Отмечает звено разрушенным без виновника (лава, обвал); `true`, если раньше оно было целым.
+    pub fn break_link(&mut self, key: LinkKey) -> bool {
+        self.break_link_by(key, Team::Neutral)
+    }
+
+    /// Отмечает звено разрушенным атакой команды `team`. Виновник — тот, кто порвал первым.
+    pub fn break_link_by(&mut self, key: LinkKey, team: Team) -> bool {
+        if self.broken.contains_key(&key) {
+            return false;
+        }
+        self.broken.insert(key, team);
+        true
+    }
+
+    /// Граница невскрытого туннеля между параметрами `outside` (вне туннеля) и `inside` (в нём).
+    pub fn tunnel_entrance(&self, terrain: &Terrain, line: LineId, outside: f32, inside: f32) -> f32 {
+        let (mut out, mut ins) = (outside, inside);
+        for _ in 0..10 {
+            let mid = 0.5 * (out + ins);
+            if self.in_tunnel(terrain, line, mid) {
+                ins = mid;
+            } else {
+                out = mid;
+            }
+        }
+        0.5 * (out + ins)
+    }
+}
+
+/// Звено, на которое приходится параметр пути `s`.
+fn link_at(line: LineId, s: f32) -> LinkKey {
+    (line, (s / LINK_LENGTH).floor() as i32)
+}
+
+/// Высота, на которой лежит звено в точке `p`: на рельефе, а у входа в туннель, где рельеф —
+/// склон горы, — на уровне путей.
+fn rail_height(terrain: &Terrain, line: LineId, p: Vec2) -> f32 {
+    let ground = terrain.height_at(p.x, p.y);
+    let level = terrain.track_level(line, Lines::param(line, p));
+    if ground > level + RAIL_CLAMP { level } else { ground }
+}
+
+/// Точки звена от `a` до `b` через [`SAG_STEP`], включая концы.
+fn link_samples(a: Vec2, b: Vec2) -> impl Iterator<Item = Vec2> {
+    let n = (a.distance(b) / SAG_STEP).ceil().max(1.0) as usize;
+    (0..=n).map(move |k| a.lerp(b, k as f32 / n as f32))
 }
 
 /// Звено в сцене: адрес, концы в плане и сущность.
@@ -121,6 +183,8 @@ struct SpawnedLinks {
     portals: HashMap<IVec2, Vec<Entity>>,
     /// Участки, звенья которых надо создать заново: туннель над ними вскрыт.
     refresh: HashSet<IVec2>,
+    /// Не все видимые участки получили звенья: предел [`CHUNKS_PER_FRAME`], продолжить в следующем кадре.
+    pending: bool,
 }
 
 #[derive(Resource)]
@@ -213,7 +277,7 @@ fn stream_links(
     chunks: Query<&ChunkMesh>,
     assets: Res<RailAssets>,
 ) {
-    if !visible.is_changed() && spawned.refresh.is_empty() {
+    if !visible.is_changed() && spawned.refresh.is_empty() && !spawned.pending {
         return;
     }
     let spawned = &mut *spawned;
@@ -244,11 +308,19 @@ fn stream_links(
         }
         keep
     });
+    spawned.pending = false;
+    let mut budget = CHUNKS_PER_FRAME;
     for chunk in &chunks {
         let coord = chunk.0;
         if spawned.links.contains_key(&coord) || visible.entity(coord).is_none() {
             continue;
         }
+        // Звенья участка — сотня сущностей и больше: на границе участка создаются за несколько кадров.
+        if budget == 0 {
+            spawned.pending = true;
+            break;
+        }
+        budget -= 1;
         let mut links = Vec::new();
         let mut portals = Vec::new();
         for (key, a, b) in links_in_chunk(terrain.lines(), coord) {
@@ -258,14 +330,17 @@ fn stream_links(
             if damage.in_tunnel(&terrain, line, mid_s(i)) {
                 continue;
             }
-            // Соседнее звено в туннеле — здесь вход: портал на конце звена.
-            for (k, end, toward) in [(i + 1, b, b - a), (i - 1, a, a - b)] {
+            // Соседнее звено в туннеле — рядом вход: портал на границе туннеля, а не на конце
+            // звена, иначе он висит перед склоном или тонет в горе.
+            for (k, toward) in [(i + 1, b - a), (i - 1, a - b)] {
                 if damage.in_tunnel(&terrain, line, mid_s(k)) {
-                    let level = terrain.track_level(line, Lines::param(line, end));
-                    portals.push(spawn_portal(&mut commands, &assets, end, toward, level));
+                    let s = damage.tunnel_entrance(&terrain, line, mid_s(i), mid_s(k));
+                    let at = terrain.lines().point(line, s);
+                    let level = terrain.track_level(line, s);
+                    portals.push(spawn_portal(&mut commands, &assets, at, toward, level));
                 }
             }
-            let broken = damage.broken.contains(&key);
+            let broken = damage.broken.contains_key(&key);
             let entity = spawn_link(&mut commands, &assets, &terrain, key, a, b, broken);
             links.push(SpawnedLink { key, a, b, entity });
         }
@@ -274,13 +349,14 @@ fn stream_links(
     }
 }
 
-/// Портал туннеля: каменная арка с тёмным проёмом, утопленная в склон, и коллайдер.
-/// `at` — вход на оси пути, `inward` — направление в туннель.
+/// Портал туннеля: каменная арка с тёмным проёмом, вплотную к склону, и коллайдер.
+/// `at` — граница туннеля на оси пути, `inward` — направление в туннель.
 fn spawn_portal(commands: &mut Commands, assets: &RailAssets, at: Vec2, inward: Vec2, level: f32) -> Entity {
     let dir = inward.normalize_or(Vec2::X);
     let yaw = dir.x.atan2(dir.y);
-    // Портал стоит чуть внутри склона, чтобы не висел в воздухе.
-    let center = at + dir * (PORTAL_DEPTH * 0.5);
+    // За границей туннеля рельеф — стена горы: портал стоит перед ней и чуть заходит в склон,
+    // чтобы не висел в воздухе и не утонул в горе.
+    let center = at - dir * (PORTAL_DEPTH * 0.5 - PORTAL_INSET);
     let w = PORTAL_HALF_WIDTH;
     let pillar = 1.1;
     let parts = [
@@ -321,10 +397,15 @@ fn spawn_portal(commands: &mut Commands, assets: &RailAssets, at: Vec2, inward: 
 
 /// Вскрывает туннели, над которыми гора срыта ниже уровня путей плюс [`OPEN_DEPTH`]: опускает
 /// полосу над путями до их уровня с откосами, бросает камни, рвёт звенья и пересоздаёт участок.
+///
+/// Об изменении рельефа сообщает [`TerrainChanged`] через команды: эта система сама читает
+/// `TerrainChanged`, поэтому писать его напрямую не может. Сообщение приходит в конце набора,
+/// его читатели видят его в следующем кадре; повторная проверка вскрытого участка ничего не делает.
 #[allow(clippy::too_many_arguments)]
 fn open_tunnels(
     mut commands: Commands,
     mut changes: MessageReader<TerrainChanged>,
+    mut explosions: MessageReader<Explosion>,
     mut terrain: ResMut<Terrain>,
     mut damage: ResMut<TrackDamage>,
     mut spawned: ResMut<SpawnedLinks>,
@@ -332,6 +413,8 @@ fn open_tunnels(
     mut debris: MessageWriter<SpawnDebris>,
 ) {
     let areas: Vec<(Vec2, f32)> = changes.read().map(|c| (Vec2::new(c.center.x, c.center.z), c.radius)).collect();
+    let blasts: Vec<(Vec2, f32, Team)> =
+        explosions.read().map(|e| (Vec2::new(e.position.x, e.position.z), e.radius, e.source_team)).collect();
     let mut dirty: HashSet<IVec2> = HashSet::new();
     for (center, radius) in areas {
         for near in terrain.lines().near(center, radius + TRACK_BAND) {
@@ -379,13 +462,22 @@ fn open_tunnels(
                         d += 0.7;
                     }
                 }
-                // Звенья вскрытого участка — завал.
+                let mid = terrain.lines().point(line, s_mid);
+                commands.write_message(TerrainChanged {
+                    center: Vec3::new(mid.x, level, mid.y),
+                    radius: TUNNEL_SEGMENT * 0.5 + TRACK_BAND,
+                });
+                // Звенья вскрытого участка — завал. Виновник — ближайший взрыв этого кадра рядом.
+                let culprit = blasts
+                    .iter()
+                    .filter(|&&(c, r, _)| c.distance(mid) <= r * 1.6 + TUNNEL_SEGMENT)
+                    .min_by(|x, y| x.0.distance(mid).total_cmp(&y.0.distance(mid)))
+                    .map_or(Team::Neutral, |&(_, _, team)| team);
                 let li0 = (s0 / LINK_LENGTH).floor() as i32;
                 for i in li0..li0 + (TUNNEL_SEGMENT / LINK_LENGTH) as i32 + 1 {
-                    damage.break_link((line, i));
+                    damage.break_link_by((line, i), culprit);
                 }
                 // Каменные обломки и пыль от обвала свода.
-                let mid = terrain.lines().point(line, s_mid);
                 let base = Vec3::new(mid.x, level + 1.0, mid.y);
                 for k in 0..10u32 {
                     let a = k as f32 * 2.39996;
@@ -438,7 +530,7 @@ fn spawn_link(
     b: Vec2,
     broken: bool,
 ) -> Entity {
-    let ground = |p: Vec2| Vec3::new(p.x, terrain.height_at(p.x, p.y), p.y);
+    let ground = |p: Vec2| Vec3::new(p.x, rail_height(terrain, key.0, p), p.y);
     let start = ground(a);
     let end = ground(b);
     if !broken {
@@ -533,10 +625,15 @@ fn break_links(
     terrain: Res<Terrain>,
     assets: Res<RailAssets>,
 ) {
-    let blasts: Vec<(Vec2, f32)> = explosions
+    // Все взрывы кадра: сильные рвут звено сами, любой — виновник просадки рядом с собой.
+    let all_blasts: Vec<(Vec2, f32, f32, Team)> = explosions
         .read()
-        .filter(|e| e.power >= BREAK_POWER)
-        .map(|e| (Vec2::new(e.position.x, e.position.z), e.radius))
+        .map(|e| (Vec2::new(e.position.x, e.position.z), e.radius, e.power, e.source_team))
+        .collect();
+    let blasts: Vec<(Vec2, f32)> = all_blasts
+        .iter()
+        .filter(|(_, _, power, _)| *power >= BREAK_POWER)
+        .map(|&(c, r, _, _)| (c, r))
         .collect();
     let changed: Vec<(Vec2, f32)> = changes
         .read()
@@ -545,12 +642,19 @@ fn break_links(
     if blasts.is_empty() && changed.is_empty() {
         return;
     }
-    let near = |list: &[(Vec2, f32)], a: Vec2, b: Vec2| {
-        list.iter().any(|(c, r)| {
-            let ab = b - a;
-            let t = ((*c - a).dot(ab) / ab.length_squared().max(1e-6)).clamp(0.0, 1.0);
-            (a + ab * t).distance(*c) <= *r
-        })
+    let reach = |c: Vec2, a: Vec2, b: Vec2| {
+        let ab = b - a;
+        let t = ((c - a).dot(ab) / ab.length_squared().max(1e-6)).clamp(0.0, 1.0);
+        (a + ab * t).distance(c)
+    };
+    let near = |list: &[(Vec2, f32)], a: Vec2, b: Vec2| list.iter().any(|&(c, r)| reach(c, a, b) <= r);
+    // Чей взрыв задел звено; кратер шире радиуса взрыва, поэтому с запасом. Траншея и прочее — ничьё.
+    let culprit = |a: Vec2, b: Vec2| {
+        all_blasts
+            .iter()
+            .filter(|&&(c, r, _, _)| reach(c, a, b) <= r * 1.6)
+            .min_by(|x, y| reach(x.0, a, b).total_cmp(&reach(y.0, a, b)))
+            .map_or(Team::Neutral, |&(_, _, _, team)| team)
     };
     for links in spawned.links.values_mut() {
         for link in links.iter_mut() {
@@ -560,16 +664,17 @@ fn break_links(
                 continue;
             }
             let (line, _) = link.key;
-            let sagged = [link.a, link.b].iter().any(|p| {
-                let s = Lines::param(line, *p);
+            // Просадка проверяется по всей длине звена: траншея лазера между концами тоже рвёт путь.
+            let sagged = link_samples(link.a, link.b).any(|p| {
+                let s = Lines::param(line, p);
                 terrain.height_at(p.x, p.y) < terrain.track_level(line, s) - BREAK_SAG
             });
             if blasted || sagged {
-                damage.break_link(link.key);
+                damage.break_link_by(link.key, culprit(link.a, link.b));
             }
             // Звено перекладывается на новый рельеф: целое — ровно, разрушенное — свисает в кратер.
             commands.entity(link.entity).try_despawn();
-            let broken = damage.broken.contains(&link.key);
+            let broken = damage.broken.contains_key(&link.key);
             link.entity = spawn_link(&mut commands, &assets, &terrain, link.key, link.a, link.b, broken);
         }
     }

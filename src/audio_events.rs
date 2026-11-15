@@ -101,6 +101,7 @@ impl Plugin for AudioEventsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<AudioMemory>()
             .add_systems(OnEnter(GameState::Menu), menu_music)
+            .add_systems(Update, sound_trains.in_set(GameSet::Presentation))
             .add_systems(OnExit(GameState::Menu), click)
             .add_systems(OnExit(GameState::GameOver), click)
             .add_systems(OnEnter(GameState::Paused), pause_blip)
@@ -607,6 +608,31 @@ fn voice_repair(
     for medkit in picked.read() {
         sounds.write(PlaySound::at("pickup", medkit.position));
         cues.write(VoiceCue::new("medkit"));
+    }
+}
+
+/// Поезд объявлен — гудок со стороны, откуда он придёт, и предупреждение штаба; сход — грохот
+/// крушения, а если поезд сбросил игрок, штаб это комментирует.
+fn sound_trains(
+    mut incoming: MessageReader<crate::trains::TrainIncoming>,
+    mut derailed: MessageReader<crate::trains::TrainDerailed>,
+    rover: Query<&Transform, With<Rover>>,
+    mut sounds: MessageWriter<PlaySound>,
+    mut cues: MessageWriter<VoiceCue>,
+) {
+    for train in incoming.read() {
+        // Поезд появляется дальше слышимости: гудок звучит с его стороны, но в 40 м от лунохода.
+        let at = rover
+            .single()
+            .map_or(train.position, |r| r.translation + (train.position - r.translation).clamp_length_max(40.0));
+        sounds.write(PlaySound::at("train_horn", at));
+        cues.write(VoiceCue::new("train_incoming"));
+    }
+    for crash in derailed.read() {
+        sounds.write(PlaySound::at("train_crash", crash.position));
+        if crash.cause == Team::Player {
+            cues.write(VoiceCue::new("train_derailed"));
+        }
     }
 }
 
