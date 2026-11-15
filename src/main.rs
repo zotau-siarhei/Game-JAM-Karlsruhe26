@@ -30,6 +30,7 @@ mod obstacles;
 mod music;
 mod pickups;
 mod props;
+mod quality;
 mod rails;
 mod railway;
 mod records;
@@ -93,6 +94,7 @@ fn main() {
             RoverPlugin,
             rover_look::RoverLookPlugin,
             CameraPlugin,
+            quality::QualityPlugin,
             aim::AimPlugin,
             explosion::ExplosionPlugin,
             explosion_fx::ExplosionFxPlugin,
