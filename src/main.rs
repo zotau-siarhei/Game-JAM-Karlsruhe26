@@ -14,6 +14,7 @@ mod buildings;
 mod bullet;
 mod camera;
 mod capsule;
+mod casings;
 mod collapse;
 mod combat;
 mod comic;
@@ -171,6 +172,7 @@ fn game_plugins(app: &mut App) {
             intro::IntroPlugin,
             weapon_sfx::WeaponSfxPlugin,
             upgrades::UpgradesPlugin,
+            casings::CasingsPlugin,
         ));
 }
 

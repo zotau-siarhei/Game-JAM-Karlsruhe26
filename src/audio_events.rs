@@ -11,6 +11,7 @@ use crate::arsenal::AmmoRanOut;
 use crate::boss::Boss;
 use crate::buildings::BuildingDestroyed;
 use crate::bullet::FireBullet;
+use crate::casings::CasingClink;
 use crate::capsule::{Capsule, FALL_SECONDS, MARK_SECONDS};
 use crate::collapse::CollapseHouse;
 use crate::combat::{Damage, Died, Health, SurvivalTime, Team};
@@ -103,6 +104,7 @@ impl Plugin for AudioEventsPlugin {
         app.init_resource::<AudioMemory>()
             .add_systems(OnEnter(GameState::Menu), menu_music)
             .add_systems(Update, sound_trains.in_set(GameSet::Presentation))
+            .add_systems(Update, sound_casings.in_set(GameSet::Presentation))
             .add_systems(OnExit(GameState::Menu), click)
             .add_systems(OnExit(GameState::GameOver), click)
             .add_systems(OnEnter(GameState::Paused), pause_blip)
@@ -372,6 +374,14 @@ fn music_follows_enemies(
     let wanted = music_for(boss_alive, enemies, memory.calm, music.track);
     if music.track != wanted {
         music.track = wanted;
+    }
+}
+
+/// Гильза лунохода звякнула о землю. Записи `casing_clink` в списке звуков пока нет: звук
+/// молчит, пока его не сгенерируют.
+fn sound_casings(mut clinks: MessageReader<CasingClink>, mut sounds: MessageWriter<PlaySound>) {
+    for clink in clinks.read() {
+        sounds.write(PlaySound::at("casing_clink", clink.position));
     }
 }
 
