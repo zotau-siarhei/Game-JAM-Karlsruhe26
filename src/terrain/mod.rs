@@ -75,6 +75,11 @@ impl VisibleChunks {
         self.entities.get(&coord).copied()
     }
 
+    /// Координаты участков в сцене.
+    pub fn coords(&self) -> impl Iterator<Item = IVec2> + '_ {
+        self.entities.keys().copied()
+    }
+
     /// Помечает на пересборку меша изменённые участки и их соседей по краю: краевые нормали
     /// соседа считаются по высотам изменённого участка. Участки вне сцены пропускаются.
     pub fn mark_dirty(&self, commands: &mut Commands, changed: impl IntoIterator<Item = IVec2>) {

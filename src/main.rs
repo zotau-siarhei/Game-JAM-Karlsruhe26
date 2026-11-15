@@ -28,6 +28,7 @@ mod explosion;
 mod explosion_fx;
 mod frame;
 mod hq;
+mod grass;
 mod hud;
 mod impact;
 mod intro;
@@ -166,6 +167,7 @@ fn game_plugins(app: &mut App) {
         ))
         // Облицовка окон в туннель: рядом с путями, но в группе путей нет места.
         .add_plugins(tunnel_view::TunnelViewPlugin)
+        .add_plugins(grass::GrassPlugin)
         .add_plugins((
             voice::VoicePlugin,
             hq::HqPlugin,
