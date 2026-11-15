@@ -24,6 +24,7 @@ mod hq;
 mod hud;
 mod impact;
 mod minimap;
+mod models;
 mod laser;
 mod lava;
 mod mortar;
@@ -100,6 +101,7 @@ fn main() {
         .add_plugins((
             TerrainPlugin,
             RoverPlugin,
+            models::ModelsPlugin,
             rover_look::RoverLookPlugin,
             CameraPlugin,
             quality::QualityPlugin,

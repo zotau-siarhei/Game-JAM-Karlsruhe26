@@ -1,8 +1,10 @@
 //! Облик лунохода: корпус и два гусеничных блока из моделей Meshy и бегущие грунтозацепы.
 //!
-//! Модели — `assets/models/rover_body.glb` и `assets/models/rover_track.glb`. Корпус в модели
-//! смотрит на +Z, а луноход едет на -Z, поэтому корпус развёрнут. Гусеничный блок в модели
-//! лежит вдоль X катками к -Z, поэтому каждый блок повёрнут катками наружу.
+//! Модели берутся из списка `assets/models/models.json` по идентификаторам `rover_body`
+//! и `rover_track`: файл, масштаб, поворот и высота заданы там. Корпус в модели смотрит на +Z,
+//! а луноход едет на -Z, поэтому в списке у корпуса поворот на π. Гусеничный блок в модели лежит
+//! вдоль X катками к -Z, поэтому каждый блок повёрнут здесь катками наружу. Пока модели грузятся,
+//! и если их нет, луноход показан запасным обликом из примитивов.
 //!
 //! Гусеница в модели неподвижна, поэтому поверх неё по контуру «стадион» бегут грунтозацепы.
 //! Путь каждого борта считается по фактическому движению лунохода: при езде вперёд верхняя
@@ -12,27 +14,22 @@ use std::f32::consts::{FRAC_PI_2, PI};
 
 use bevy::prelude::*;
 
+use crate::models::{FallbackSpawner, Models};
 use crate::rover::{RIDE_HEIGHT, Rover};
 
-/// Модель корпуса.
-const BODY_MODEL: &str = "models/rover_body.glb";
-/// Модель гусеничного блока.
-const TRACK_MODEL: &str = "models/rover_track.glb";
-
-/// Масштаб моделей: корпус около 1,5 м в длину.
-const MODEL_SCALE: f32 = 0.8;
-
-/// Высота центра корпуса над центром лунохода, м: обод корпуса над гусеницами.
-const BODY_Y: f32 = -RIDE_HEIGHT + 0.86 * MODEL_SCALE;
+/// Идентификаторы моделей корпуса и гусеничного блока в списке моделей.
+const BODY_MODEL: &str = "rover_body";
+const TRACK_MODEL: &str = "rover_track";
 
 /// Полуширина колеи: центр гусеничного блока от оси лунохода, м.
 pub const TRACK_X: f32 = 0.72;
 
-/// Радиус закругления гусеницы по наружной поверхности ленты, м.
-const TRACK_RADIUS: f32 = 0.43 * MODEL_SCALE;
+/// Радиус закругления гусеницы по наружной поверхности ленты, м. Размеры ленты заданы игрой:
+/// модель блока подгоняется к ним масштабом в списке моделей.
+const TRACK_RADIUS: f32 = 0.344;
 
 /// Половина длины прямого участка гусеницы, м.
-const TRACK_HALF_STRAIGHT: f32 = 0.52 * MODEL_SCALE;
+const TRACK_HALF_STRAIGHT: f32 = 0.416;
 
 /// Высота центра гусеничного блока над центром лунохода, м: лента касается земли.
 const TRACK_Y: f32 = -RIDE_HEIGHT + TRACK_RADIUS;
@@ -48,6 +45,22 @@ const GROUSER_COLOR: Color = Color::srgb(0.36, 0.38, 0.42);
 
 /// Больше такого сдвига за кадр — это перенос лунохода (рестарт), а не езда, м.
 const MAX_STEP: f32 = 3.0;
+
+/// Запасной корпус: короб между гусеницами, палуба над ними и бампер на носу.
+/// Размеры по X, Y, Z и высота центра над землёй, м.
+const SPARE_HULL_SIZE: Vec3 = Vec3::new(1.0, 0.42, 1.5);
+const SPARE_HULL_HEIGHT: f32 = 0.52;
+const SPARE_DECK_SIZE: Vec3 = Vec3::new(1.3, 0.1, 1.36);
+const SPARE_DECK_HEIGHT: f32 = 0.78;
+const SPARE_BUMPER_SIZE: Vec3 = Vec3::new(0.7, 0.14, 0.08);
+
+/// Толщина запасного гусеничного блока поперёк хода, м.
+const SPARE_TRACK_WIDTH: f32 = 0.3;
+
+/// Цвета запасного облика: бирюзовый корпус, белая палуба, тёмная резина.
+const SPARE_HULL_COLOR: Color = Color::srgb(0.10, 0.62, 0.62);
+const SPARE_DECK_COLOR: Color = Color::srgb(0.90, 0.90, 0.86);
+const SPARE_RUBBER_COLOR: Color = Color::srgb(0.12, 0.12, 0.13);
 
 /// Плагин облика лунохода.
 pub struct RoverLookPlugin;
@@ -109,17 +122,93 @@ pub fn track_travel(step: f32, turn: f32, half_gauge: f32) -> [f32; 2] {
     [step - turn * half_gauge, step + turn * half_gauge]
 }
 
+/// Меши и материалы запасного облика лунохода.
+struct SpareLook {
+    hull: Handle<Mesh>,
+    deck: Handle<Mesh>,
+    bumper: Handle<Mesh>,
+    /// Прямой участок гусеничного блока.
+    track_box: Handle<Mesh>,
+    /// Закругление блока: цилиндр с осью поперёк хода.
+    track_end: Handle<Mesh>,
+    hull_material: Handle<StandardMaterial>,
+    deck_material: Handle<StandardMaterial>,
+    rubber_material: Handle<StandardMaterial>,
+}
+
+impl SpareLook {
+    fn new(meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>) -> Self {
+        let mut matte = |color: Color| {
+            materials.add(StandardMaterial {
+                base_color: color,
+                perceptual_roughness: 0.7,
+                ..default()
+            })
+        };
+        Self {
+            hull: meshes.add(Cuboid::from_size(SPARE_HULL_SIZE)),
+            deck: meshes.add(Cuboid::from_size(SPARE_DECK_SIZE)),
+            bumper: meshes.add(Cuboid::from_size(SPARE_BUMPER_SIZE)),
+            track_box: meshes.add(Cuboid::new(
+                SPARE_TRACK_WIDTH,
+                TRACK_RADIUS * 2.0,
+                TRACK_HALF_STRAIGHT * 2.0,
+            )),
+            track_end: meshes.add(Cylinder::new(TRACK_RADIUS, SPARE_TRACK_WIDTH)),
+            hull_material: matte(SPARE_HULL_COLOR),
+            deck_material: matte(SPARE_DECK_COLOR),
+            rubber_material: matte(SPARE_RUBBER_COLOR),
+        }
+    }
+
+    /// Корпус в системе лунохода: центр лунохода на [`RIDE_HEIGHT`] выше земли, нос на -Z.
+    fn body(&self, parts: &mut FallbackSpawner) {
+        parts.spawn((
+            Mesh3d(self.hull.clone()),
+            MeshMaterial3d(self.hull_material.clone()),
+            Transform::from_xyz(0.0, SPARE_HULL_HEIGHT - RIDE_HEIGHT, 0.0),
+        ));
+        parts.spawn((
+            Mesh3d(self.deck.clone()),
+            MeshMaterial3d(self.deck_material.clone()),
+            Transform::from_xyz(0.0, SPARE_DECK_HEIGHT - RIDE_HEIGHT, 0.0),
+        ));
+        parts.spawn((
+            Mesh3d(self.bumper.clone()),
+            MeshMaterial3d(self.rubber_material.clone()),
+            Transform::from_xyz(0.0, SPARE_HULL_HEIGHT - RIDE_HEIGHT, -SPARE_HULL_SIZE.z * 0.5),
+        ));
+    }
+
+    /// Гусеничный блок в системе своей рамы: контур «стадион», по которому бегут грунтозацепы.
+    fn track(&self, parts: &mut FallbackSpawner) {
+        parts.spawn((
+            Mesh3d(self.track_box.clone()),
+            MeshMaterial3d(self.rubber_material.clone()),
+            Transform::default(),
+        ));
+        for end in [-1.0f32, 1.0] {
+            parts.spawn((
+                Mesh3d(self.track_end.clone()),
+                MeshMaterial3d(self.rubber_material.clone()),
+                // Ось цилиндра — Y: кладём её поперёк хода, вдоль X.
+                Transform::from_xyz(0.0, 0.0, end * TRACK_HALF_STRAIGHT)
+                    .with_rotation(Quat::from_rotation_z(FRAC_PI_2)),
+            ));
+        }
+    }
+}
+
 /// Ставит на новый луноход корпус, гусеничные блоки и грунтозацепы.
 fn attach_look(
     mut commands: Commands,
     rovers: Query<Entity, Added<Rover>>,
-    asset_server: Res<AssetServer>,
+    mut models: Models,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     for rover in &rovers {
-        let body = asset_server.load(GltfAssetLabel::Scene(0).from_asset(BODY_MODEL));
-        let track = asset_server.load(GltfAssetLabel::Scene(0).from_asset(TRACK_MODEL));
+        let spare = SpareLook::new(&mut meshes, &mut materials);
         let grouser_mesh = meshes.add(Cuboid::from_size(GROUSER_SIZE));
         let grouser_material = materials.add(StandardMaterial {
             base_color: GROUSER_COLOR,
@@ -132,12 +221,9 @@ fn attach_look(
             .entity(rover)
             .insert(TrackDrive::default())
             .with_children(|parent| {
-                parent.spawn((
-                    WorldAssetRoot(body),
-                    Transform::from_xyz(0.0, BODY_Y, 0.0)
-                        .with_rotation(Quat::from_rotation_y(PI))
-                        .with_scale(Vec3::splat(MODEL_SCALE)),
-                ));
+                // Низ лунохода — на высоту посадки ниже его центра.
+                let ground = Transform::from_xyz(0.0, -RIDE_HEIGHT, 0.0);
+                models.spawn_visual(parent, BODY_MODEL, ground, |parts| spare.body(parts));
                 for side in [-1.0f32, 1.0] {
                     parent
                         .spawn((
@@ -146,12 +232,11 @@ fn attach_look(
                             Visibility::default(),
                         ))
                         .with_children(|frame| {
-                            // Катки модели смотрят на -Z: поворот выводит их наружу.
-                            frame.spawn((
-                                WorldAssetRoot(track.clone()),
-                                Transform::from_rotation(Quat::from_rotation_y(-side * FRAC_PI_2))
-                                    .with_scale(Vec3::splat(MODEL_SCALE)),
-                            ));
+                            // Низ блока — на радиус ленты ниже центра рамы. Катки модели смотрят
+                            // на -Z: поворот выводит их наружу.
+                            let ground = Transform::from_xyz(0.0, -TRACK_RADIUS, 0.0)
+                                .with_rotation(Quat::from_rotation_y(-side * FRAC_PI_2));
+                            models.spawn_visual(frame, TRACK_MODEL, ground, |parts| spare.track(parts));
                             for i in 0..GROUSERS {
                                 frame.spawn((
                                     Grouser(i),

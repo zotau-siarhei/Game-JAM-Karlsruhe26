@@ -5,7 +5,7 @@
       "file": "rover_body.glb",
       "scale": 0.8,
       "rotation_y": 3.14159,
-      "offset_y": 0.616,
+      "offset_y": 0.688,
       "budget": 15000
     },
     {
@@ -20,7 +20,7 @@
       "id": "enemy_rammer",
       "file": "enemy_rammer.glb",
       "scale": 1.263,
-      "rotation_y": 3.14159,
+      "rotation_y": -1.5708,
       "offset_y": 0.72,
       "budget": 5000
     },
@@ -28,7 +28,7 @@
       "id": "enemy_mortar",
       "file": "enemy_mortar.glb",
       "scale": 1.368,
-      "rotation_y": 3.14159,
+      "rotation_y": -1.5708,
       "offset_y": 1.218,
       "budget": 5000
     },
@@ -44,7 +44,7 @@
       "id": "resident",
       "file": "resident.glb",
       "scale": 0.579,
-      "rotation_y": 0.0,
+      "rotation_y": 3.14159,
       "offset_y": 0.55,
       "budget": 800
     },
