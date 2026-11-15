@@ -43,6 +43,7 @@ mod subsidence;
 mod sound_list;
 mod steering;
 mod terrain;
+mod trains;
 mod vehicle;
 mod weapons;
 mod voice;
@@ -83,6 +84,7 @@ fn main() {
             airstrike::AirstrikePlugin,
             pickups::PickupsPlugin,
             rails::RailsPlugin,
+            trains::TrainsPlugin,
         ))
         .add_plugins((
             TerrainPlugin,
