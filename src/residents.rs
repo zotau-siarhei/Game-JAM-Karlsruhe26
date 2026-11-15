@@ -51,14 +51,30 @@ const EXIT_GAP: f32 = 0.7;
 const LETHAL_SPEED: f32 = 9.0;
 const DODGE_SPEED: f32 = 3.0;
 
-/// Яркие цвета тел.
-const BODY_COLORS: [Color; 6] = [
-    Color::srgb(0.95, 0.45, 0.55),
-    Color::srgb(0.3, 0.7, 0.95),
-    Color::srgb(0.98, 0.8, 0.2),
-    Color::srgb(0.5, 0.85, 0.4),
-    Color::srgb(0.75, 0.5, 0.95),
-    Color::srgb(1.0, 0.6, 0.25),
+/// Цвета обычной одежды: джинсовый, зелёный свитер, горчичный, серый, светлая рубашка,
+/// коричневая куртка.
+const CLOTHES_COLORS: [Color; 6] = [
+    Color::srgb(0.27, 0.42, 0.62),
+    Color::srgb(0.33, 0.50, 0.33),
+    Color::srgb(0.80, 0.66, 0.30),
+    Color::srgb(0.55, 0.56, 0.58),
+    Color::srgb(0.90, 0.90, 0.86),
+    Color::srgb(0.48, 0.34, 0.24),
+];
+
+/// Цвета кожи.
+const SKIN_COLORS: [Color; 3] = [
+    Color::srgb(0.96, 0.80, 0.68),
+    Color::srgb(0.82, 0.62, 0.46),
+    Color::srgb(0.55, 0.38, 0.27),
+];
+
+/// Цвета волос: чёрные, каштановые, русые, седые.
+const HAIR_COLORS: [Color; 4] = [
+    Color::srgb(0.12, 0.09, 0.07),
+    Color::srgb(0.40, 0.26, 0.14),
+    Color::srgb(0.80, 0.66, 0.38),
+    Color::srgb(0.66, 0.66, 0.64),
 ];
 
 /// Плагин жителей.
@@ -161,7 +177,10 @@ struct ResidentAssets {
     ball: Handle<Mesh>,
     cube: Handle<Mesh>,
     hat: Handle<Mesh>,
-    colors: Vec<Handle<StandardMaterial>>,
+    /// Одежда: тело и руки.
+    clothes: Vec<Handle<StandardMaterial>>,
+    skin: Vec<Handle<StandardMaterial>>,
+    hair: Vec<Handle<StandardMaterial>>,
     white: Handle<StandardMaterial>,
     black: Handle<StandardMaterial>,
     alert: Handle<StandardMaterial>,
@@ -187,7 +206,9 @@ fn create_assets(
         ball: meshes.add(Sphere::new(1.0).mesh().ico(1).expect("шарик")),
         cube: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
         hat: meshes.add(Cylinder::new(0.17, 0.18)),
-        colors: BODY_COLORS.iter().map(|c| materials.add(*c)).collect(),
+        clothes: CLOTHES_COLORS.iter().map(|c| materials.add(*c)).collect(),
+        skin: SKIN_COLORS.iter().map(|c| materials.add(*c)).collect(),
+        hair: HAIR_COLORS.iter().map(|c| materials.add(*c)).collect(),
         white: unlit(&mut materials, Color::WHITE),
         black: unlit(&mut materials, Color::srgb(0.05, 0.05, 0.05)),
         alert: unlit(&mut materials, Color::srgb(1.0, 0.85, 0.1)),
@@ -234,7 +255,9 @@ fn spawn_resident(
     home: HouseId,
     p: Vec2,
 ) -> Entity {
-    let color = assets.colors[dice.below(assets.colors.len())].clone();
+    let clothes = assets.clothes[dice.below(assets.clothes.len())].clone();
+    let skin = assets.skin[dice.below(assets.skin.len())].clone();
+    let hair = assets.hair[dice.below(assets.hair.len())].clone();
     let accessory = dice.below(3);
     let y = terrain.height_at(p.x, p.y);
     commands
@@ -258,8 +281,11 @@ fn spawn_resident(
             Visibility::default(),
         ))
         .with_children(|r| {
-            r.spawn((Mesh3d(assets.body.clone()), MeshMaterial3d(color.clone()), NotShadowCaster, Transform::from_xyz(0.0, 0.45, 0.0)));
-            r.spawn((Mesh3d(assets.head.clone()), MeshMaterial3d(color.clone()), NotShadowCaster, Transform::from_xyz(0.0, 0.95, 0.0)));
+            r.spawn((Mesh3d(assets.body.clone()), MeshMaterial3d(clothes.clone()), NotShadowCaster, Transform::from_xyz(0.0, 0.45, 0.0)));
+            r.spawn((Mesh3d(assets.head.clone()), MeshMaterial3d(skin.clone()), NotShadowCaster, Transform::from_xyz(0.0, 0.95, 0.0)));
+            // Волосы: шапочка на макушке и затылке, лицо открыто.
+            r.spawn((Mesh3d(assets.ball.clone()), MeshMaterial3d(hair.clone()), NotShadowCaster,
+                Transform::from_xyz(0.0, 1.07, 0.04).with_scale(Vec3::new(0.21, 0.13, 0.21))));
             // Большие глаза смотрят вперёд, на -Z.
             for x in [-0.08, 0.08] {
                 r.spawn((Mesh3d(assets.ball.clone()), MeshMaterial3d(assets.white.clone()), NotShadowCaster,
@@ -268,14 +294,9 @@ fn spawn_resident(
                     Transform::from_xyz(x, 1.0, -0.21).with_scale(Vec3::splat(0.035))));
             }
             for side in [-1.0, 1.0] {
-                r.spawn((Arm(side), Mesh3d(assets.arm.clone()), MeshMaterial3d(color.clone()), NotShadowCaster,
+                r.spawn((Arm(side), Mesh3d(assets.arm.clone()), MeshMaterial3d(clothes.clone()), NotShadowCaster,
                     Transform::from_xyz(side * 0.28, 0.6, 0.0)));
             }
-            // Антенна с шариком.
-            r.spawn((Mesh3d(assets.cube.clone()), MeshMaterial3d(assets.black.clone()), NotShadowCaster,
-                Transform::from_xyz(0.0, 1.25, 0.0).with_scale(Vec3::new(0.025, 0.2, 0.025))));
-            r.spawn((Mesh3d(assets.ball.clone()), MeshMaterial3d(assets.alert.clone()), NotShadowCaster,
-                Transform::from_xyz(0.0, 1.37, 0.0).with_scale(Vec3::splat(0.05))));
             match accessory {
                 0 => {
                     r.spawn((Mesh3d(assets.hat.clone()), MeshMaterial3d(assets.black.clone()), NotShadowCaster,
