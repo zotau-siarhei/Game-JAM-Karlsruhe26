@@ -1185,7 +1185,8 @@ mod tests {
     #[test]
     fn tank_aims_only_when_the_hull_faces_the_rover() {
         assert!(heading_error(0.0, 0.05) < TANK_AIM_TOLERANCE);
-        assert!(heading_error(3.1, -3.1) < TANK_AIM_TOLERANCE);
+        // Через ±π: 3,12 и -3,12 рад расходятся на 0,043 рад, а не на 6,24.
+        assert!(heading_error(3.12, -3.12) < TANK_AIM_TOLERANCE);
         assert!(heading_error(0.0, 0.3) > TANK_AIM_TOLERANCE);
     }
 
