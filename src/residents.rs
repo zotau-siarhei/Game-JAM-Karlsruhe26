@@ -13,6 +13,7 @@ use crate::bullet::FireBullet;
 use crate::combat::{Collider, Damage, Died, Health, Team};
 use crate::enemy::Enemy;
 use crate::explosion::Explosion;
+use crate::models::Models;
 use crate::mortar::FireShell;
 use crate::obstacles::Obstacle;
 use crate::rover::{Rover, RoverMotion};
@@ -76,6 +77,9 @@ const HAIR_COLORS: [Color; 4] = [
     Color::srgb(0.80, 0.66, 0.38),
     Color::srgb(0.66, 0.66, 0.64),
 ];
+
+/// Идентификатор модели жителя в списке моделей. Пока модели нет, житель собран из примитивов.
+const RESIDENT_MODEL: &str = "resident";
 
 /// Плагин жителей.
 pub struct ResidentsPlugin;
@@ -225,6 +229,7 @@ fn create_assets(
 fn spawn_residents(
     mut commands: Commands,
     assets: Res<ResidentAssets>,
+    mut models: Models,
     terrain: Res<Terrain>,
     settlements: Res<Settlements>,
     mut dice: ResMut<Dice>,
@@ -242,7 +247,7 @@ fn spawn_residents(
             let angle = dice.range(0.0, std::f32::consts::TAU);
             let r = state.kind.half_extents().length() + dice.range(1.0, 4.0);
             let p = state.position + Vec2::from_angle(angle) * r;
-            spawn_resident(&mut commands, &assets, &terrain, &mut dice, house.0, p);
+            spawn_resident(&mut commands, &assets, &mut models, &terrain, &mut dice, house.0, p);
         }
     }
 }
@@ -250,6 +255,7 @@ fn spawn_residents(
 fn spawn_resident(
     commands: &mut Commands,
     assets: &ResidentAssets,
+    models: &mut Models,
     terrain: &Terrain,
     dice: &mut Dice,
     home: HouseId,
@@ -281,33 +287,36 @@ fn spawn_resident(
             Visibility::default(),
         ))
         .with_children(|r| {
-            r.spawn((Mesh3d(assets.body.clone()), MeshMaterial3d(clothes.clone()), NotShadowCaster, Transform::from_xyz(0.0, 0.45, 0.0)));
-            r.spawn((Mesh3d(assets.head.clone()), MeshMaterial3d(skin.clone()), NotShadowCaster, Transform::from_xyz(0.0, 0.95, 0.0)));
-            // Волосы: шапочка на макушке и затылке, лицо открыто.
-            r.spawn((Mesh3d(assets.ball.clone()), MeshMaterial3d(hair.clone()), NotShadowCaster,
-                Transform::from_xyz(0.0, 1.07, 0.04).with_scale(Vec3::new(0.21, 0.13, 0.21))));
-            // Большие глаза смотрят вперёд, на -Z.
-            for x in [-0.08, 0.08] {
-                r.spawn((Mesh3d(assets.ball.clone()), MeshMaterial3d(assets.white.clone()), NotShadowCaster,
-                    Transform::from_xyz(x, 1.0, -0.15).with_scale(Vec3::splat(0.075))));
-                r.spawn((Mesh3d(assets.ball.clone()), MeshMaterial3d(assets.black.clone()), NotShadowCaster,
-                    Transform::from_xyz(x, 1.0, -0.21).with_scale(Vec3::splat(0.035))));
-            }
-            for side in [-1.0, 1.0] {
-                r.spawn((Arm(side), Mesh3d(assets.arm.clone()), MeshMaterial3d(clothes.clone()), NotShadowCaster,
-                    Transform::from_xyz(side * 0.28, 0.6, 0.0)));
-            }
-            match accessory {
-                0 => {
-                    r.spawn((Mesh3d(assets.hat.clone()), MeshMaterial3d(assets.black.clone()), NotShadowCaster,
-                        Transform::from_xyz(0.0, 1.15, 0.0)));
+            // Модель из списка или человечек из примитивов; значок испуга общий для обоих.
+            models.spawn_visual(r, RESIDENT_MODEL, Transform::IDENTITY, |r| {
+                r.spawn((Mesh3d(assets.body.clone()), MeshMaterial3d(clothes.clone()), NotShadowCaster, Transform::from_xyz(0.0, 0.45, 0.0)));
+                r.spawn((Mesh3d(assets.head.clone()), MeshMaterial3d(skin.clone()), NotShadowCaster, Transform::from_xyz(0.0, 0.95, 0.0)));
+                // Волосы: шапочка на макушке и затылке, лицо открыто.
+                r.spawn((Mesh3d(assets.ball.clone()), MeshMaterial3d(hair.clone()), NotShadowCaster,
+                    Transform::from_xyz(0.0, 1.07, 0.04).with_scale(Vec3::new(0.21, 0.13, 0.21))));
+                // Большие глаза смотрят вперёд, на -Z.
+                for x in [-0.08, 0.08] {
+                    r.spawn((Mesh3d(assets.ball.clone()), MeshMaterial3d(assets.white.clone()), NotShadowCaster,
+                        Transform::from_xyz(x, 1.0, -0.15).with_scale(Vec3::splat(0.075))));
+                    r.spawn((Mesh3d(assets.ball.clone()), MeshMaterial3d(assets.black.clone()), NotShadowCaster,
+                        Transform::from_xyz(x, 1.0, -0.21).with_scale(Vec3::splat(0.035))));
                 }
-                1 => {
-                    r.spawn((Mesh3d(assets.cube.clone()), MeshMaterial3d(assets.white.clone()), NotShadowCaster,
-                        Transform::from_xyz(0.0, 0.75, 0.0).with_scale(Vec3::new(0.42, 0.08, 0.42))));
+                for side in [-1.0, 1.0] {
+                    r.spawn((Arm(side), Mesh3d(assets.arm.clone()), MeshMaterial3d(clothes.clone()), NotShadowCaster,
+                        Transform::from_xyz(side * 0.28, 0.6, 0.0)));
                 }
-                _ => {}
-            }
+                match accessory {
+                    0 => {
+                        r.spawn((Mesh3d(assets.hat.clone()), MeshMaterial3d(assets.black.clone()), NotShadowCaster,
+                            Transform::from_xyz(0.0, 1.15, 0.0)));
+                    }
+                    1 => {
+                        r.spawn((Mesh3d(assets.cube.clone()), MeshMaterial3d(assets.white.clone()), NotShadowCaster,
+                            Transform::from_xyz(0.0, 0.75, 0.0).with_scale(Vec3::new(0.42, 0.08, 0.42))));
+                    }
+                    _ => {}
+                }
+            });
             r.spawn((Alert, Mesh3d(assets.cube.clone()), MeshMaterial3d(assets.alert.clone()), NotShadowCaster,
                 Visibility::Hidden, Transform::from_xyz(0.0, 1.7, 0.0).with_scale(Vec3::new(0.09, 0.3, 0.09))));
         })
@@ -712,6 +721,7 @@ fn leave_shelters(
     mut commands: Commands,
     time: Res<Time>,
     assets: Res<ResidentAssets>,
+    mut models: Models,
     terrain: Res<Terrain>,
     mut dice: ResMut<Dice>,
     mut danger: ResMut<Danger>,
@@ -746,7 +756,7 @@ fn leave_shelters(
         let door = state.wall_center(side);
         let out = (door - state.position).normalize_or(Vec2::X);
         let p = door + out * 0.8;
-        spawn_resident(&mut commands, &assets, &terrain, &mut dice, *id, p);
+        spawn_resident(&mut commands, &assets, &mut models, &terrain, &mut dice, *id, p);
     }
     danger.calm.retain(|(id, ..)| settlements.house(*id).is_some_and(|s| s.hiding > 0));
 }
