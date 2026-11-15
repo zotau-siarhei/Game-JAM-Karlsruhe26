@@ -1,0 +1,8 @@
+# Быстрая линковка на Linux через mold (`pacman -S mold`); без mold сборка на Linux не пройдёт.
+# На macOS секция не действует.
+# Линкер задан именем, без пути: так отпечаток сборки cargo одинаков во всех worktree
+# и засев target через scripts/seed-target.sh работает. Флаг передаётся через rustflags:
+# его cargo ставит после встроенного в rustc -fuse-ld=lld, поэтому действует именно mold.
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
