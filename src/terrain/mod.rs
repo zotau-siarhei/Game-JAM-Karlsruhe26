@@ -40,9 +40,11 @@ const GROUND_ROUGHNESS: f32 = 0.95;
 pub struct RunSeed(pub u32);
 
 impl RunSeed {
-    /// Сид из `DEBUG_SEED`, а без него — из времени запуска.
+    /// Сид из переменной окружения `SPACE_GUARD_SEED` или `DEBUG_SEED`, а без них — из времени
+    /// запуска.
     pub fn from_clock() -> Self {
-        let seed = DEBUG_SEED.unwrap_or_else(|| {
+        let from_env = std::env::var("SPACE_GUARD_SEED").ok().and_then(|s| s.parse().ok());
+        let seed = from_env.or(DEBUG_SEED).unwrap_or_else(|| {
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_nanos() as u32)

@@ -11,7 +11,6 @@ use crate::aim::AimPoint;
 use crate::arsenal::Inventory;
 use crate::bullet::terrain_hit;
 use crate::combat::{Collider, Damage, Health, Team};
-use crate::debris::SpawnDebris;
 use crate::enemy::Enemy;
 use crate::explosion::Explosion;
 use crate::frame::{GameSet, RunMessages};
@@ -56,8 +55,6 @@ const RETARGET_RANGE: f32 = 15.0;
 /// Расстояние между спаренными ракетами второго уровня, м.
 const PAIR_SPACING: f32 = 1.2;
 
-/// Горящих обломков-языков пламени у огня термобарической ракеты.
-const FIRE_FLAMES: usize = 6;
 
 /// Ракета дальше этого от старта взрывается сама, м.
 const MAX_RANGE: f32 = 80.0;
@@ -232,8 +229,8 @@ fn create_rocket_assets(
         body_material: materials.add(Color::srgb(0.95, 0.85, 0.25)),
         flame: meshes.add(Sphere::new(FLAME_RADIUS)),
         flame_material: materials.add(StandardMaterial {
-            base_color: Color::srgb(1.0, 0.6, 0.15),
-            emissive: LinearRgba::rgb(10.0, 4.0, 0.5),
+            // Огонь ярче единицы: светится через свечение камеры (`unlit` выводит только `base_color`).
+            base_color: Color::linear_rgb(4.0, 1.6, 0.2),
             unlit: true,
             ..default()
         }),
@@ -486,7 +483,6 @@ fn fly_rockets(
     obstacles: Query<(Entity, &Obstacle)>,
     puffs: Query<(), With<Puff>>,
     mut explosions: MessageWriter<Explosion>,
-    mut debris: MessageWriter<SpawnDebris>,
 ) {
     let dt = time.delta_secs();
     if dt <= 0.0 {
@@ -578,7 +574,7 @@ fn fly_rockets(
                 source_team: team,
             });
             if rocket.warhead.burn {
-                spawn_fire(&mut commands, &mut debris, &terrain, to, rocket.warhead.radius, team);
+                spawn_fire(&mut commands, &terrain, to, rocket.warhead.radius, team);
             }
             continue;
         }
@@ -611,25 +607,32 @@ fn fly_rockets(
 
 /// Огонь термобарической ракеты: горит на месте взрыва и ранит чужих в круге.
 #[derive(Component)]
-struct Fire {
+struct ThermoFire {
     remaining: f32,
     radius: f32,
     team: Team,
 }
 
-/// Огонь на месте взрыва: сущность урона и горящие обломки-языки пламени вокруг.
-fn spawn_fire(
-    commands: &mut Commands,
-    debris: &mut MessageWriter<SpawnDebris>,
-    terrain: &Terrain,
-    at: Vec3,
-    blast_radius: f32,
-    team: Team,
-) {
+/// Языки пламени пятна термобарики радиуса `radius`: смещение от центра и размер огня.
+/// Центр и два кольца закрывают весь круг урона, крайние языки доходят до его края.
+fn fire_patch(radius: f32) -> Vec<(Vec2, f32)> {
+    let mut flames = vec![(Vec2::ZERO, (radius * 0.45).clamp(1.0, 2.6))];
+    for (ring, count, size) in [(0.45, 5, 0.38), (0.82, 9, 0.3)] {
+        for i in 0..count {
+            let a = (i as f32 + ring) / count as f32 * std::f32::consts::TAU;
+            flames.push((Vec2::from_angle(a) * radius * ring, (radius * size).clamp(0.8, 2.0)));
+        }
+    }
+    flames
+}
+
+/// Огонь на месте взрыва: сущность урона и пятно пламени модуля огня на весь круг урона,
+/// которое горит ровно столько, сколько ранит.
+fn spawn_fire(commands: &mut Commands, terrain: &Terrain, at: Vec3, blast_radius: f32, team: Team) {
     let radius = blast_radius * upgrades::FIRE_REACH;
     let ground = at.with_y(terrain.height_at(at.x, at.z));
     commands.spawn((
-        Fire {
+        ThermoFire {
             remaining: upgrades::FIRE_SECONDS,
             radius,
             team,
@@ -637,17 +640,13 @@ fn spawn_fire(
         RunScoped,
         Transform::from_translation(ground),
     ));
-    for i in 0..FIRE_FLAMES {
-        let a = i as f32 / FIRE_FLAMES as f32 * std::f32::consts::TAU;
-        let r = radius * (0.3 + 0.6 * ((i * 7) % 5) as f32 / 4.0);
-        let p = ground + Vec3::new(a.cos() * r, 0.3, a.sin() * r);
-        debris.write(SpawnDebris {
-            position: p.with_y(terrain.height_at(p.x, p.z) + 0.3),
-            velocity: Vec3::new(a.cos(), 2.0, a.sin()),
-            size: Vec3::splat(0.35),
-            color: Color::srgb(0.2, 0.12, 0.08),
-            burning: true,
-        });
+    for (offset, size) in fire_patch(radius) {
+        let p = ground + Vec3::new(offset.x, 0.0, offset.y);
+        commands.spawn((
+            crate::fire::Fire::new(size, 0.9).for_seconds(upgrades::FIRE_SECONDS).then_smoke(4.0),
+            RunScoped,
+            Transform::from_translation(p.with_y(terrain.height_at(p.x, p.z) - 0.1)),
+        ));
     }
 }
 
@@ -655,7 +654,7 @@ fn spawn_fire(
 fn burn_fires(
     mut commands: Commands,
     time: Res<Time>,
-    mut fires: Query<(Entity, &Transform, &mut Fire)>,
+    mut fires: Query<(Entity, &Transform, &mut ThermoFire)>,
     targets: Query<(Entity, &GlobalTransform, &Team, &Health)>,
     mut damage: MessageWriter<Damage>,
 ) {
@@ -737,5 +736,15 @@ mod tests {
         let homing = Warhead::HOMING.radius * Warhead::HOMING.power;
         let mortar = crate::mortar::EXPLOSION_RADIUS * crate::mortar::EXPLOSION_POWER;
         assert!(rocket < homing && homing < mortar);
+    }
+
+    #[test]
+    fn пятно_термобарики_закрывает_круг_урона() {
+        let radius = ROCKET_RADIUS * upgrades::FIRE_REACH;
+        let patch = fire_patch(radius);
+        // Все языки внутри круга урона, крайние доходят почти до края: пламя шириной в размер огня.
+        assert!(patch.iter().all(|(o, _)| o.length() <= radius));
+        let reach = patch.iter().map(|(o, size)| o.length() + size * 0.65).fold(0.0, f32::max);
+        assert!(reach >= radius * 0.95, "{reach} < {radius}");
     }
 }

@@ -12,6 +12,7 @@ use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 use noise::{NoiseFn, Perlin};
 
+use crate::fire::Fire;
 use crate::camera::Focus;
 use crate::frame::GameSet;
 use crate::models::Models;
@@ -26,6 +27,9 @@ use crate::settlements::{HouseState, REGION_SIZE, Settlements, region_of};
 use crate::terrain::{self, CHUNK_SIZE, Terrain, VisibleChunks, chunk_coord_at, chunk_origin};
 
 /// Ячеек сетки по стороне участка: шаг около 2,5 м.
+/// Сколько дымит крона после огня, с.
+const CROWN_SMOKE: f32 = 8.0;
+
 const CELLS: i32 = 13;
 
 /// Частота масок, 1/м: роща или россыпь — несколько десятков метров.
@@ -437,8 +441,6 @@ struct PropAssets {
     looks: HashMap<(PropKind, usize), Vec<Part>>,
     /// Пень упавшего дерева.
     stump: Part,
-    /// Огонь на кроне.
-    flame: Part,
 }
 
 fn create_prop_assets(
@@ -645,14 +647,7 @@ fn create_prop_assets(
         &trunk,
         Transform::from_xyz(0.0, 0.25, 0.0).with_scale(Vec3::new(0.3, 0.5, 0.3)),
     );
-    let fire = materials.add(StandardMaterial {
-        base_color: Color::srgb(1.0, 0.5, 0.08),
-        emissive: LinearRgba::rgb(9.0, 3.0, 0.3),
-        unlit: true,
-        ..default()
-    });
-    let flame = part(&sphere, &fire, Transform::IDENTITY);
-    commands.insert_resource(PropAssets { looks, stump, flame });
+    commands.insert_resource(PropAssets { looks, stump });
 }
 
 /// Модель объекта из `models.json`: четыре дерева по вариантам (лиственное, ель, тополь, сосна),
@@ -1199,15 +1194,13 @@ fn break_props(
                 };
                 state.status = PropStatus::Fallen(fallen);
                 let flame_height = 3.0 * transform.scale.y;
+                let burn = 4.0 + (p.x * 1.7).sin().abs() * 2.0;
                 // Только «мягкие» команды: дерево могло исчезнуть в этом же кадре, и это не паника.
+                // Огонь — на кроне, ребёнком падающего дерева; пламя модуля стоит вертикально.
                 commands.spawn((
-                    CrownFire {
-                        remaining: 4.0 + (p.x * 1.7).sin().abs() * 2.0,
-                    },
+                    CrownFire { remaining: burn + 0.2 },
+                    Fire::new(1.4 * transform.scale.y, 0.9).for_seconds(burn).then_smoke(CROWN_SMOKE),
                     ChildOf(death.entity),
-                    NotShadowCaster,
-                    Mesh3d(assets.flame.mesh.clone()),
-                    MeshMaterial3d(assets.flame.material.clone()),
                     Transform::from_xyz(0.0, flame_height, 0.0),
                 ));
                 commands
@@ -1314,15 +1307,12 @@ fn sway_trees(mut commands: Commands, time: Res<Time>, mut trees: Query<(Entity,
     }
 }
 
-/// Огонь на кроне мерцает и гаснет.
-fn burn_crowns(mut commands: Commands, time: Res<Time>, mut fires: Query<(Entity, &mut Transform, &mut CrownFire)>) {
-    for (entity, mut transform, mut fire) in &mut fires {
+/// Носитель огня кроны удаляется, когда огонь догорел: дым после него ставит модуль огня.
+fn burn_crowns(mut commands: Commands, time: Res<Time>, mut fires: Query<(Entity, &mut CrownFire)>) {
+    for (entity, mut fire) in &mut fires {
         fire.remaining -= time.delta_secs();
         if fire.remaining <= 0.0 {
             commands.entity(entity).despawn();
-            continue;
         }
-        let flicker = 1.0 + (fire.remaining * 21.0).sin() * 0.2;
-        transform.scale = Vec3::splat(1.6 * fire.remaining.min(1.0) * flicker);
     }
 }

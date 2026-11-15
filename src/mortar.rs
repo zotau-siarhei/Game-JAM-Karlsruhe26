@@ -253,8 +253,8 @@ fn create_assets(
         }),
         flash_mesh: meshes.add(Sphere::new(1.0)),
         flash_material: materials.add(StandardMaterial {
-            base_color: FLASH_COLOR,
-            emissive: LinearRgba::rgb(12.0, 7.0, 2.5),
+            // Огонь ярче единицы: светится через свечение камеры (`unlit` выводит только `base_color`).
+            base_color: Color::linear_rgb(4.8, 2.8, 1.0),
             unlit: true,
             ..default()
         }),

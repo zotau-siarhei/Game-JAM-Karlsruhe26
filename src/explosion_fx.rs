@@ -79,6 +79,10 @@ const FIREBALL_RISE: f32 = 1.5;
 /// Сколько сфер в огненном шаре: от и до.
 const FIREBALL_BLOBS: (u32, u32) = (3, 5);
 
+/// Насколько ярче цвета ядро шара в момент вспышки и до какой доли жизни шар раскалён.
+const FIREBALL_GLOW: f32 = 3.0;
+const FIREBALL_HOT: f32 = 0.35;
+
 /// Цвет огненного шара по доле его жизни: от жёлто-белого через оранжевый к тёмному дыму.
 const FIREBALL_COLORS: [(f32, [f32; 4]); 5] = [
     (0.0, [1.0, 0.97, 0.85, 1.0]),
@@ -249,6 +253,12 @@ pub fn fireball_color(t: f32) -> [f32; 4] {
     let (t1, b) = keys[i + 1];
     let k = (t - t0) / (t1 - t0);
     std::array::from_fn(|c| a[c] + (b[c] - a[c]) * k)
+}
+
+/// Во сколько раз ядро огненного шара ярче своего цвета: в начале жизни выше единицы, чтобы
+/// светилось через свечение камеры, к остыванию — ровно цвет.
+pub fn fireball_glow(t: f32) -> f32 {
+    1.0 + FIREBALL_GLOW * (1.0 - t / FIREBALL_HOT).max(0.0)
 }
 
 /// Радиус, ширина и непрозрачность кольца ударной волны по доле жизни `t`.
@@ -884,7 +894,9 @@ fn animate_fireball(
             && let Some(mut material) = materials.get_mut(&material.0)
         {
             let [r, g, b, a] = fireball_color(t);
-            material.base_color = Color::srgba(r, g, b, a);
+            let color = Color::srgba(r, g, b, a).to_linear();
+            let glow = fireball_glow(t);
+            material.base_color = Color::linear_rgba(color.red * glow, color.green * glow, color.blue * glow, color.alpha);
         }
     }
 }

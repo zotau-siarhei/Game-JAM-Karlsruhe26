@@ -7,6 +7,7 @@
 use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 
+use crate::fire::Fire;
 use crate::debris::SpawnDebris;
 use crate::frame::{GameSet, RunMessages};
 use crate::run::RunScoped;
@@ -26,6 +27,8 @@ const DUST_SECONDS: f32 = 1.5;
 
 /// Сколько горят руины, с.
 const RUIN_FIRE_SECONDS: f32 = 6.0;
+/// Сколько руина дымит после огня, с.
+const RUIN_SMOKE: f32 = 20.0;
 
 /// Сколько живёт искра, с.
 const SPARK_SECONDS: f32 = 0.7;
@@ -99,19 +102,16 @@ struct Spark {
     remaining: f32,
 }
 
-/// Огонь на руинах.
+/// Очаг огня на руинах: сколько ещё, с. Пламя и дым после него ставит модуль огня.
 #[derive(Component)]
 struct RuinFire {
     remaining: f32,
-    size: f32,
 }
 
 #[derive(Resource)]
 struct CollapseAssets {
     cube: Handle<Mesh>,
     ring: Handle<Mesh>,
-    flame: Handle<Mesh>,
-    fire: Handle<StandardMaterial>,
     spark: Handle<StandardMaterial>,
 }
 
@@ -123,16 +123,9 @@ fn create_collapse_assets(
     commands.insert_resource(CollapseAssets {
         cube: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
         ring: meshes.add(Torus::new(0.75, 1.0)),
-        flame: meshes.add(Sphere::new(0.5).mesh().ico(1).unwrap()),
-        fire: materials.add(StandardMaterial {
-            base_color: Color::srgb(1.0, 0.5, 0.08),
-            emissive: LinearRgba::rgb(9.0, 3.0, 0.3),
-            unlit: true,
-            ..default()
-        }),
         spark: materials.add(StandardMaterial {
-            base_color: Color::srgb(1.0, 0.85, 0.4),
-            emissive: LinearRgba::rgb(12.0, 8.0, 2.0),
+            // Огонь ярче единицы: светится через свечение камеры (`unlit` выводит только `base_color`).
+            base_color: Color::linear_rgb(4.8, 3.2, 0.8),
             unlit: true,
             ..default()
         }),
@@ -284,17 +277,13 @@ fn start_collapse(
 
         // Огонь на руинах: несколько очагов, гаснут за несколько секунд.
         for i in 0..3 {
-            let local = Vec3::new(rng.range(-0.6, 0.6) * half.x, 0.6, rng.range(-0.6, 0.6) * half.y);
+            let local = Vec3::new(rng.range(-0.6, 0.6) * half.x, 0.3, rng.range(-0.6, 0.6) * half.y);
+            let burn = RUIN_FIRE_SECONDS * rng.range(0.6, 1.0) + i as f32 * 0.3;
             commands.spawn((
-                RuinFire {
-                    remaining: RUIN_FIRE_SECONDS * rng.range(0.6, 1.0) + i as f32 * 0.3,
-                    size: rng.range(1.2, 2.0),
-                },
+                RuinFire { remaining: burn + 0.2 },
+                Fire::new(rng.range(1.2, 2.0), 1.0).for_seconds(burn).then_smoke(RUIN_SMOKE),
                 RunScoped,
-                NotShadowCaster,
-                Mesh3d(assets.flame.clone()),
-                MeshMaterial3d(assets.fire.clone()),
-                Transform::from_translation(to_world(local)).with_scale(Vec3::ZERO),
+                Transform::from_translation(to_world(local)),
             ));
         }
     }
@@ -401,18 +390,12 @@ fn fly_sparks(mut commands: Commands, time: Res<Time>, mut sparks: Query<(Entity
     }
 }
 
-/// Огонь на руинах мерцает и гаснет.
-fn burn_ruins(mut commands: Commands, time: Res<Time>, mut fires: Query<(Entity, &mut Transform, &mut RuinFire)>) {
-    for (entity, mut transform, mut fire) in &mut fires {
+/// Носитель очага удаляется, когда огонь догорел: руина дымит дальше по `then_smoke`.
+fn burn_ruins(mut commands: Commands, time: Res<Time>, mut fires: Query<(Entity, &mut RuinFire)>) {
+    for (entity, mut fire) in &mut fires {
         fire.remaining -= time.delta_secs();
         if fire.remaining <= 0.0 {
             commands.entity(entity).despawn();
-            continue;
         }
-        let grow = ((RUIN_FIRE_SECONDS - fire.remaining) * 3.0).min(1.0);
-        let fade = fire.remaining.min(1.0);
-        let flicker = 1.0 + (fire.remaining * 19.0).sin() * 0.15;
-        let s = fire.size * grow * fade * flicker;
-        transform.scale = Vec3::new(s, s * 1.4, s);
     }
 }

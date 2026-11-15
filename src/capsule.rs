@@ -98,9 +98,9 @@ fn create_assets(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let glowing = |color: Color, glow: LinearRgba| StandardMaterial {
-        base_color: color,
-        emissive: glow,
+    // Ярче единицы: светится через свечение камеры (`unlit` выводит только `base_color`).
+    let glowing = |_color: Color, glow: LinearRgba| StandardMaterial {
+        base_color: Color::linear_rgb(glow.red * 0.4, glow.green * 0.4, glow.blue * 0.4),
         unlit: true,
         // Кольцо плоское: его видно с обеих сторон.
         double_sided: true,

@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 
+use crate::fire::Fire;
 use crate::explosion::Explosion;
 use crate::frame::{GameSet, RunMessages};
 use crate::run::{RunScoped, WorldRebuilt};
@@ -88,8 +89,6 @@ struct DebrisStore {
 #[derive(Resource)]
 struct DebrisAssets {
     cube: Handle<Mesh>,
-    fire_mesh: Handle<Mesh>,
-    fire: Handle<StandardMaterial>,
     materials: HashMap<[u8; 3], Handle<StandardMaterial>>,
 }
 
@@ -119,27 +118,18 @@ struct Flying {
     color: Color,
 }
 
-/// Огонь на обломке: гаснет по таймеру.
+/// Обломок горит: сколько ещё, с. Пламя ставит модуль огня по [`Fire`].
 #[derive(Component)]
 struct Burning {
     remaining: f32,
-    flame: Entity,
 }
 
 fn create_debris_assets(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     commands.insert_resource(DebrisAssets {
         cube: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
-        fire_mesh: meshes.add(Sphere::new(0.5).mesh().ico(1).unwrap()),
-        fire: materials.add(StandardMaterial {
-            base_color: Color::srgb(1.0, 0.55, 0.1),
-            emissive: LinearRgba::rgb(8.0, 3.0, 0.4),
-            unlit: true,
-            ..default()
-        }),
         materials: HashMap::new(),
     });
 }
@@ -183,18 +173,12 @@ fn spawn_debris(
         let parent = entity.id();
         if request.burning && burning_count < MAX_BURNING {
             burning_count += 1;
-            let flame = commands
-                .spawn((
-                    Mesh3d(assets.fire_mesh.clone()),
-                    MeshMaterial3d(assets.fire.clone()),
-                    NotShadowCaster,
-                    Transform::from_xyz(0.0, 0.6, 0.0).with_scale(Vec3::splat(1.1)),
-                ))
-                .id();
-            commands.entity(parent).add_child(flame).insert(Burning {
-                remaining: 3.0 + (k * 0.37).fract() * 3.0,
-                flame,
-            });
+            // Пламя стоит вертикально над обломком и не кувыркается вместе с ним.
+            let remaining = 3.0 + (k * 0.37).fract() * 3.0;
+            let size = (request.size.max_element() * 1.2).clamp(0.5, 1.6);
+            commands
+                .entity(parent)
+                .insert((Burning { remaining }, Fire::new(size, 0.85).for_seconds(remaining).then_smoke(3.0)));
         }
     }
 }
@@ -353,16 +337,11 @@ fn fly_debris(
 }
 
 /// Огонь на обломках гаснет.
-fn burn_out(mut commands: Commands, time: Res<Time>, mut burning: Query<(Entity, &mut Burning)>, mut flames: Query<&mut Transform>) {
+fn burn_out(mut commands: Commands, time: Res<Time>, mut burning: Query<(Entity, &mut Burning)>) {
     for (entity, mut fire) in &mut burning {
         fire.remaining -= time.delta_secs();
-        if let Ok(mut t) = flames.get_mut(fire.flame) {
-            let flicker = 1.0 + (fire.remaining * 23.0).sin() * 0.15;
-            t.scale = Vec3::splat(fire.remaining.clamp(0.0, 1.0) * 1.1 * flicker);
-        }
         if fire.remaining <= 0.0 {
-            commands.entity(fire.flame).try_despawn();
-            commands.entity(entity).try_remove::<Burning>();
+            commands.entity(entity).try_remove::<(Burning, Fire)>();
         }
     }
 }

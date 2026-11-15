@@ -96,6 +96,11 @@ cargo check                                 # проверка компиляц�
 cargo test                                  # тесты
 ```
 
+- Отладочный снимок без рук: `SPACE_GUARD_AUTOSTART=1 SPACE_GUARD_SCENE=fire SPACE_GUARD_SEED=3
+  SPACE_GUARD_SHOT=/путь/кадр.png CARGO_MANIFEST_DIR=$PWD ./target/debug/space_guard` — забег
+  начинается сам, перед луноходом встают огни, через 8 с кадр сохраняется и игра закрывается
+  (`src/debug_shot.rs`).
+
 - Сборка нативная: сейчас macOS на Apple Silicon, позже Linux. Браузерная (WASM) сборка отложена,
   сейчас её нет и учитывать её не нужно.
 - Целевое железо — MacBook Air M2, игра должна идти на нём плавно.

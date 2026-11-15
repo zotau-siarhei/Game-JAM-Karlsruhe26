@@ -112,7 +112,7 @@ impl Plugin for LavaPlugin {
                         .chain()
                         .after(craters::dig_craters)
                         .in_set(GameSet::Damage),
-                    (draw_pools, animate_lava, smoke_hot_spots, fade_smoke, flicker_fires)
+                    (draw_pools, animate_lava, smoke_hot_spots, fade_smoke)
                         .chain()
                         .in_set(GameSet::Presentation),
                 ),
@@ -229,7 +229,7 @@ struct Fire {
 
 impl LavaFires {
     /// Поджигает цель или продлевает её огонь. Сверх предела новые цели не загораются.
-    fn ignite(&mut self, commands: &mut Commands, assets: &LavaAssets, target: Entity, at: Vec3, size: f32, time: f32) {
+    fn ignite(&mut self, commands: &mut Commands, target: Entity, at: Vec3, size: f32, time: f32) {
         if let Some(fire) = self.fires.get_mut(&target) {
             fire.left = fire.left.max(time);
             return;
@@ -237,24 +237,16 @@ impl LavaFires {
         if self.fires.len() >= MAX_FIRES {
             return;
         }
+        // Пламя модуля огня стоит низом чуть ниже прежнего центра шара.
         let flame = commands
             .spawn((
-                Flame { size },
+                crate::fire::Fire::new(size * 1.4, 1.0).then_smoke(6.0),
                 RunScoped,
-                NotShadowCaster,
-                Mesh3d(assets.ball.clone()),
-                MeshMaterial3d(assets.drop.clone()),
-                Transform::from_translation(at).with_scale(Vec3::splat(size)),
+                Transform::from_translation(at - Vec3::Y * size * 0.6),
             ))
             .id();
         self.fires.insert(target, Fire { flame, left: time });
     }
-}
-
-/// Огонь над горящим деревом или домом.
-#[derive(Component)]
-struct Flame {
-    size: f32,
 }
 
 impl LavaPools {
@@ -362,8 +354,8 @@ fn create_assets(
     commands.insert_resource(LavaAssets {
         ball: meshes.add(Sphere::new(1.0).mesh().ico(1).expect("капля лавы")),
         drop: materials.add(StandardMaterial {
-            base_color: Color::srgb(1.0, 0.5, 0.1),
-            emissive: LinearRgba::rgb(8.0, 2.5, 0.4),
+            // Огонь ярче единицы: светится через свечение камеры (`unlit` выводит только `base_color`).
+            base_color: Color::linear_rgb(3.2, 1.0, 0.16),
             unlit: true,
             ..default()
         }),
@@ -374,8 +366,8 @@ fn create_assets(
             ..default()
         }),
         spark: materials.add(StandardMaterial {
-            base_color: Color::srgb(1.0, 0.7, 0.2),
-            emissive: LinearRgba::rgb(10.0, 4.0, 0.8),
+            // Огонь ярче единицы: светится через свечение камеры (`unlit` выводит только `base_color`).
+            base_color: Color::linear_rgb(4.0, 1.6, 0.32),
             unlit: true,
             ..default()
         }),
@@ -781,7 +773,6 @@ fn burn_in_lava(
     time: Res<Time>,
     mut pools: ResMut<LavaPools>,
     mut fires: ResMut<LavaFires>,
-    assets: Res<LavaAssets>,
     terrain: Res<Terrain>,
     mut rover: Query<(Entity, &Transform, &mut RoverMotion, &Health), With<Rover>>,
     // Машины Службы горят в лаве так же, как враги.
@@ -846,7 +837,7 @@ fn burn_in_lava(
             };
             if !health.is_dead() && pools.near(Vec2::new(p.x, p.z), reach) {
                 let (lift, size) = if prop.is_some() { (2.0, 0.9) } else { (3.0, 1.8) };
-                fires.ignite(&mut commands, &assets, entity, p + Vec3::Y * lift, size, BURN_TICK * 2.0);
+                fires.ignite(&mut commands, entity, p + Vec3::Y * lift, size, BURN_TICK * 2.0);
             }
         }
     }
@@ -875,7 +866,6 @@ fn fly_drops(
     mut commands: Commands,
     time: Res<Time>,
     terrain: Res<Terrain>,
-    assets: Res<LavaAssets>,
     mut fires: ResMut<LavaFires>,
     mut drops: Query<(Entity, &mut Transform, &mut Drop)>,
     targets: Query<(Entity, &GlobalTransform, &Health, Option<&Prop>, Has<House>), Without<Drop>>,
@@ -907,7 +897,7 @@ fn fly_drops(
             let tree = prop.is_some_and(|p| p.kind == PropKind::Tree);
             if tree || house {
                 let (lift, size) = if tree { (2.0, 0.9) } else { (3.0, 1.8) };
-                fires.ignite(&mut commands, &assets, target, t.translation() + Vec3::Y * lift, size, DROP_FIRE);
+                fires.ignite(&mut commands, target, t.translation() + Vec3::Y * lift, size, DROP_FIRE);
             }
         }
         commands.entity(entity).despawn();
@@ -915,7 +905,29 @@ fn fly_drops(
 }
 
 /// Над глубокими кратерами поднимается дым и изредка летят искры.
-fn smoke_hot_spots(mut commands: Commands, time: Res<Time>, mut spots: ResMut<HotSpots>, assets: Res<LavaAssets>) {
+fn smoke_hot_spots(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut spots: ResMut<HotSpots>,
+    assets: Res<LavaAssets>,
+    mut plumes: Local<Vec<(Vec3, Entity)>>,
+) {
+    // Столб мягкого дыма модуля огня над каждой горячей точкой; ушедшие точки гаснут.
+    plumes.retain(|(p, e)| {
+        let keep = spots.spots.contains(p);
+        if !keep {
+            commands.entity(*e).try_despawn();
+        }
+        keep
+    });
+    for spot in &spots.spots {
+        if !plumes.iter().any(|(p, _)| p == spot) {
+            let e = commands
+                .spawn((crate::fire::SmokePlume, RunScoped, Transform::from_translation(*spot + Vec3::Y * 0.3)))
+                .id();
+            plumes.push((*spot, e));
+        }
+    }
     spots.timer -= time.delta_secs();
     if spots.timer > 0.0 || spots.spots.is_empty() {
         return;
@@ -924,19 +936,6 @@ fn smoke_hot_spots(mut commands: Commands, time: Res<Time>, mut spots: ResMut<Ho
     let t = time.elapsed_secs();
     for (i, spot) in spots.spots.iter().enumerate() {
         let a = t * 3.7 + i as f32 * 1.3;
-        commands.spawn((
-            Smoke {
-                velocity: Vec3::new(a.cos() * 0.4 + 0.6, 2.5, a.sin() * 0.4),
-                age: 0.0,
-                life: 2.5,
-                grow: 0.7,
-            },
-            RunScoped,
-            NotShadowCaster,
-            Mesh3d(assets.ball.clone()),
-            MeshMaterial3d(assets.smoke.clone()),
-            Transform::from_translation(*spot + Vec3::Y * 0.5).with_scale(Vec3::splat(0.6)),
-        ));
         if (a * 10.0).sin() > 0.6 {
             commands.spawn((
                 Smoke {
@@ -1055,15 +1054,6 @@ fn bubble_pools(
                 }
             }
         }
-    }
-}
-
-/// Огонь над горящими деревьями и домами мерцает.
-fn flicker_fires(time: Res<Time>, mut flames: Query<(&Flame, &mut Transform)>) {
-    let t = time.elapsed_secs();
-    for (flame, mut transform) in &mut flames {
-        let k = 1.0 + 0.2 * (t * 17.0 + transform.translation.x).sin() * (t * 7.3 + transform.translation.z).cos();
-        transform.scale = Vec3::new(flame.size, flame.size * 1.4 * k, flame.size) * k;
     }
 }
 

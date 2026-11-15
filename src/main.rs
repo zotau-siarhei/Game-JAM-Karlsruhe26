@@ -20,12 +20,14 @@ mod collapse;
 mod combat;
 mod comic;
 mod debris;
+mod debug_shot;
 mod craters;
 mod enemy;
 mod enemy_look;
 mod interceptor;
 mod explosion;
 mod explosion_fx;
+mod fire;
 mod frame;
 mod hq;
 mod grass;
@@ -170,6 +172,7 @@ fn game_plugins(app: &mut App) {
         // Облицовка окон в туннель: рядом с путями, но в группе путей нет места.
         .add_plugins(tunnel_view::TunnelViewPlugin)
         .add_plugins(grass::GrassPlugin)
+        .add_plugins((fire::FirePlugin, debug_shot::DebugShotPlugin))
         .add_plugins((
             voice::VoicePlugin,
             hq::HqPlugin,
