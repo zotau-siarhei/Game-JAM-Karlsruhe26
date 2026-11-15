@@ -3,3 +3,5 @@
 .DS_Store
 assets/voice/raw/
 .worktrees/
+.env
+Folder.DotSettings.user

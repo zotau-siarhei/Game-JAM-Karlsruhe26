@@ -112,7 +112,6 @@ pub struct PlaySound {
 }
 
 impl PlaySound {
-    // Игровых событий, которые отправляют звуки, пока нет.
     #[allow(dead_code)]
     /// Звук без места в мире: всегда на полной громкости.
     pub fn new(id: impl Into<String>) -> Self {
