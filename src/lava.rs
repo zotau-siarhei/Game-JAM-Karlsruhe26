@@ -257,7 +257,7 @@ impl LavaPools {
     }
 
     /// Есть ли лава в `reach` метрах от точки плана.
-    fn near(&self, p: Vec2, reach: f32) -> bool {
+    pub fn near(&self, p: Vec2, reach: f32) -> bool {
         self.pools.iter().any(|pool| pool.near(p, reach))
     }
 
@@ -642,7 +642,7 @@ fn grow_pools(time: Res<Time>, terrain: Res<Terrain>, mut pools: ResMut<LavaPool
 }
 
 /// Строит меш плоскости по ячейкам с запасом в одну ячейку.
-fn surface_mesh(cells: &HashSet<IVec2>, level: f32) -> Mesh {
+pub fn surface_mesh(cells: &HashSet<IVec2>, level: f32) -> Mesh {
     let mut covered: HashSet<IVec2> = HashSet::new();
     for c in cells {
         for dz in -1..=1 {

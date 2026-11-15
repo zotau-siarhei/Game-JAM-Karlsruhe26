@@ -10,8 +10,17 @@
 //! [`Puddles::at`] отвечает, в воде ли точка плана: её спрашивают следы, пыль, гильзы, птицы
 //! и трава. Машина с [`TrackMaker`] в воде поднимает брызги и пускает круги ряби, луноход при
 //! въезде шлёт [`WaterSplash`] для звука всплеска. Скорость машин вода не меняет.
+//!
+//! Взрыв рядом с водой поднимает столб брызг. Изменение рельефа (`TerrainChanged`), задевшее
+//! лужу, убирает её до конца забега, лава рядом испаряет её с паром.
+//!
+//! Вода в кратерах: каждое изменение рельефа запоминается кандидатом. Кратер глубиной от 0,8
+//! до 6 м, который [`CRATER_QUIET`] секунд не менялся и не у лавы, за [`CRATER_FILL`] секунд
+//! набирает воду до трети глубины, не выше порога перелива через вал. Площадь — заливка
+//! `lava::flood` от дна, не дальше радиуса чаши плюс [`CRATER_SPREAD`]. Новый взрыв в кратере
+//! выплёскивает воду и начинает отсчёт заново. `Puddles::at` отвечает и за эту воду.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::f32::consts::TAU;
 
 use bevy::asset::RenderAssetUsages;
@@ -21,13 +30,17 @@ use bevy::prelude::*;
 use bevy_hanabi::prelude::*;
 
 use crate::camera::Focus;
+use crate::craters;
+use crate::explosion::Explosion;
 use crate::frame::GameSet;
+use crate::lava::{self, LavaPools};
 use crate::props::{PropStatus, Props};
 use crate::railway::TRACK_BAND;
 use crate::rover::Rover;
 use crate::run::{RunScoped, WorldRebuilt};
 use crate::settlements::{Footprint, Settlements, region_of};
-use crate::terrain::{self, CHUNK_SIZE, ChunkDirty, ChunkMesh, Terrain, chunk_coord_at, chunk_origin};
+use crate::subsidence::TerrainChanged;
+use crate::terrain::{self, CHUNK_SIZE, CRATER_EXTENT, ChunkDirty, ChunkMesh, Terrain, chunk_coord_at, chunk_origin};
 use crate::tracks::{TrackMaker, mesh_height};
 
 /// Доля участков, где ищется место для лужи: подходит примерно каждое четвёртое место.
@@ -103,8 +116,38 @@ const RIPPLE_TIME: f32 = 1.0;
 const RIPPLE_RADIUS: (f32, f32) = (0.3, 2.2);
 const RIPPLE_ALPHA: f32 = 0.55;
 
-/// Сколько живёт сущность разового эффекта брызг, с.
+/// Сколько живёт сущность разового эффекта брызг, столба брызг и пара, с.
 const SPLASH_LIFETIME: f32 = 1.2;
+const COLUMN_LIFETIME: f32 = 2.0;
+const STEAM_LIFETIME: f32 = 4.0;
+
+/// Вода в кратере: затишье до начала наполнения и время подъёма, с.
+const CRATER_QUIET: f32 = 20.0;
+const CRATER_FILL: f32 = 60.0;
+
+/// Глубина дна кратера ниже исходного рельефа, при которой набирается вода: от и до, м.
+const CRATER_DEPTH: (f32, f32) = (0.8, 6.0);
+
+/// Вода не дальше радиуса чаши плюс столько, м.
+const CRATER_SPREAD: f32 = 2.0;
+
+/// Уровень ниже порога перелива через вал на столько, м.
+const SPILL_MARGIN: f32 = 0.15;
+
+/// Вода видна и считается водой, когда она выше дна на столько, м.
+const MIN_WATER: f32 = 0.05;
+
+/// Чаши меньше этого радиуса не запоминаются: шаги «Колосса», м.
+const MIN_CRATER: f32 = 1.5;
+
+/// Больше этого радиуса чаша не растёт при слиянии кратеров, м.
+const MAX_CRATER: f32 = 14.0;
+
+/// Запоминается не больше стольких кратеров: сверх предела уходит старый без воды.
+const MAX_CRATERS: usize = 48;
+
+/// Кратеры и лава у воды проверяются раз в столько секунд.
+const CHECK_PERIOD: f32 = 1.0;
 
 /// Плагин луж.
 pub struct PuddlesPlugin;
@@ -124,6 +167,9 @@ impl Plugin for PuddlesPlugin {
                         .after(terrain::stream_chunks)
                         .before(terrain::rebuild_dirty_chunks)
                         .in_set(GameSet::Streaming),
+                    // После кратеров этого кадра: задетая вода пропадает по новому рельефу.
+                    soak_blasts.after(craters::dig_craters).in_set(GameSet::Damage),
+                    fill_craters.in_set(GameSet::Simulation),
                     (wade, animate_ripples, expire_splashes).chain().in_set(GameSet::Presentation),
                 ),
             );
@@ -180,6 +226,44 @@ impl Puddle {
 pub struct Puddles {
     /// Участки, для которых лужа уже выбрана: `None` — лужи нет или её уже нет.
     chunks: HashMap<IVec2, Option<Puddle>>,
+    /// Кратеры, которые могут набрать воду, по времени появления.
+    craters: Vec<Crater>,
+    /// Сколько прошло с последней проверки кратеров и лавы, с.
+    clock: f32,
+}
+
+/// Кратер, который может набрать воду.
+struct Crater {
+    center: Vec2,
+    /// Радиус чаши, м.
+    radius: f32,
+    /// Сколько прошло с последнего изменения, с.
+    quiet: f32,
+    /// Уже проверен после затишья: до нового изменения не проверяется.
+    checked: bool,
+    water: Option<CraterWater>,
+}
+
+/// Вода в кратере.
+struct CraterWater {
+    /// Дно: отсюда идёт заливка.
+    origin: IVec2,
+    bottom: f32,
+    target: f32,
+    level: f32,
+    age: f32,
+    cells: HashSet<IVec2>,
+    /// Сущность плоскости воды.
+    entity: Option<Entity>,
+    /// Ячейки менялись: плоскость пересобирается.
+    dirty: bool,
+}
+
+impl CraterWater {
+    /// Видна ли уже вода.
+    fn visible(&self) -> bool {
+        self.level > self.bottom + MIN_WATER
+    }
 }
 
 impl Puddles {
@@ -191,19 +275,52 @@ impl Puddles {
     /// Уровень воды в точке плана, если там вода.
     pub fn level_at(&self, p: Vec2) -> Option<f32> {
         // Лужа целиком внутри своего участка: достаточно участка точки.
-        match self.chunks.get(&chunk_coord_at(p.x, p.y)) {
-            Some(Some(puddle)) if puddle.contains(p) => Some(puddle.level),
-            _ => None,
+        if let Some(Some(puddle)) = self.chunks.get(&chunk_coord_at(p.x, p.y))
+            && puddle.contains(p)
+        {
+            return Some(puddle.level);
         }
+        let cell = IVec2::new(p.x.round() as i32, p.y.round() as i32);
+        self.craters
+            .iter()
+            .filter_map(|c| c.water.as_ref())
+            .find(|w| w.visible() && w.cells.contains(&cell))
+            .map(|w| w.level)
+    }
+
+    /// Точка на глади воды в пределах `reach` от точки плана: середина лужи или ближняя к взрыву
+    /// точка воды в кратере.
+    fn water_near(&self, p: Vec2, reach: f32) -> Option<Vec3> {
+        let here = chunk_coord_at(p.x, p.y);
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                if let Some(Some(puddle)) = self.chunks.get(&(here + IVec2::new(dx, dz)))
+                    && puddle.center.distance(p) < reach + puddle.reach()
+                {
+                    return Some(Vec3::new(puddle.center.x, puddle.level, puddle.center.y));
+                }
+            }
+        }
+        self.craters.iter().find_map(|crater| {
+            let water = crater.water.as_ref().filter(|w| w.visible())?;
+            let d = crater.center.distance(p);
+            (d < reach + crater.radius).then(|| {
+                let at = if d < crater.radius { p } else { crater.center };
+                Vec3::new(at.x, water.level, at.y)
+            })
+        })
     }
 }
 
 /// Диск воды лужи: дочерняя сущность меша участка.
 #[derive(Component)]
-#[allow(dead_code)]
 struct PuddleWater {
     chunk: IVec2,
 }
+
+/// Плоскость воды в кратере.
+#[derive(Component)]
+struct CraterSurface;
 
 /// Участок уже проверен на лужу.
 #[derive(Component)]
@@ -237,6 +354,8 @@ pub struct WaterAssets {
     water: Handle<StandardMaterial>,
     ring: Handle<Mesh>,
     splash: Handle<EffectAsset>,
+    column: Handle<EffectAsset>,
+    steam: Handle<EffectAsset>,
 }
 
 /// Хеш сида, участка и номера: число от 0 до 1.
@@ -402,6 +521,8 @@ fn create_assets(
         }),
         ring: meshes.add(ring_mesh()),
         splash: effects.add(splash_effect()),
+        column: effects.add(column_effect()),
+        steam: effects.add(steam_effect()),
     });
 }
 
@@ -437,6 +558,101 @@ fn splash_effect() -> EffectAsset {
         .init(init_age)
         .update(update_gravity)
         .render(OrientModifier::new(OrientMode::FaceCameraPosition))
+        .render(ColorOverLifetimeModifier {
+            gradient: color,
+            blend: ColorBlendMode::Overwrite,
+            mask: ColorBlendMask::RGBA,
+        })
+        .render(SizeOverLifetimeModifier {
+            gradient: size,
+            screen_space_size: false,
+        })
+}
+
+/// Столб брызг от взрыва: вода летит вверх выше машины и падает обратно. Высоту задаёт `power`.
+fn column_effect() -> EffectAsset {
+    let writer = ExprWriter::new();
+    let power = writer.add_property("power", Value::Scalar(1.0.into()));
+    let init_pos = SetPositionSphereModifier {
+        center: writer.lit(Vec3::Y * 0.2).expr(),
+        radius: writer.lit(1.0).expr(),
+        dimension: ShapeDimension::Volume,
+    };
+    let side = writer.rand(VectorType::VEC3F) * writer.lit(Vec3::new(2.0, 0.0, 2.0)) - writer.lit(Vec3::new(1.0, 0.0, 1.0));
+    let up = writer.lit(Vec3::Y) * writer.lit(3.0).uniform(writer.lit(5.0));
+    let speed = writer.lit(2.2).uniform(writer.lit(3.6)) * writer.prop(power);
+    let init_vel = SetAttributeModifier::new(Attribute::VELOCITY, ((side + up) * speed).expr());
+    let init_lifetime = SetAttributeModifier::new(Attribute::LIFETIME, writer.lit(0.9).uniform(writer.lit(1.6)).expr());
+    let init_age = SetAttributeModifier::new(Attribute::AGE, writer.lit(0.0).expr());
+    let update_gravity = AccelModifier::new(writer.lit(Vec3::Y * -20.0).expr());
+    let update_drag = LinearDragModifier::new(writer.lit(0.4).expr());
+
+    let mut color = bevy_hanabi::Gradient::new();
+    color.add_key(0.0, Vec4::new(0.85, 0.92, 1.0, 0.9));
+    color.add_key(0.7, Vec4::new(0.75, 0.85, 0.95, 0.7));
+    color.add_key(1.0, Vec4::new(0.75, 0.85, 0.95, 0.0));
+    let mut size = bevy_hanabi::Gradient::new();
+    size.add_key(0.0, Vec3::splat(0.35));
+    size.add_key(1.0, Vec3::splat(0.18));
+
+    EffectAsset::new(256, SpawnerSettings::once(90.0.into()), writer.finish())
+        .with_name("puddle_column")
+        .init(init_pos)
+        .init(init_vel)
+        .init(init_lifetime)
+        .init(init_age)
+        .update(update_gravity)
+        .update(update_drag)
+        .render(OrientModifier::new(OrientMode::FaceCameraPosition))
+        .render(ColorOverLifetimeModifier {
+            gradient: color,
+            blend: ColorBlendMode::Overwrite,
+            mask: ColorBlendMask::RGBA,
+        })
+        .render(SizeOverLifetimeModifier {
+            gradient: size,
+            screen_space_size: false,
+        })
+}
+
+/// Пар над испарившейся водой: белые клубы поднимаются, расплываются и тают.
+fn steam_effect() -> EffectAsset {
+    let writer = ExprWriter::new();
+    let init_pos = SetPositionSphereModifier {
+        center: writer.lit(Vec3::Y * 0.3).expr(),
+        radius: writer.lit(1.5).expr(),
+        dimension: ShapeDimension::Volume,
+    };
+    let init_vel = SetVelocitySphereModifier {
+        center: writer.lit(Vec3::Y * -2.0).expr(),
+        speed: writer.lit(0.6).uniform(writer.lit(1.6)).expr(),
+    };
+    let init_lifetime = SetAttributeModifier::new(Attribute::LIFETIME, writer.lit(2.0).uniform(writer.lit(3.5)).expr());
+    let init_age = SetAttributeModifier::new(Attribute::AGE, writer.lit(0.0).expr());
+    let update_rise = AccelModifier::new(writer.lit(Vec3::new(0.4, 1.2, -0.2)).expr());
+    let update_drag = LinearDragModifier::new(writer.lit(1.0).expr());
+    let round = RoundModifier {
+        roundness: writer.lit(1.0).expr(),
+    };
+
+    let mut color = bevy_hanabi::Gradient::new();
+    color.add_key(0.0, Vec4::new(0.95, 0.95, 0.95, 0.0));
+    color.add_key(0.15, Vec4::new(0.95, 0.95, 0.95, 0.55));
+    color.add_key(1.0, Vec4::new(0.9, 0.9, 0.9, 0.0));
+    let mut size = bevy_hanabi::Gradient::new();
+    size.add_key(0.0, Vec3::splat(0.6));
+    size.add_key(1.0, Vec3::splat(2.8));
+
+    EffectAsset::new(64, SpawnerSettings::once(40.0.into()), writer.finish())
+        .with_name("puddle_steam")
+        .init(init_pos)
+        .init(init_vel)
+        .init(init_lifetime)
+        .init(init_age)
+        .update(update_rise)
+        .update(update_drag)
+        .render(OrientModifier::new(OrientMode::FaceCameraPosition))
+        .render(round)
         .render(ColorOverLifetimeModifier {
             gradient: color,
             blend: ColorBlendMode::Overwrite,
@@ -646,6 +862,237 @@ fn expire_splashes(mut commands: Commands, time: Res<Time>, mut fx: Query<(Entit
     }
 }
 
+/// Разовый эффект воды в точке `at`: столб брызг мощности `power` или пар.
+fn spawn_burst(commands: &mut Commands, effect: &Handle<EffectAsset>, at: Vec3, power: f32, life: f32) {
+    let properties = EffectProperties::default().with_properties([("power".to_string(), Value::Scalar(power.into()))]);
+    commands.spawn((
+        ParticleEffect::new(effect.clone()),
+        properties,
+        Transform::from_translation(at),
+        Fleeting(life),
+        RunScoped,
+    ));
+}
+
+/// Удаляет диски воды лужи участка.
+fn remove_discs(commands: &mut Commands, discs: &Query<(Entity, &PuddleWater)>, coord: IVec2) {
+    for (entity, disc) in discs {
+        if disc.chunk == coord {
+            commands.entity(entity).try_despawn();
+        }
+    }
+}
+
+/// Дно кратера, его высота и уровень, до которого поднимется вода. `None` — воды не будет:
+/// кратер мельче 0,8 м или глубже 6 м ниже исходного рельефа, или вал не держит воду.
+pub fn crater_water(terrain: &Terrain, center: Vec2, radius: f32) -> Option<(IVec2, f32, f32)> {
+    let r = radius.min(MAX_CRATER);
+    let (x0, x1) = ((center.x - r).floor() as i32, (center.x + r).ceil() as i32);
+    let (z0, z1) = ((center.y - r).floor() as i32, (center.y + r).ceil() as i32);
+    let mut bottom: Option<(IVec2, f32)> = None;
+    for vz in z0..=z1 {
+        for vx in x0..=x1 {
+            if Vec2::new(vx as f32, vz as f32).distance(center) > r {
+                continue;
+            }
+            let h = terrain.vertex_height(vx, vz);
+            if bottom.is_none_or(|(_, b)| h < b) {
+                bottom = Some((IVec2::new(vx, vz), h));
+            }
+        }
+    }
+    let (origin, h) = bottom?;
+    let depth = terrain.original_height(origin.x, origin.y) - h;
+    if !(CRATER_DEPTH.0..=CRATER_DEPTH.1).contains(&depth) {
+        return None;
+    }
+    // Порог перелива: на каждом луче самая высокая точка вала, из них самая низкая.
+    let spill = (0..24)
+        .map(|i| {
+            let dir = Vec2::from_angle(i as f32 * TAU / 24.0);
+            (0..=10)
+                .map(|j| {
+                    let q = center + dir * r * (0.6 + j as f32 * 0.1);
+                    terrain.height_at(q.x, q.y)
+                })
+                .fold(f32::MIN, f32::max)
+        })
+        .fold(f32::MAX, f32::min);
+    let target = (h + depth / 3.0).min(spill - SPILL_MARGIN);
+    (target > h + 2.0 * MIN_WATER).then_some((origin, h, target))
+}
+
+/// Ячейки воды кратера на уровне `level`: заливка от дна, не дальше радиуса чаши плюс
+/// [`CRATER_SPREAD`] от середины.
+pub fn water_cells(terrain: &Terrain, origin: IVec2, center: Vec2, radius: f32, level: f32) -> HashSet<IVec2> {
+    let reach = radius.min(MAX_CRATER) + CRATER_SPREAD;
+    let from_origin = (reach + origin.as_vec2().distance(center)).ceil() as i32;
+    let mut cells = lava::flood(origin, level, from_origin, |x, z| terrain.vertex_height(x, z));
+    cells.retain(|c| c.as_vec2().distance(center) <= reach);
+    cells
+}
+
+/// Взрыв у воды поднимает столб брызг. Изменение рельефа убирает задетые лужи до конца забега,
+/// осушает воду в задетом кратере и запоминает кратер: он может набрать воду заново.
+fn soak_blasts(
+    mut commands: Commands,
+    mut puddles: ResMut<Puddles>,
+    assets: Res<WaterAssets>,
+    mut explosions: MessageReader<Explosion>,
+    mut changes: MessageReader<TerrainChanged>,
+    discs: Query<(Entity, &PuddleWater)>,
+) {
+    let puddles = &mut *puddles;
+    for e in explosions.read() {
+        if let Some(at) = puddles.water_near(e.position.xz(), e.radius) {
+            spawn_burst(&mut commands, &assets.column, at, e.power.clamp(0.5, 2.0).sqrt(), COLUMN_LIFETIME);
+        }
+    }
+    for change in changes.read() {
+        let c = change.center.xz();
+        let r = change.radius;
+        let reach = r + RADIUS.1 * (1.0 + WOBBLE.0 + WOBBLE.1);
+        let (low, high) = (chunk_coord_at(c.x - reach, c.y - reach), chunk_coord_at(c.x + reach, c.y + reach));
+        for cz in low.y..=high.y {
+            for cx in low.x..=high.x {
+                let coord = IVec2::new(cx, cz);
+                if let Some(slot) = puddles.chunks.get_mut(&coord)
+                    && slot.is_some_and(|p| p.center.distance(c) < r + p.reach() * WATER_SHARE)
+                {
+                    *slot = None;
+                    remove_discs(&mut commands, &discs, coord);
+                }
+            }
+        }
+        let bowl = r / CRATER_EXTENT;
+        if let Some(crater) = puddles.craters.iter_mut().find(|k| k.center.distance(c) < k.radius + bowl) {
+            crater.radius = crater.radius.max(crater.center.distance(c) + bowl).min(MAX_CRATER);
+            crater.quiet = 0.0;
+            crater.checked = false;
+            if let Some(entity) = crater.water.take().and_then(|w| w.entity) {
+                commands.entity(entity).try_despawn();
+            }
+        } else if bowl >= MIN_CRATER {
+            if puddles.craters.len() >= MAX_CRATERS {
+                let old = puddles.craters.iter().position(|k| k.water.is_none()).unwrap_or(0);
+                if let Some(entity) = puddles.craters.remove(old).water.and_then(|w| w.entity) {
+                    commands.entity(entity).try_despawn();
+                }
+            }
+            puddles.craters.push(Crater {
+                center: c,
+                radius: bowl.min(MAX_CRATER),
+                quiet: 0.0,
+                checked: false,
+                water: None,
+            });
+        }
+    }
+}
+
+/// Наполняет старые кратеры водой, держит плоскости воды на уровне и испаряет воду у лавы.
+#[allow(clippy::too_many_arguments)]
+fn fill_craters(
+    mut commands: Commands,
+    time: Res<Time>,
+    terrain: Res<Terrain>,
+    pools: Res<LavaPools>,
+    mut puddles: ResMut<Puddles>,
+    assets: Res<WaterAssets>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut surfaces: Query<&mut Transform, With<CraterSurface>>,
+    discs: Query<(Entity, &PuddleWater)>,
+) {
+    let dt = time.delta_secs();
+    let puddles = &mut *puddles;
+    puddles.clock += dt;
+    let check = puddles.clock >= CHECK_PERIOD;
+    if check {
+        puddles.clock = 0.0;
+    }
+    for crater in &mut puddles.craters {
+        crater.quiet += dt;
+        let reach = crater.radius + CRATER_SPREAD;
+        if check && crater.water.is_none() && !crater.checked && crater.quiet >= CRATER_QUIET {
+            crater.checked = true;
+            if !pools.near(crater.center, reach)
+                && let Some((origin, bottom, target)) = crater_water(&terrain, crater.center, crater.radius)
+            {
+                crater.water = Some(CraterWater {
+                    origin,
+                    bottom,
+                    target,
+                    level: bottom,
+                    age: 0.0,
+                    cells: HashSet::from([origin]),
+                    entity: None,
+                    dirty: true,
+                });
+            }
+        }
+        let Some(water) = crater.water.as_mut() else {
+            continue;
+        };
+        // Лава дошла до воды: вода уходит паром.
+        if check && pools.near(crater.center, reach) {
+            if water.visible() {
+                let c = crater.center;
+                spawn_burst(&mut commands, &assets.steam, Vec3::new(c.x, water.level, c.y), 1.0, STEAM_LIFETIME);
+            }
+            if let Some(entity) = water.entity {
+                commands.entity(entity).try_despawn();
+            }
+            crater.water = None;
+            continue;
+        }
+        let rising = water.age < CRATER_FILL;
+        water.age += dt;
+        let t = (water.age / CRATER_FILL).min(1.0);
+        water.level = water.bottom + (water.target - water.bottom) * t;
+        if rising && (check || water.age >= CRATER_FILL) {
+            let cells = water_cells(&terrain, water.origin, crater.center, crater.radius, water.level);
+            if cells != water.cells {
+                water.cells = cells;
+                water.dirty = true;
+            }
+        }
+        if water.dirty {
+            water.dirty = false;
+            if let Some(entity) = water.entity.take() {
+                commands.entity(entity).try_despawn();
+            }
+            water.entity = Some(
+                commands
+                    .spawn((
+                        CraterSurface,
+                        Mesh3d(meshes.add(lava::surface_mesh(&water.cells, 0.0))),
+                        MeshMaterial3d(assets.water.clone()),
+                        Transform::from_xyz(0.0, water.level, 0.0),
+                        NotShadowCaster,
+                        RunScoped,
+                    ))
+                    .id(),
+            );
+        } else if let Some(entity) = water.entity
+            && let Ok(mut transform) = surfaces.get_mut(entity)
+        {
+            transform.translation.y = water.level;
+        }
+    }
+    // Лужи у лавы испаряются.
+    if check {
+        for (coord, slot) in puddles.chunks.iter_mut() {
+            if let Some(p) = slot
+                && pools.near(p.center, p.reach())
+            {
+                spawn_burst(&mut commands, &assets.steam, Vec3::new(p.center.x, p.level, p.center.y), 1.0, STEAM_LIFETIME);
+                *slot = None;
+                remove_discs(&mut commands, &discs, *coord);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -696,5 +1143,48 @@ mod tests {
         let other: Vec<_> = sample_chunks().map(|c| plan(10, c)).collect();
         assert_ne!(a, other);
     }
-}
 
+    /// Точка вдали от путей и старта, где кратер мортиры точно держит воду.
+    fn crater_site(seed: u32) -> (Terrain, Vec2) {
+        let terrain = Terrain::new(seed);
+        let p = (0..40)
+            .map(|i| Vec2::new(60.0 + i as f32 * 17.0, -45.0 - i as f32 * 11.0))
+            .find(|p| terrain.normal_at(p.x, p.y).y > 0.97 && terrain.lines().nearest(*p).distance > TRACK_BAND)
+            .expect("нет ровного места");
+        (terrain, p)
+    }
+
+    #[test]
+    fn кратер_глубже_6_м_не_набирает_воду() {
+        for seed in [3, 7, 11] {
+            let (mut terrain, p) = crater_site(seed);
+            let center = Vec3::new(p.x, 0.0, p.y);
+            // Мортира: радиус 5 м, чаша 2,5 м, вал 0,6 м.
+            terrain.apply_crater(center, 5.0, 2.5, 0.6);
+            assert!(crater_water(&terrain, p, 5.0).is_some(), "сид {seed}: кратер 2,5 м без воды");
+            terrain.apply_crater(center, 5.0, 2.5, 0.6);
+            terrain.apply_crater(center, 5.0, 2.5, 0.6);
+            assert!(crater_water(&terrain, p, 5.0).is_none(), "сид {seed}: в воронке 7,5 м вода");
+        }
+    }
+
+    #[test]
+    fn вода_не_выходит_за_радиус_кратера_плюс_2_м() {
+        for seed in [3, 7, 11] {
+            let (mut terrain, p) = crater_site(seed);
+            terrain.apply_crater(Vec3::new(p.x, 0.0, p.y), 5.0, 2.5, 0.6);
+            let (origin, bottom, target) = crater_water(&terrain, p, 5.0).unwrap();
+            assert!(target <= bottom + 2.5 / 3.0 + 0.05, "выше трети глубины");
+            let cells = water_cells(&terrain, origin, p, 5.0, target);
+            assert!(cells.len() > 5, "сид {seed}: воды почти нет");
+            for c in &cells {
+                assert!(c.as_vec2().distance(p) <= 7.0, "сид {seed}: вода в {c}");
+                assert!(terrain.vertex_height(c.x, c.y) < target, "сид {seed}: ячейка {c} над водой");
+            }
+            // Даже уровень выше вала не выводит воду за предел.
+            for c in water_cells(&terrain, origin, p, 5.0, target + 10.0) {
+                assert!(c.as_vec2().distance(p) <= 7.0, "сид {seed}: перелив в {c}");
+            }
+        }
+    }
+}
