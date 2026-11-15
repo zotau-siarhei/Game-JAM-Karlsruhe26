@@ -339,6 +339,7 @@ fn fly_over_planet(
 /// Меню: Enter, пробел или клик начинают забег, Esc закрывает игру.
 fn menu_input(
     keys: Res<ButtonInput<KeyCode>>,
+    bench: Option<Res<crate::perf::Bench>>,
     mut world: RunWorld,
     mut exit: MessageWriter<AppExit>,
 ) {
@@ -346,8 +347,10 @@ fn menu_input(
         exit.write(AppExit::Success);
         return;
     }
+    // Прогон замера начинает забег сам.
     let start = keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter, KeyCode::Space])
-        || world.mouse.just_pressed(MouseButton::Left);
+        || world.mouse.just_pressed(MouseButton::Left)
+        || bench.is_some_and(|b| b.on);
     if start {
         world.start_run();
     }
@@ -625,10 +628,12 @@ fn moved_choice(current: usize, step: i32) -> usize {
 /// Забег встаёт на паузу по Esc и когда окно теряет фокус.
 fn pause_on_escape_or_blur(
     keys: Res<ButtonInput<KeyCode>>,
+    bench: Option<Res<crate::perf::Bench>>,
     mut focus: MessageReader<WindowFocused>,
     mut next: ResMut<NextState<GameState>>,
 ) {
-    let blurred = focus.read().any(|change| !change.focused);
+    // В прогоне замера окно может быть и не в фокусе.
+    let blurred = focus.read().any(|change| !change.focused) && !bench.is_some_and(|b| b.on);
     if blurred || keys.just_pressed(KeyCode::Escape) {
         next.set(GameState::Paused);
     }

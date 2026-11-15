@@ -43,6 +43,7 @@ mod obstacles;
 mod music;
 mod pickups;
 mod props;
+mod perf;
 mod puddles;
 mod quality;
 mod rails;
@@ -91,20 +92,28 @@ const SUN_COLOR: Color = Color::srgb(1.0, 0.94, 0.82);
 const SUN_POSITION: Vec3 = Vec3::new(6.0, 8.0, 3.0);
 
 fn main() {
+    // Замер скорости: `cargo run -- --bench=180` (см. `perf.rs`).
+    let bench = perf::Bench::from_args(std::env::args());
+    // Проверка волн без гибели: `cargo run -- --immortal`; в замере луноход тоже бессмертен.
+    let immortal = combat::Immortal(combat::Immortal::from_args(std::env::args()).0 || bench.on);
     App::new()
         .insert_resource(ClearColor(SKY_COLOR))
         .insert_resource(RunSeed::from_clock())
-        // Проверка волн без гибели: `cargo run -- --immortal`.
-        .insert_resource(combat::Immortal::from_args(std::env::args()))
+        .insert_resource(immortal)
+        .insert_resource(bench)
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Space Guard".into(),
+                // В замере кадры не ждут развёртки экрана: видно, сколько игра может.
+                present_mode: if bench.on { bevy::window::PresentMode::AutoNoVsync } else { bevy::window::PresentMode::default() },
                 ..default()
             }),
             ..default()
         }))
         // Частицы: плагину нужен рендер, поэтому он стоит здесь, а не среди плагинов игры.
         .add_plugins(bevy_hanabi::HanabiPlugin)
+        // Замер ставит отметки и в рендер-потоке, поэтому тоже здесь.
+        .add_plugins(perf::PerfPlugin)
         .add_plugins(game_plugins)
         .add_systems(Startup, spawn_light)
         .run();

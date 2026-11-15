@@ -92,6 +92,7 @@
 cargo run                                   # запуск
 cargo run --features bevy/dynamic_linking   # быстрая пересборка при разработке
 cargo run -- --immortal                     # проверка волн: луноход не теряет здоровья
+cargo run -- --bench=180                    # замер: забег сам, без vsync, сводка в лог (src/perf.rs)
 cargo check                                 # проверка компиляции
 cargo test                                  # тесты
 ```
@@ -100,7 +101,7 @@ cargo test                                  # тесты
   SPACE_GUARD_SHOT=/путь/кадр.png CARGO_MANIFEST_DIR=$PWD ./target/debug/space_guard` — забег
   начинается сам, перед луноходом встают огни, через 8 с кадр сохраняется и игра закрывается
   (`src/debug_shot.rs`).
-
+- F3 в игре — оверлей FPS и времени кадра по участкам основного и рендер-потока (`src/perf.rs`).
 - Сборка нативная: сейчас macOS на Apple Silicon, позже Linux. Браузерная (WASM) сборка отложена,
   сейчас её нет и учитывать её не нужно.
 - Целевое железо — MacBook Air M2, игра должна идти на нём плавно.
