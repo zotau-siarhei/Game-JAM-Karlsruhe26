@@ -4,7 +4,14 @@
 //! (луноход и всё с `GroundVehicle`) после движения выталкиваются из препятствий по нормали:
 //! касательная составляющая движения остаётся, поэтому машина скользит вдоль стены.
 //! Пули проверяют путь функцией [`segment_hit`].
+//!
+//! Препятствия разложены по сетке [`ObstacleGrid`]: обход «что рядом с точкой или отрезком»
+//! смотрит несколько ячеек, а не все препятствия загруженной области. Системе с пулями или
+//! лучами видимости удобнее параметр [`NearObstacles`].
 
+use std::collections::HashMap;
+
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use crate::combat::{Collider, Damage, Health, Team};
@@ -24,18 +31,26 @@ const SKIN: f32 = 1e-3;
 /// Шаг проверки пути пули, м.
 const STEP: f32 = 0.25;
 
+/// Сторона ячейки сетки препятствий, м. Препятствие лежит в ячейке своего центра; крупнее
+/// ячейки — в общем списке, который проверяется всегда.
+const CELL: f32 = 8.0;
+
 /// Подключает выталкивание машин из препятствий.
 pub struct ObstaclesPlugin;
 
 impl Plugin for ObstaclesPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
+        app.init_resource::<ObstacleGrid>().add_systems(
             Update,
-            // После того как машины сдвинулись в этом кадре.
-            (ram_obstacles, push_vehicles_out)
-                .chain()
-                .after(vehicle::move_ground_vehicles)
-                .in_set(GameSet::Simulation),
+            (
+                // До симуляции: машины, жители и пули этого кадра обходят свежую сетку.
+                index_obstacles.in_set(GameSet::Input),
+                // После того как машины сдвинулись в этом кадре.
+                (ram_obstacles, push_vehicles_out)
+                    .chain()
+                    .after(vehicle::move_ground_vehicles)
+                    .in_set(GameSet::Simulation),
+            ),
         );
     }
 }
@@ -124,6 +139,131 @@ pub struct Obstacle {
     pub top: f32,
 }
 
+/// Сетка препятствий в плане: ячейка — сущности, центр формы которых в ней лежит.
+///
+/// Хранит только сущности: вызывающий берёт само препятствие из своего запроса, поэтому
+/// снятое в этом кадре препятствие уже не мешает, даже если сетка ещё не пересобрана.
+/// Препятствия не двигаются, сетка пересобирается целиком, когда препятствие появилось,
+/// изменилось или исчезло.
+#[derive(Resource, Default)]
+pub struct ObstacleGrid {
+    cells: HashMap<IVec2, Vec<Entity>>,
+    /// Препятствия с описанной окружностью больше ячейки.
+    large: Vec<Entity>,
+}
+
+impl ObstacleGrid {
+    fn cell_of(p: Vec2) -> IVec2 {
+        (p / CELL).floor().as_ivec2()
+    }
+
+    fn clear(&mut self) {
+        self.cells.values_mut().for_each(Vec::clear);
+        self.large.clear();
+    }
+
+    fn insert(&mut self, entity: Entity, obstacle: &Obstacle) {
+        let (center, r) = obstacle.shape.bounds();
+        if r > CELL {
+            self.large.push(entity);
+        } else {
+            self.cells.entry(Self::cell_of(center)).or_default().push(entity);
+        }
+    }
+
+    fn cell(&self, coord: IVec2) -> impl Iterator<Item = Entity> + '_ {
+        self.cells.get(&coord).into_iter().flatten().copied()
+    }
+
+    /// Препятствия, которые могут задевать круг: каждое не больше одного раза.
+    pub fn near(&self, center: Vec2, radius: f32) -> impl Iterator<Item = Entity> + '_ {
+        // Центр препятствия, задевающего круг, не дальше `radius + CELL` от его центра.
+        let low = Self::cell_of(center - Vec2::splat(radius + CELL));
+        let high = Self::cell_of(center + Vec2::splat(radius + CELL));
+        (low.y..=high.y)
+            .flat_map(move |z| (low.x..=high.x).map(move |x| IVec2::new(x, z)))
+            .flat_map(|coord| self.cell(coord))
+            .chain(self.large.iter().copied())
+    }
+
+    /// Препятствия, которые могут задевать отрезок в плане: каждое не больше одного раза.
+    pub fn along(&self, from: Vec3, to: Vec3) -> impl Iterator<Item = Entity> + '_ {
+        let a = Vec2::new(from.x, from.z);
+        let b = Vec2::new(to.x, to.z);
+        let low = Self::cell_of(a.min(b) - Vec2::splat(CELL));
+        let high = Self::cell_of(a.max(b) + Vec2::splat(CELL));
+        // Ячейка нужна, если её центр не дальше полудиагонали и радиуса препятствия от отрезка.
+        let reach = CELL * (1.0 + std::f32::consts::FRAC_1_SQRT_2);
+        (low.y..=high.y)
+            .flat_map(move |z| (low.x..=high.x).map(move |x| IVec2::new(x, z)))
+            .filter(move |coord| {
+                let center = (coord.as_vec2() + Vec2::splat(0.5)) * CELL;
+                point_segment_distance(center, a, b) <= reach
+            })
+            .flat_map(|coord| self.cell(coord))
+            .chain(self.large.iter().copied())
+    }
+}
+
+/// Расстояние от точки до отрезка в плане.
+fn point_segment_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
+    let ab = b - a;
+    let t = if ab.length_squared() > 1e-8 {
+        ((p - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    p.distance(a + ab * t)
+}
+
+/// Пересобирает сетку, если препятствия появились, изменились или исчезли.
+fn index_obstacles(
+    mut grid: ResMut<ObstacleGrid>,
+    changed: Query<(), Changed<Obstacle>>,
+    mut removed: RemovedComponents<Obstacle>,
+    obstacles: Query<(Entity, &Obstacle)>,
+) {
+    let removed = removed.read().count() > 0;
+    if changed.is_empty() && !removed {
+        return;
+    }
+    grid.clear();
+    for (entity, obstacle) in &obstacles {
+        grid.insert(entity, obstacle);
+    }
+}
+
+/// Препятствия рядом с точкой или отрезком: сетка и запрос вместе.
+///
+/// Без сетки (в тестах с отдельными системами) обходит все препятствия.
+#[derive(SystemParam)]
+pub struct NearObstacles<'w, 's> {
+    grid: Option<Res<'w, ObstacleGrid>>,
+    obstacles: Query<'w, 's, (Entity, &'static Obstacle)>,
+}
+
+impl NearObstacles<'_, '_> {
+    /// Препятствия, которые могут задевать круг.
+    pub fn near(&self, center: Vec2, radius: f32) -> impl Iterator<Item = (Entity, &Obstacle)> + '_ {
+        let grid = self.grid.as_deref();
+        let indexed = grid
+            .into_iter()
+            .flat_map(move |grid| grid.near(center, radius))
+            .filter_map(|entity| self.obstacles.get(entity).ok());
+        indexed.chain(grid.is_none().then(|| self.obstacles.iter()).into_iter().flatten())
+    }
+
+    /// Препятствия, которые могут задевать отрезок: для пуль и лучей видимости.
+    pub fn along(&self, from: Vec3, to: Vec3) -> impl Iterator<Item = (Entity, &Obstacle)> + '_ {
+        let grid = self.grid.as_deref();
+        let indexed = grid
+            .into_iter()
+            .flat_map(move |grid| grid.along(from, to))
+            .filter_map(|entity| self.obstacles.get(entity).ok());
+        indexed.chain(grid.is_none().then(|| self.obstacles.iter()).into_iter().flatten())
+    }
+}
+
 /// Первая точка отрезка, которая попадает в препятствие, и само препятствие.
 pub fn segment_hit<'a>(
     from: Vec3,
@@ -161,13 +301,15 @@ pub fn segment_hit<'a>(
 fn ram_obstacles(
     mut commands: Commands,
     rover: Single<(&mut Transform, &mut RoverMotion, Option<&Collider>), With<Rover>>,
+    grid: Res<ObstacleGrid>,
     obstacles: Query<(Entity, &Obstacle, &Health), Without<Enemy>>,
     mut damages: MessageWriter<Damage>,
 ) {
     let (mut transform, mut motion, collider) = rover.into_inner();
     let radius = collider.map_or(DEFAULT_VEHICLE_RADIUS, |c| c.radius);
     let mut p = Vec2::new(transform.translation.x, transform.translation.z);
-    for (entity, obstacle, health) in &obstacles {
+    let near: Vec<Entity> = grid.near(p, radius).collect();
+    for (entity, obstacle, health) in near.into_iter().filter_map(|e| obstacles.get(e).ok()) {
         if health.is_dead() {
             continue;
         }
@@ -205,18 +347,23 @@ fn ram_obstacles(
 }
 
 fn push_vehicles_out(
+    grid: Res<ObstacleGrid>,
     obstacles: Query<&Obstacle>,
     mut vehicles: Query<
         (&mut Transform, Option<&Collider>),
         Or<(With<Rover>, With<GroundVehicle>)>,
     >,
 ) {
+    let mut near: Vec<&Obstacle> = Vec::new();
     for (mut transform, collider) in &mut vehicles {
         let radius = collider.map_or(DEFAULT_VEHICLE_RADIUS, |c| c.radius);
         let mut p = Vec2::new(transform.translation.x, transform.translation.z);
+        // С запасом: выталкивание может сдвинуть машину к соседнему препятствию.
+        near.clear();
+        near.extend(grid.near(p, radius * 2.0 + 4.0).filter_map(|e| obstacles.get(e).ok()));
         // Два прохода: машина между двумя близкими препятствиями.
         for _ in 0..2 {
-            for obstacle in &obstacles {
+            for obstacle in &near {
                 let (center, r) = obstacle.shape.bounds();
                 if center.distance_squared(p) > (r + radius).powi(2) {
                     continue;
@@ -273,6 +420,49 @@ mod tests {
         });
         let push = shape.push_out(Vec2::new(2.5, 1.0), 1.0).unwrap();
         assert!(push.y.abs() < 1e-5 && push.x > 0.0);
+    }
+
+    fn circle(x: f32, z: f32, radius: f32) -> Obstacle {
+        Obstacle {
+            shape: Shape::Circle {
+                center: Vec2::new(x, z),
+                radius,
+            },
+            top: 3.0,
+        }
+    }
+
+    #[test]
+    fn grid_finds_obstacles_near_point_and_segment_once() {
+        let mut world = World::new();
+        let near_tree = world.spawn_empty().id();
+        let far_tree = world.spawn_empty().id();
+        let wide = world.spawn_empty().id();
+        let edge = world.spawn_empty().id();
+        let mut grid = ObstacleGrid::default();
+        grid.insert(near_tree, &circle(3.0, 1.0, 0.4));
+        grid.insert(far_tree, &circle(80.0, -60.0, 0.4));
+        // Крупнее ячейки: виден отовсюду.
+        grid.insert(wide, &circle(200.0, 200.0, 20.0));
+        // Центр в соседней ячейке, а край задевает точку.
+        grid.insert(edge, &circle(-7.5, 0.0, 7.0));
+
+        let mut near: Vec<_> = grid.near(Vec2::ZERO, 1.0).collect();
+        near.sort();
+        let mut expected = vec![near_tree, wide, edge];
+        expected.sort();
+        assert_eq!(near, expected);
+
+        let along: Vec<_> = grid.along(Vec3::new(0.0, 1.0, 0.0), Vec3::new(80.0, 1.0, -60.0)).collect();
+        assert!(along.contains(&near_tree) && along.contains(&far_tree));
+        let mut unique = along.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), along.len(), "препятствие повторяется");
+
+        // Отрезок далеко от всех мелких препятствий.
+        let away: Vec<_> = grid.along(Vec3::new(0.0, 1.0, 100.0), Vec3::new(40.0, 1.0, 100.0)).collect();
+        assert_eq!(away, vec![wide]);
     }
 
     #[test]

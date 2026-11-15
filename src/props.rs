@@ -12,6 +12,7 @@ use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 use noise::{NoiseFn, Perlin};
 
+use crate::camera::Focus;
 use crate::frame::GameSet;
 use crate::obstacles::{Obstacle, Shape};
 use crate::rover::Rover;
@@ -66,6 +67,10 @@ const GEM_COLORS: [Color; VARIANTS] = [
     Color::srgb(0.83, 0.91, 0.95),
 ];
 
+/// Сколько объектов создаётся за кадр, когда в сцену входят новые участки: целыми участками,
+/// ближние к фокусу первыми. Без предела на границе участка за кадр появлялось около 1300.
+const SPAWN_PER_FRAME: usize = 250;
+
 /// Шероховатость матовых поверхностей и гладких граней кварца.
 const MATTE: f32 = 0.8;
 const GLOSSY: f32 = 0.25;
@@ -84,7 +89,8 @@ impl Plugin for PropsPlugin {
                     reset_props.in_set(GameSet::Reset),
                     crush_small_props.in_set(GameSet::Simulation),
                     shockwave_props.in_set(GameSet::Damage),
-                    break_props.in_set(GameSet::Death),
+                    (remember_prop_health, break_props).chain().in_set(GameSet::Death),
+                    remove_dead_props.in_set(GameSet::Cleanup),
                     stream_props.after(terrain::stream_chunks).in_set(GameSet::Streaming),
                     (fly_shards, fell_trees, sway_trees, burn_crowns).chain().in_set(GameSet::Presentation),
                 ),
@@ -139,11 +145,8 @@ impl PropKind {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PropStatus {
     Intact,
-    // Падение, пень и уничтожение появятся с разрушением объектов (задача 5.1).
+    /// Дерево упало: положение лежащего ствола. Пень стоит на месте основания.
     Fallen(Transform),
-    // Пень без лежащего ствола: ствол мог сгореть или разлететься, пока не используется.
-    #[allow(dead_code)]
-    Stump,
     Destroyed,
 }
 
@@ -652,6 +655,10 @@ fn create_prop_assets(
 }
 
 /// Создаёт объекты участков, которые появились в сцене, и убирает объекты выгруженных.
+///
+/// Новые участки создаются не все сразу: за кадр не больше [`SPAWN_PER_FRAME`] объектов,
+/// ближние к фокусу первыми.
+#[allow(clippy::too_many_arguments)]
 fn stream_props(
     mut commands: Commands,
     mut props: ResMut<Props>,
@@ -659,36 +666,59 @@ fn stream_props(
     mut settlements: ResMut<Settlements>,
     terrain: Res<Terrain>,
     visible: Res<VisibleChunks>,
+    focus: Res<Focus>,
     chunks: Query<&crate::terrain::ChunkMesh>,
     assets: Res<PropAssets>,
 ) {
-    if props.seed.is_none() || settlements.seed().is_none() || !visible.is_changed() {
+    if props.seed.is_none() || settlements.seed().is_none() {
         return;
     }
-    spawned.0.retain(|&coord, entities| {
-        let keep = visible.entity(coord).is_some();
-        if !keep {
-            for &e in entities.iter() {
-                commands.entity(e).try_despawn();
+    if visible.is_changed() {
+        spawned.0.retain(|&coord, entities| {
+            let keep = visible.entity(coord).is_some();
+            if !keep {
+                for &e in entities.iter() {
+                    commands.entity(e).try_despawn();
+                }
             }
-        }
-        keep
-    });
-    for chunk in &chunks {
-        let coord = chunk.0;
-        if spawned.0.contains_key(&coord) || visible.entity(coord).is_none() {
-            continue;
+            keep
+        });
+    }
+    let mut pending: Vec<IVec2> = chunks
+        .iter()
+        .map(|chunk| chunk.0)
+        .filter(|&coord| !spawned.0.contains_key(&coord) && visible.entity(coord).is_some())
+        .collect();
+    if pending.is_empty() {
+        return;
+    }
+    let here = chunk_coord_at(focus.0.x, focus.0.z);
+    pending.sort_by_key(|coord| (*coord - here).length_squared());
+    let mut budget = SPAWN_PER_FRAME;
+    for coord in pending {
+        if budget == 0 {
+            break;
         }
         let states = props.chunk(coord, &terrain, &mut settlements);
+        budget = budget.saturating_sub(states.len().max(1));
         let mut entities = Vec::with_capacity(states.len());
         for (index, state) in states.iter().enumerate() {
             let transform = match state.status {
                 PropStatus::Intact => state.transform,
                 PropStatus::Fallen(t) => {
-                    entities.push(spawn_stump(&mut commands, &assets, state.transform));
+                    entities.push(spawn_stump(&mut commands, &assets, coord, index, state.transform));
                     // Лежащее дерево — без столкновений и здоровья.
                     let entity = commands
-                        .spawn((RunScoped, t, Visibility::default()))
+                        .spawn((
+                            Remains {
+                                chunk: coord,
+                                index,
+                                stump: false,
+                            },
+                            RunScoped,
+                            t,
+                            Visibility::default(),
+                        ))
                         .with_children(|parent| {
                             for p in assets.looks.get(&(state.kind, state.variant)).into_iter().flatten() {
                                 parent.spawn((Mesh3d(p.mesh.clone()), MeshMaterial3d(p.material.clone()), p.transform));
@@ -696,10 +726,6 @@ fn stream_props(
                         })
                         .id();
                     entities.push(entity);
-                    continue;
-                }
-                PropStatus::Stump => {
-                    entities.push(spawn_stump(&mut commands, &assets, state.transform));
                     continue;
                 }
                 PropStatus::Destroyed => continue,
@@ -1008,11 +1034,26 @@ struct CrownFire {
     remaining: f32,
 }
 
-/// Пень на месте упавшего дерева.
-fn spawn_stump(commands: &mut Commands, assets: &PropAssets, base: Transform) -> Entity {
+/// Остатки упавшего дерева: пень или лежащий ствол. Адрес — состояние дерева в [`Props`]:
+/// пень стоит на его основании, ствол лежит в `PropStatus::Fallen`.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct Remains {
+    pub chunk: IVec2,
+    pub index: usize,
+    pub stump: bool,
+}
+
+/// Пень на месте упавшего дерева. Мелкий, без тени.
+fn spawn_stump(commands: &mut Commands, assets: &PropAssets, chunk: IVec2, index: usize, base: Transform) -> Entity {
     commands
         .spawn((
+            Remains {
+                chunk,
+                index,
+                stump: true,
+            },
             RunScoped,
+            NotShadowCaster,
             Mesh3d(assets.stump.mesh.clone()),
             MeshMaterial3d(assets.stump.material.clone()),
             Transform::from_translation(base.translation)
@@ -1029,14 +1070,17 @@ fn shockwave_props(
     mut commands: Commands,
     mut explosions: MessageReader<Explosion>,
     mut props: ResMut<Props>,
-    objects: Query<(Entity, &Prop, &Transform, Option<&Health>, Option<&Children>), Without<TreeFall>>,
+    objects: Query<
+        (Entity, &Prop, &Transform, Option<&Health>, Option<&Children>, Option<&Sway>),
+        Without<TreeFall>,
+    >,
     parts: Query<(&Mesh3d, &MeshMaterial3d<StandardMaterial>)>,
     mut damage: MessageWriter<Damage>,
 ) {
     for explosion in explosions.read() {
         let center = explosion.position;
         let r = explosion.radius;
-        for (entity, prop, transform, health, children) in &objects {
+        for (entity, prop, transform, health, children, sway) in &objects {
             let offset = (transform.translation - center).with_y(0.0);
             let d = offset.length();
             if d >= r * SWAY_REACH {
@@ -1044,9 +1088,11 @@ fn shockwave_props(
             }
             let away = offset.normalize_or(Vec3::X);
             if d >= r {
-                if prop.kind == PropKind::Tree {
+                // Качается только стоящее дерево; лежащий ствол здоровья не имеет.
+                if prop.kind == PropKind::Tree && health.is_some() {
                     commands.entity(entity).try_insert(Sway {
-                        rest: transform.rotation,
+                        // Новое качание от положения покоя, а не от наклона прошлого.
+                        rest: sway.map_or(transform.rotation, |s| s.rest),
                         axis: Vec3::Y.cross(away).normalize_or(Vec3::X),
                         elapsed: 0.0,
                         amplitude: 0.35 * (1.0 - (d - r) / (r * (SWAY_REACH - 1.0))),
@@ -1091,12 +1137,12 @@ fn break_props(
     mut props: ResMut<Props>,
     mut spawned: ResMut<SpawnedProps>,
     assets: Res<PropAssets>,
-    objects: Query<(&Prop, &Transform, Option<&PropBlastFrom>, Option<&Children>)>,
+    objects: Query<(&Prop, &Transform, Option<&PropBlastFrom>, Option<&Children>, Option<&Sway>)>,
     parts: Query<(&Mesh3d, &MeshMaterial3d<StandardMaterial>)>,
     mut debris: MessageWriter<SpawnDebris>,
 ) {
     for death in died.read() {
-        let Ok((prop, transform, blast, children)) = objects.get(death.entity) else {
+        let Ok((prop, transform, blast, children, sway)) = objects.get(death.entity) else {
             continue;
         };
         let Some(state) = props.get_mut(prop.chunk, prop.index) else {
@@ -1112,8 +1158,11 @@ fn break_props(
         match prop.kind {
             PropKind::Tree => {
                 let axis = Vec3::Y.cross(away).normalize_or(Vec3::X);
+                // Качавшееся дерево падает от положения покоя: качание снимается, иначе оно
+                // вернуло бы ствол в вертикаль.
+                let rest = sway.map_or(transform.rotation, |s| s.rest);
                 let fallen = Transform {
-                    rotation: Quat::from_axis_angle(axis, std::f32::consts::FRAC_PI_2) * transform.rotation,
+                    rotation: Quat::from_axis_angle(axis, std::f32::consts::FRAC_PI_2) * rest,
                     ..*transform
                 };
                 state.status = PropStatus::Fallen(fallen);
@@ -1131,13 +1180,20 @@ fn break_props(
                 ));
                 commands
                     .entity(death.entity)
-                    .try_remove::<(Obstacle, Health)>()
-                    .try_insert(TreeFall {
-                        rest: transform.rotation,
-                        axis,
-                        elapsed: 0.0,
-                    });
-                let stump = spawn_stump(&mut commands, &assets, state.transform);
+                    .try_remove::<(Obstacle, Health, Sway)>()
+                    .try_insert((
+                        TreeFall {
+                            rest,
+                            axis,
+                            elapsed: 0.0,
+                        },
+                        Remains {
+                            chunk: prop.chunk,
+                            index: prop.index,
+                            stump: false,
+                        },
+                    ));
+                let stump = spawn_stump(&mut commands, &assets, prop.chunk, prop.index, state.transform);
                 spawned.0.entry(prop.chunk).or_default().push(stump);
             }
             PropKind::Boulder | PropKind::Crystal => {
@@ -1162,12 +1218,30 @@ fn break_props(
                 if let Some(children) = children {
                     shatter(&mut commands, transform, children, &parts, away);
                 }
-                commands.entity(death.entity).despawn();
             }
             _ => {
                 state.status = PropStatus::Destroyed;
-                commands.entity(death.entity).despawn();
             }
+        }
+    }
+}
+
+/// Прочность раненого объекта пишется в хранилище: валун, выгруженный и загруженный снова,
+/// помнит её. Пишется уже применённое значение, урон не вычитается дважды.
+fn remember_prop_health(mut props: ResMut<Props>, objects: Query<(&Prop, &Health), Changed<Health>>) {
+    for (prop, health) in &objects {
+        if let Some(state) = props.get_mut(prop.chunk, prop.index) {
+            state.health = health.current;
+        }
+    }
+}
+
+/// Разбитые валуны и кристаллы уходят из сцены в уборке: их застают все читатели `Died`.
+/// Упавшее дерево здоровья уже лишено и остаётся лежать.
+fn remove_dead_props(mut commands: Commands, objects: Query<(Entity, &Health), With<Prop>>) {
+    for (entity, health) in &objects {
+        if health.is_dead() {
+            commands.entity(entity).try_despawn();
         }
     }
 }

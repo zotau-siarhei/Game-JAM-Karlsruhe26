@@ -131,7 +131,7 @@ fn bounds(shape: &Shape) -> (Vec2, f32) {
 /// Ведёт машины с [`Steering`]: объезд, поворот с ограниченной скоростью и выход из застревания.
 pub fn steer_vehicles(
     time: Res<Time>,
-    obstacles: Query<&Obstacle>,
+    obstacles: obstacles::NearObstacles,
     mut vehicles: Query<(&Transform, &mut Steering, &mut GroundVehicle, Option<&Collider>)>,
 ) {
     let dt = time.delta_secs();
@@ -186,7 +186,7 @@ pub fn steer_vehicles(
         }
 
         near.clear();
-        near.extend(obstacles.iter().map(|o| o.shape).filter(|shape| {
+        near.extend(obstacles.near(origin, LOOK + radius).map(|(_, o)| o.shape).filter(|shape| {
             let (center, r) = bounds(shape);
             center.distance(origin) <= LOOK + r + radius
         }));
