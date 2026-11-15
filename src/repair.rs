@@ -7,15 +7,16 @@ use std::f32::consts::TAU;
 
 use bevy::prelude::*;
 
-use crate::combat::Health;
+use crate::combat::{Heal, Health, ROVER_MAX_HEALTH};
 use crate::frame::{GameSet, RunMessages};
 use crate::rng::GameRng;
 use crate::rover::{self, Rover, SpeedFactor};
 use crate::run::{RunScoped, WorldRebuilt};
 use crate::terrain::Terrain;
 
-/// Сколько здоровья в секунду возвращает ремонт.
-const REPAIR_RATE: f32 = 10.0;
+/// Сколько здоровья в секунду возвращает ремонт: доля полного здоровья. Числа ремонта и аптечки
+/// настраивались при здоровье 100 (10 в секунду и 35), доли сохраняют ту пропорцию.
+const REPAIR_RATE: f32 = 0.10 * ROVER_MAX_HEALTH;
 
 /// Во сколько раз луноход медленнее во время ремонта.
 const REPAIR_SLOWDOWN: f32 = 0.4;
@@ -29,14 +30,20 @@ const SPARK_LIFE: f32 = 0.45;
 /// Как часто появляется аптечка, с.
 const MEDKIT_INTERVAL: f32 = 20.0;
 
-/// Сколько аптечек может лежать одновременно.
+/// Сколько аптечек может лежать рядом с луноходом.
 const MAX_MEDKITS: usize = 2;
+
+/// Аптечки ближе этого к луноходу входят в предел [`MAX_MEDKITS`], м.
+const MEDKIT_COUNT_RADIUS: f32 = 70.0;
+
+/// Аптечка дальше этого от лунохода убирается, м.
+const MEDKIT_FORGET_RADIUS: f32 = 150.0;
 
 /// Кольцо появления аптечек вокруг лунохода, м.
 const MEDKIT_RING: (f32, f32) = (15.0, 30.0);
 
-/// Сколько здоровья даёт аптечка.
-pub const MEDKIT_HEAL: f32 = 35.0;
+/// Сколько здоровья даёт аптечка: доля полного здоровья.
+pub const MEDKIT_HEAL: f32 = 0.35 * ROVER_MAX_HEALTH;
 
 /// С какого расстояния аптечка подбирается, м.
 const PICKUP_DISTANCE: f32 = 2.0;
@@ -151,24 +158,29 @@ fn can_repair(health: &Health) -> bool {
 }
 
 /// Ремонт: пока зажат пробел, здоровье растёт, а луноход едет медленнее.
+///
+/// Здоровье прибавляет сообщение [`Heal`] позже в этом кадре, поэтому конец ремонта
+/// считается по здоровью после лечения.
 fn repair(
     mut commands: Commands,
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
-    mut rover: Query<(Entity, &mut Health, Has<Repairing>), With<Rover>>,
+    rover: Query<(Entity, &Health, Has<Repairing>), With<Rover>>,
     mut changed: MessageWriter<RepairChanged>,
+    mut heals: MessageWriter<Heal>,
 ) {
-    let Some((entity, mut health, was_repairing)) = rover.iter_mut().next() else {
+    let Some((entity, health, was_repairing)) = rover.iter().next() else {
         return;
     };
-    let repairing = keys.pressed(KeyCode::Space) && can_repair(&health);
+    let repairing = keys.pressed(KeyCode::Space) && can_repair(health);
     if repairing {
-        health.heal(REPAIR_RATE * time.delta_secs());
+        let amount = REPAIR_RATE * time.delta_secs();
+        heals.write(Heal { target: entity, amount });
         if !was_repairing {
             commands.entity(entity).try_insert((Repairing, SpeedFactor(REPAIR_SLOWDOWN)));
             changed.write(RepairChanged::Started);
         }
-        if !can_repair(&health) {
+        if health.current + amount >= health.max {
             changed.write(RepairChanged::Done);
         }
     } else if was_repairing {
@@ -249,7 +261,7 @@ fn spawn_medkits(
     assets: Res<RepairAssets>,
     terrain: Res<Terrain>,
     rover: Query<(&Transform, &Health), With<Rover>>,
-    medkits: Query<(), With<Medkit>>,
+    medkits: Query<(Entity, &Transform), (With<Medkit>, Without<Rover>)>,
 ) {
     let Some((rover, health)) = rover.iter().next() else {
         return;
@@ -257,12 +269,22 @@ fn spawn_medkits(
     if health.is_dead() {
         return;
     }
+    // Далёкие аптечки убираются, в предел входят только ближние.
+    let mut near = 0;
+    for (entity, medkit) in &medkits {
+        let distance = medkit.translation.with_y(0.0).distance(rover.translation.with_y(0.0));
+        if distance > MEDKIT_FORGET_RADIUS {
+            commands.entity(entity).despawn();
+        } else if distance <= MEDKIT_COUNT_RADIUS {
+            near += 1;
+        }
+    }
     timer.0 -= time.delta_secs();
     if timer.0 > 0.0 {
         return;
     }
     timer.0 = MEDKIT_INTERVAL;
-    if medkits.iter().count() >= MAX_MEDKITS {
+    if near >= MAX_MEDKITS {
         return;
     }
 
@@ -302,25 +324,31 @@ fn can_pick(distance: f32, health: &Health) -> bool {
     distance < PICKUP_DISTANCE && can_repair(health)
 }
 
-/// Подбор проездом. При полном здоровье аптечка остаётся лежать.
+/// Подбор проездом. При полном здоровье аптечка остаётся лежать. За кадр подбирается одна:
+/// лечение применится позже в кадре, и вторая аптечка рядом не должна уйти на полное здоровье.
 fn pick_medkits(
     mut commands: Commands,
-    mut rover: Query<(&Transform, &mut Health), With<Rover>>,
+    rover: Query<(Entity, &Transform, &Health), With<Rover>>,
     medkits: Query<(Entity, &Transform), With<Medkit>>,
     mut picked: MessageWriter<MedkitPicked>,
+    mut heals: MessageWriter<Heal>,
 ) {
-    let Some((rover, mut health)) = rover.iter_mut().next() else {
+    let Some((rover_entity, rover, health)) = rover.iter().next() else {
         return;
     };
     for (entity, medkit) in &medkits {
         let mut offset = medkit.translation - rover.translation;
         offset.y = 0.0;
-        if can_pick(offset.length(), &health) {
-            health.heal(MEDKIT_HEAL);
+        if can_pick(offset.length(), health) {
+            heals.write(Heal {
+                target: rover_entity,
+                amount: MEDKIT_HEAL,
+            });
             commands.entity(entity).despawn();
             picked.write(MedkitPicked {
                 position: medkit.translation,
             });
+            break;
         }
     }
 }
@@ -353,8 +381,13 @@ mod tests {
         health.damage(50.0);
         assert!(can_pick(0.5, &health));
         assert!(!can_pick(PICKUP_DISTANCE + 0.1, &health));
-        health.heal(MEDKIT_HEAL);
-        assert_eq!(health.current, 85.0);
+    }
+
+    /// Ремонт и аптечка — те же доли здоровья, что 10 в секунду и 35 при здоровье 100.
+    #[test]
+    fn healing_is_a_share_of_full_health() {
+        assert!((REPAIR_RATE / ROVER_MAX_HEALTH - 0.10).abs() < 1e-6);
+        assert!((MEDKIT_HEAL / ROVER_MAX_HEALTH - 0.35).abs() < 1e-6);
     }
 
     #[test]
@@ -364,9 +397,11 @@ mod tests {
             .init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<Events>()
             .add_message::<RepairChanged>()
-            .add_systems(Update, (repair, collect).chain());
-        let mut health = Health::new(100.0);
-        health.damage(15.0);
+            .add_message::<Heal>()
+            .add_systems(Update, (repair, crate::combat::apply_heal, collect).chain());
+        // Ремонт за полсекунды возвращает 5 % здоровья: ранен на 15 % — три шага до полного.
+        let mut health = Health::new(ROVER_MAX_HEALTH);
+        health.damage(0.15 * ROVER_MAX_HEALTH);
         let rover = app.world_mut().spawn((Rover, health)).id();
         app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::Space);
 
@@ -376,13 +411,14 @@ mod tests {
                 .advance_by(std::time::Duration::from_millis(500));
             app.update();
         };
+        let current = |app: &App| app.world().get::<Health>(rover).unwrap().current;
         step(&mut app);
-        assert_eq!(app.world().get::<Health>(rover).unwrap().current, 90.0);
+        assert!((current(&app) - 0.90 * ROVER_MAX_HEALTH).abs() < 1e-2, "{}", current(&app));
         assert_eq!(app.world().get::<SpeedFactor>(rover).unwrap().0, REPAIR_SLOWDOWN);
 
         step(&mut app);
         step(&mut app);
-        assert_eq!(app.world().get::<Health>(rover).unwrap().current, 100.0);
+        assert_eq!(current(&app), ROVER_MAX_HEALTH);
         // Здоровье полное: на следующем кадре ремонт и замедление сняты.
         step(&mut app);
         assert!(app.world().get::<SpeedFactor>(rover).is_none());
