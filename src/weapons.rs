@@ -274,8 +274,11 @@ mod tests {
         let rover = Vec3::new(10.0, 2.0, 10.0);
         let aim = Vec3::new(10.0, 5.0, -10.0);
         let (origin, direction) = machine_gun_shot(rover, aim);
-        // Дуло вынесено вперёд, в сторону прицела, и приподнято.
-        assert!((origin - Vec3::new(10.0, 2.0 + MUZZLE_HEIGHT, 10.0 - MUZZLE_FORWARD)).length() < 1e-4);
+        // Дуло вынесено вперёд, в сторону прицела, и приподнято: вынос и высота заданы в мерах
+        // модели и растут вместе с луноходом.
+        let scale = crate::rover::ROVER_SCALE;
+        let muzzle = Vec3::new(10.0, 2.0 + MUZZLE_HEIGHT * scale, 10.0 - MUZZLE_FORWARD * scale);
+        assert!((origin - muzzle).length() < 1e-4, "{origin}");
         let direction = direction.normalize();
         assert!(direction.z < -0.9);
         // Прицел выше лунохода: пуля летит вверх по склону.
