@@ -584,7 +584,7 @@ fn destroy_houses(
         spawned.0.insert(house.0, ruin);
         let cause = match death.killer {
             _ if collapsing => DestroyCause::Collapse,
-            Team::Enemy => DestroyCause::Enemy,
+            Team::Enemy | Team::Service => DestroyCause::Enemy,
             _ => DestroyCause::Player,
         };
         let position = wobble.map_or(transform.translation, |w| w.rest.translation);

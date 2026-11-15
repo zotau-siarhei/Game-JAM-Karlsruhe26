@@ -94,12 +94,38 @@ impl Health {
 }
 
 /// Сторона в бою. Свой урон ослабляется, по чужим стреляют.
+///
+/// Кто кого ранит — [`Team::damage_share`]; оружие пропускает сквозь себя тех, кого его
+/// команда не ранит, — [`Team::hostile_to`].
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Team {
     Player,
     Enemy,
-    /// Ничьи: жители. Их ранят все, своего ослабленного урона у них нет.
+    /// Служба защиты жителей: атакует только игрока, с врагами друг друга не ранят.
+    Service,
+    /// Ничьи: жители, лава. Их ранят все, своего ослабленного урона у них нет.
     Neutral,
+}
+
+impl Team {
+    /// Доля урона, которую атака этой команды наносит цели команды `target`.
+    ///
+    /// Своя команда получает [`FRIENDLY_FIRE`]. Враги и Служба друг друга не ранят, Служба
+    /// бережёт жителей. Ничьих ранят все, и ничьё ранит всех полностью.
+    pub fn damage_share(self, target: Team) -> f32 {
+        use Team::*;
+        match (self, target) {
+            (Enemy, Service) | (Service, Enemy) | (Service, Neutral) => 0.0,
+            (Neutral, _) | (_, Neutral) => 1.0,
+            (attacker, target) if attacker == target => FRIENDLY_FIRE,
+            _ => 1.0,
+        }
+    }
+
+    /// Пуля, ракета или луч этой команды попадает в цель команды `target`, а не пролетает сквозь.
+    pub fn hostile_to(self, target: Team) -> bool {
+        self.damage_share(target) >= 1.0
+    }
 }
 
 /// Круглый коллайдер для попаданий и тарана.
@@ -186,7 +212,8 @@ pub fn blast_damage(power: f32, radius: f32, distance: f32, friendly: bool) -> f
     if friendly { damage * FRIENDLY_FIRE } else { damage }
 }
 
-/// Взрыв ранит всех со здоровьем в своём радиусе.
+/// Взрыв ранит всех со здоровьем в своём радиусе: свою команду слабо, союзников — никак
+/// ([`Team::damage_share`]).
 fn explosion_damage(
     mut explosions: MessageReader<Explosion>,
     targets: Query<(Entity, &GlobalTransform, &Team, &Health)>,
@@ -198,12 +225,8 @@ fn explosion_damage(
                 continue;
             }
             let distance = transform.translation().distance(explosion.position);
-            let amount = blast_damage(
-                explosion.power,
-                explosion.radius,
-                distance,
-                *team == explosion.source_team,
-            );
+            let share = explosion.source_team.damage_share(*team);
+            let amount = blast_damage(explosion.power, explosion.radius, distance, false) * share;
             if amount > 0.0 {
                 damage.write(Damage {
                     target,
@@ -365,6 +388,53 @@ mod tests {
         // Своя команда ранена, но гораздо слабее.
         assert!(health(&app, player) < 100.0);
         assert!(health(&app, player) > 85.0);
+    }
+
+    #[test]
+    fn enemies_and_service_spare_each_other_but_both_hurt_the_player() {
+        use Team::*;
+        assert_eq!(Enemy.damage_share(Service), 0.0);
+        assert_eq!(Service.damage_share(Enemy), 0.0);
+        assert!(!Enemy.hostile_to(Service) && !Service.hostile_to(Enemy));
+        for attacker in [Enemy, Service] {
+            assert_eq!(attacker.damage_share(Player), 1.0);
+            assert_eq!(Player.damage_share(attacker), 1.0);
+            assert!(attacker.hostile_to(Player) && Player.hostile_to(attacker));
+            assert_eq!(attacker.damage_share(attacker), FRIENDLY_FIRE);
+            assert!(!attacker.hostile_to(attacker));
+        }
+        // Жителей ранят все, кроме Службы; лава ранит всех.
+        assert_eq!(Player.damage_share(Neutral), 1.0);
+        assert_eq!(Enemy.damage_share(Neutral), 1.0);
+        assert_eq!(Service.damage_share(Neutral), 0.0);
+        for target in [Player, Enemy, Service, Neutral] {
+            assert_eq!(Neutral.damage_share(target), 1.0);
+        }
+    }
+
+    #[test]
+    fn enemy_explosion_spares_the_service() {
+        let mut app = app_with_damage();
+        app.add_message::<Explosion>()
+            .add_systems(Update, explosion_damage.before(apply_damage));
+        let service = app
+            .world_mut()
+            .spawn((GlobalTransform::from_xyz(1.0, 0.0, 0.0), Team::Service, Health::new(100.0)))
+            .id();
+        let player = app
+            .world_mut()
+            .spawn((GlobalTransform::from_xyz(1.0, 0.0, 0.0), Team::Player, Health::new(100.0)))
+            .id();
+        app.world_mut().write_message(Explosion {
+            position: Vec3::ZERO,
+            radius: 5.0,
+            power: 1.0,
+            source_team: Team::Enemy,
+        });
+        app.update();
+        let health = |app: &App, entity| app.world().get::<Health>(entity).unwrap().current;
+        assert_eq!(health(&app, service), 100.0);
+        assert!(health(&app, player) < 50.0);
     }
 
     /// Приложение с одной системой урона.

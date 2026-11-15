@@ -246,7 +246,7 @@ fn apply_laser_shots(
 
         // Урон всем на отрезке, кроме своих.
         for (entity, transform, collider, team, target_health) in &targets {
-            if *team == shot.team || target_health.is_dead() {
+            if !shot.team.hostile_to(*team) || target_health.is_dead() {
                 continue;
             }
             let p = transform.translation();
