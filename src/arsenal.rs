@@ -96,12 +96,15 @@ impl Plugin for ArsenalPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Inventory>()
             .add_run_message::<WeaponDenied>()
+            .add_run_message::<AmmoRanOut>()
             .add_systems(Startup, spawn_panel)
             .add_systems(
                 Update,
                 (
                     reset_inventory.in_set(GameSet::Reset),
                     (select_weapon, fall_back_to_machine_gun).chain().in_set(GameSet::Input),
+                    // После всех выстрелов кадра: оружие тратит заряды в `GameSet::Input`.
+                    report_empty.in_set(GameSet::Simulation),
                     update_panel.in_set(GameSet::Presentation),
                 ),
             );
@@ -180,6 +183,30 @@ impl Inventory {
 /// Игрок попробовал выбрать оружие, из которого нечем стрелять: ячейка мигает.
 #[derive(Message, Debug, Clone, Copy)]
 pub struct WeaponDenied(pub CurrentWeapon);
+
+/// Боезапас вида кончился: потрачен последний заряд. По нему штаб замечает, что стрелять нечем.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct AmmoRanOut;
+
+/// Виды, у которых боезапас был и кончился между `before` и `after`.
+fn ran_out(before: &Inventory, after: &Inventory) -> Vec<CurrentWeapon> {
+    CurrentWeapon::ALL
+        .into_iter()
+        .filter(|w| before.ammo(*w).is_some_and(|a| a > 0) && after.ammo(*w) == Some(0))
+        .collect()
+}
+
+/// Сравнивает боезапас с прошлым кадром и сообщает о кончившемся.
+fn report_empty(inventory: Res<Inventory>, mut last: Local<Option<Inventory>>, mut out: MessageWriter<AmmoRanOut>) {
+    if let Some(before) = last.as_ref() {
+        if !ran_out(before, &inventory).is_empty() {
+            out.write(AmmoRanOut);
+        }
+    }
+    if last.as_ref() != Some(&*inventory) {
+        *last = Some(inventory.clone());
+    }
+}
 
 fn reset_inventory(
     mut rebuilt: MessageReader<WorldRebuilt>,
@@ -415,5 +442,19 @@ mod tests {
         inventory.add(CurrentWeapon::Laser, 1);
         assert_eq!(inventory.cycled(CurrentWeapon::MachineGun, 1), CurrentWeapon::Laser);
         assert_eq!(inventory.cycled(CurrentWeapon::MachineGun, -1), CurrentWeapon::Laser);
+    }
+
+    #[test]
+    fn ammo_runs_out_on_the_last_shot_only() {
+        let mut inventory = Inventory::default();
+        inventory.add(CurrentWeapon::Laser, 1);
+        let before = inventory.clone();
+        inventory.spend(CurrentWeapon::Mortar);
+        assert!(ran_out(&before, &inventory).is_empty());
+        let before = inventory.clone();
+        inventory.spend(CurrentWeapon::Laser);
+        assert_eq!(ran_out(&before, &inventory), vec![CurrentWeapon::Laser]);
+        // Пустое оружие осталось пустым: повторно не сообщается.
+        assert!(ran_out(&inventory.clone(), &inventory).is_empty());
     }
 }

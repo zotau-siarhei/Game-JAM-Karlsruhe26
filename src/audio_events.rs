@@ -7,7 +7,7 @@ use bevy::prelude::*;
 
 use crate::airstrike::Strike;
 use crate::alarm::Alarm;
-use crate::arsenal::WeaponDenied;
+use crate::arsenal::AmmoRanOut;
 use crate::boss::Boss;
 use crate::buildings::BuildingDestroyed;
 use crate::bullet::FireBullet;
@@ -561,8 +561,8 @@ fn voice_service(mut arrived: MessageReader<crate::service::ServiceArrived>, mut
     }
 }
 
-/// Выбрано оружие без боезапаса — штаб замечает, что стрелять нечем.
-fn voice_weapon_denied(mut denied: MessageReader<WeaponDenied>, mut cues: MessageWriter<VoiceCue>) {
+/// Боезапас кончился на последнем выстреле — штаб замечает, что стрелять нечем.
+fn voice_weapon_denied(mut denied: MessageReader<AmmoRanOut>, mut cues: MessageWriter<VoiceCue>) {
     if denied.read().count() > 0 {
         cues.write(VoiceCue::new("ammo_empty"));
     }

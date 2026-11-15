@@ -22,9 +22,15 @@ use crate::weapons::CurrentWeapon;
 /// Радиус подбора, м.
 const PICKUP_RADIUS: f32 = 2.0;
 
-/// Как часто появляется ящик и сколько их может быть сразу.
+/// Как часто появляется ящик и сколько их может лежать рядом с луноходом.
 const CRATE_INTERVAL: f32 = 12.0;
 const MAX_CRATES: usize = 4;
+
+/// Ящики ближе этого к луноходу входят в предел [`MAX_CRATES`], м.
+const CRATE_COUNT_RADIUS: f32 = 70.0;
+
+/// Ящик дальше этого от лунохода убирается: игрок уехал, а ящик не держит место нового, м.
+const CRATE_FORGET_RADIUS: f32 = 150.0;
 
 /// Кольцо появления ящиков вокруг лунохода, м.
 const CRATE_RING: (f32, f32) = (15.0, 40.0);
@@ -193,11 +199,21 @@ fn drop_crates(
     assets: Res<PickupAssets>,
     mut director: ResMut<CrateDirector>,
     mut dice: ResMut<GameRng>,
-    crates: Query<(), With<Crate>>,
-    rover: Single<&Transform, With<Rover>>,
+    crates: Query<(Entity, &Transform), With<Crate>>,
+    rover: Single<&Transform, (With<Rover>, Without<Crate>)>,
 ) {
+    // Далёкие ящики убираются, в предел входят только ближние.
+    let mut near = 0;
+    for (entity, transform) in &crates {
+        let distance = transform.translation.with_y(0.0).distance(rover.translation.with_y(0.0));
+        if distance > CRATE_FORGET_RADIUS {
+            commands.entity(entity).despawn();
+        } else if distance <= CRATE_COUNT_RADIUS {
+            near += 1;
+        }
+    }
     director.timer += time.delta_secs();
-    if director.timer < CRATE_INTERVAL || crates.iter().count() >= MAX_CRATES {
+    if director.timer < CRATE_INTERVAL || near >= MAX_CRATES {
         return;
     }
     director.timer = 0.0;
@@ -323,6 +339,10 @@ fn collect(
         }
         let new = !inventory.owns(pickup.weapon);
         let added = inventory.add(pickup.weapon, pickup.amount);
+        if !new && added == 0 {
+            // Боезапас полный: предмет остаётся лежать до следующего раза.
+            continue;
+        }
         commands.entity(entity).despawn();
         let label = if new {
             format!("NEW: {}", pickup.weapon.name())

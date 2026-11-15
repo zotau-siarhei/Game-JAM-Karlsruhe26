@@ -13,7 +13,7 @@ use crate::combat::{Health, Team};
 use crate::explosion::Explosion;
 use crate::frame::{GameSet, RunMessages};
 use crate::rover::Rover;
-use crate::run::RunScoped;
+use crate::run::{RunScoped, WorldRebuilt};
 use crate::terrain::Terrain;
 use crate::arsenal::Inventory;
 use crate::weapons::CurrentWeapon;
@@ -169,9 +169,15 @@ impl Shell {
     pub fn target(&self) -> Vec3 {
         self.path.position(FLIGHT_TIME)
     }
+
+    /// Чей снаряд.
+    pub fn team(&self) -> Team {
+        self.team
+    }
 }
 
-/// Просьба выстрелить снарядом мортиры из точки `origin` в точку `target`: так стреляют враги.
+/// Выстрел снарядом мортиры из точки `origin` в точку `target`. Так стреляют и игрок, и враги:
+/// по этому сообщению жители пугаются точки падения.
 #[derive(Message, Debug, Clone, Copy)]
 pub struct FireShell {
     pub origin: Vec3,
@@ -213,6 +219,7 @@ impl Plugin for MortarPlugin {
             .add_systems(
                 Update,
                 (
+                    reset_mortar.in_set(GameSet::Reset),
                     fire.in_set(GameSet::Input),
                     (launch_requested_shells, fly_shells).chain().in_set(GameSet::Simulation),
                     (update_impact_markers, fade_muzzle_flash).in_set(GameSet::Presentation),
@@ -250,19 +257,27 @@ fn create_assets(
     });
 }
 
+/// Мир перестроен: перезарядка прошлого забега не переходит в новый.
+fn reset_mortar(mut rebuilt: MessageReader<WorldRebuilt>, mut mortar: ResMut<Mortar>) {
+    if rebuilt.read().last().is_some() {
+        *mortar = Mortar::default();
+    }
+}
+
 /// Стреляет в точку прицела по левой кнопке мыши, если выбрана мортира и кончилась перезарядка.
+/// Снаряд выпускает сообщение [`FireShell`], как у врагов.
+#[allow(clippy::too_many_arguments)]
 fn fire(
     mut commands: Commands,
     time: Res<Time>,
     buttons: Res<ButtonInput<MouseButton>>,
     weapon: Res<CurrentWeapon>,
     aim: Res<AimPoint>,
-    terrain: Res<Terrain>,
     assets: Res<MortarAssets>,
     mut mortar: ResMut<Mortar>,
-    mut meshes: ResMut<Assets<Mesh>>,
     rover: Single<(&Transform, &Health), With<Rover>>,
     mut inventory: ResMut<Inventory>,
+    mut shots: MessageWriter<FireShell>,
 ) {
     let (rover, health) = *rover;
     let trigger = buttons.pressed(MouseButton::Left)
@@ -274,18 +289,12 @@ fn fire(
     }
     inventory.spend(CurrentWeapon::Mortar);
     let muzzle = rover.transform_point(MUZZLE_OFFSET);
-    spawn_shell(
-        &mut commands,
-        &assets,
-        &mut meshes,
-        &terrain,
-        FireShell {
-            origin: muzzle,
-            target: aim.position,
-            team: Team::Player,
-            power: EXPLOSION_POWER,
-        },
-    );
+    shots.write(FireShell {
+        origin: muzzle,
+        target: aim.position,
+        team: Team::Player,
+        power: EXPLOSION_POWER,
+    });
     commands.spawn((
         MuzzleFlash::default(),
         Mesh3d(assets.flash_mesh.clone()),

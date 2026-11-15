@@ -26,8 +26,8 @@ const DELAY: f32 = 2.0;
 const PLANE_HEIGHT: f32 = 25.0;
 const PLANE_SPEED: f32 = 60.0;
 
-/// С какого расстояния до центра самолёт заходит и где исчезает, м.
-const APPROACH: f32 = 90.0;
+/// Запас захода сверх упреждения первой бомбы, м: самолёт появляется до точки её сброса.
+const APPROACH_MARGIN: f32 = 15.0;
 
 /// Бомбы: число, шаг, мощность и радиус взрыва.
 const BOMBS: usize = 6;
@@ -40,6 +40,24 @@ const GRAVITY: f32 = 20.0;
 
 /// Сегментов отметки на длинной стороне.
 const MARK_SEGMENTS: usize = 8;
+
+/// Время падения бомбы с высоты пролёта, с.
+fn fall_time() -> f32 {
+    (2.0 * PLANE_HEIGHT / GRAVITY).sqrt()
+}
+
+/// Смещение точки падения бомбы `index` от центра отметки вдоль пролёта, м.
+fn bomb_offset(index: usize) -> f32 {
+    -(BOMBS as f32 - 1.0) * BOMB_STEP * 0.5 + index as f32 * BOMB_STEP
+}
+
+/// С какого расстояния до центра самолёт заходит и где исчезает, м.
+///
+/// Бомба сбрасывается за `PLANE_SPEED · fall_time` до своей точки, поэтому заход дальше
+/// упреждения первой бомбы: иначе в первом же кадре падают сразу несколько бомб в одну точку.
+fn approach() -> f32 {
+    PLANE_SPEED * fall_time() - bomb_offset(0) + APPROACH_MARGIN
+}
 
 /// Подключает авиаудар.
 pub struct AirstrikePlugin;
@@ -56,28 +74,37 @@ impl Plugin for AirstrikePlugin {
     }
 }
 
-/// Вызванный авиаудар.
+/// Вызванный авиаудар. Живёт от вызова до ухода самолёта и падения последней бомбы.
 #[derive(Component)]
 pub struct Strike {
+    /// Центр отметки на земле.
     pub center: Vec3,
-    dir: Vec3,
+    /// Направление пролёта в плане.
+    pub dir: Vec3,
     elapsed: f32,
+    /// Самолёт уже появился.
+    plane_spawned: bool,
     plane: Option<Entity>,
     shadow: Option<Entity>,
     dropped: usize,
+    /// Сколько бомб уже взорвалось: отметка держится до последней.
+    landed: usize,
     marks: Vec<Entity>,
 }
 
 /// Сегмент отметки на земле.
 #[derive(Component)]
-struct Mark {
-    strike: Entity,
+pub struct Mark {
+    pub strike: Entity,
+    /// Высота сегмента без пульсации: у рамки тонкая полоса, у сигнального дыма столб.
+    base_height: f32,
 }
 
 /// Падающая бомба.
 #[derive(Component)]
 struct Bomb {
     velocity: Vec3,
+    strike: Entity,
 }
 
 #[derive(Resource)]
@@ -172,7 +199,10 @@ fn call_airstrike(
             marks.push(
                 commands
                     .spawn((
-                        Mark { strike },
+                        Mark {
+                            strike,
+                            base_height: 0.15,
+                        },
                         RunScoped,
                         NotShadowCaster,
                         Mesh3d(assets.cube.clone()),
@@ -193,7 +223,10 @@ fn call_airstrike(
     marks.push(
         commands
             .spawn((
-                Mark { strike },
+                Mark {
+                    strike,
+                    base_height: 3.0,
+                },
                 RunScoped,
                 NotShadowCaster,
                 Mesh3d(assets.sphere.clone()),
@@ -206,9 +239,11 @@ fn call_airstrike(
         center,
         dir,
         elapsed: 0.0,
+        plane_spawned: false,
         plane: None,
         shadow: None,
         dropped: 0,
+        landed: 0,
         marks,
     });
 }
@@ -231,7 +266,7 @@ fn pulse_marks(
         if material.0 != *wanted {
             material.0 = wanted.clone();
         }
-        transform.scale.y = 0.15 * pulse;
+        transform.scale.y = mark.base_height * pulse;
     }
 }
 
@@ -245,16 +280,18 @@ fn run_strikes(
     mut transforms: Query<&mut Transform>,
 ) {
     let dt = time.delta_secs();
+    let approach = approach();
     for (entity, mut strike) in &mut strikes {
         strike.elapsed += dt;
         if strike.elapsed < DELAY {
             continue;
         }
-        let flown = (strike.elapsed - DELAY) * PLANE_SPEED - APPROACH;
+        let flown = (strike.elapsed - DELAY) * PLANE_SPEED - approach;
         let ground = strike.center + strike.dir * flown;
         let plane_pos = Vec3::new(ground.x, strike.center.y + PLANE_HEIGHT, ground.z);
         let rotation = Quat::from_rotation_arc(Vec3::NEG_Z, strike.dir);
-        if strike.plane.is_none() {
+        if !strike.plane_spawned {
+            strike.plane_spawned = true;
             let plane = commands
                 .spawn((RunScoped, Transform::from_translation(plane_pos).with_rotation(rotation), Visibility::default()))
                 .with_children(|p| {
@@ -284,9 +321,6 @@ fn run_strikes(
                 .id();
             strike.plane = Some(plane);
             strike.shadow = Some(shadow);
-            for &mark in &strike.marks {
-                commands.entity(mark).try_despawn();
-            }
         }
         if let Some(mut t) = strike.plane.and_then(|p| transforms.get_mut(p).ok()) {
             t.translation = plane_pos;
@@ -299,16 +333,16 @@ fn run_strikes(
                 .with_scale(Vec3::new(10.0, 0.05, 8.0));
         }
         // Бомба сбрасывается над своей точкой отметки с упреждением на падение.
-        let fall_time = (2.0 * PLANE_HEIGHT / GRAVITY).sqrt();
+        let lead = PLANE_SPEED * fall_time();
         while strike.dropped < BOMBS {
-            let along = -(BOMBS as f32 - 1.0) * BOMB_STEP * 0.5 + strike.dropped as f32 * BOMB_STEP;
-            if flown + PLANE_SPEED * fall_time < along {
+            if flown + lead < bomb_offset(strike.dropped) {
                 break;
             }
             strike.dropped += 1;
             commands.spawn((
                 Bomb {
                     velocity: strike.dir * PLANE_SPEED,
+                    strike: entity,
                 },
                 RunScoped,
                 Mesh3d(assets.sphere.clone()),
@@ -316,11 +350,19 @@ fn run_strikes(
                 Transform::from_translation(plane_pos - Vec3::Y).with_scale(Vec3::new(0.7, 0.7, 1.4)),
             ));
         }
-        if flown > APPROACH {
-            for e in [strike.plane, strike.shadow].into_iter().flatten() {
+        if flown > approach {
+            for e in [strike.plane.take(), strike.shadow.take()].into_iter().flatten() {
                 commands.entity(e).try_despawn();
             }
-            commands.entity(entity).despawn();
+        }
+        // Отметка и сам удар живут, пока не упала последняя бомба.
+        if strike.landed >= BOMBS {
+            for mark in strike.marks.drain(..) {
+                commands.entity(mark).try_despawn();
+            }
+            if strike.plane.is_none() {
+                commands.entity(entity).despawn();
+            }
         }
     }
 }
@@ -331,6 +373,7 @@ fn drop_bombs(
     time: Res<Time>,
     terrain: Res<Terrain>,
     mut bombs: Query<(Entity, &mut Transform, &mut Bomb)>,
+    mut strikes: Query<&mut Strike>,
     mut explosions: MessageWriter<Explosion>,
 ) {
     let dt = time.delta_secs();
@@ -342,6 +385,9 @@ fn drop_bombs(
         let ground = terrain.height_at(p.x, p.z);
         if p.y <= ground {
             commands.entity(entity).despawn();
+            if let Ok(mut strike) = strikes.get_mut(bomb.strike) {
+                strike.landed += 1;
+            }
             explosions.write(Explosion {
                 position: Vec3::new(p.x, ground, p.z),
                 radius: BOMB_RADIUS,
@@ -349,5 +395,21 @@ fn drop_bombs(
                 source_team: Team::Player,
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Самолёт появляется раньше точки сброса первой бомбы, и в первом кадре не падает ни одна.
+    #[test]
+    fn plane_appears_before_the_first_drop_point() {
+        let lead = PLANE_SPEED * fall_time();
+        let flown_at_start = -approach();
+        assert!(flown_at_start + lead < bomb_offset(0));
+        // Бомбы сбрасываются по очереди с шагом по пролёту, а не все сразу.
+        assert!(bomb_offset(1) - bomb_offset(0) > 0.0);
+        assert!(approach() >= 110.0, "{}", approach());
     }
 }

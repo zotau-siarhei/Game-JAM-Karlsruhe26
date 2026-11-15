@@ -40,13 +40,14 @@ impl Plugin for CombatPlugin {
         app.init_resource::<SurvivalTime>()
             .add_run_message::<Damage>()
             .add_run_message::<Died>()
+            .add_run_message::<Heal>()
             .add_systems(Startup, create_flash_material)
             .add_systems(
                 Update,
                 (
                     equip_rover.in_set(GameSet::Reset),
                     count_survival_time.in_set(GameSet::Simulation),
-                    explosion_damage.in_set(GameSet::Damage),
+                    (explosion_damage, apply_heal).in_set(GameSet::Damage),
                     apply_damage.in_set(GameSet::ApplyDamage),
                     update_flash.in_set(GameSet::Presentation),
                 ),
@@ -162,6 +163,24 @@ pub struct Died {
     pub killer: Team,
 }
 
+/// Лечение сущности со здоровьем: ремонт и аптечки. Здоровье напрямую не меняют, как и с [`Damage`].
+#[derive(Message, Debug, Clone, Copy)]
+pub struct Heal {
+    /// Кого.
+    pub target: Entity,
+    /// Сколько здоровья добавить. Выше максимума здоровье не растёт, погибший не оживает.
+    pub amount: f32,
+}
+
+/// Применяет лечение. Стоит в `GameSet::Damage`: после ремонта и подбора аптечек, до урона.
+pub fn apply_heal(mut heals: MessageReader<Heal>, mut targets: Query<&mut Health>) {
+    for heal in heals.read() {
+        if let Ok(mut health) = targets.get_mut(heal.target) {
+            health.heal(heal.amount);
+        }
+    }
+}
+
 /// Время выживания в текущем забеге, с. Растёт, пока луноход жив.
 #[derive(Resource, Default, Debug)]
 pub struct SurvivalTime(pub f32);
@@ -170,10 +189,16 @@ pub struct SurvivalTime(pub f32);
 #[derive(Resource)]
 struct FlashMaterial(Handle<StandardMaterial>);
 
-/// Корпус светится после попадания.
+/// Корпус светится после попадания: сама сущность и все её потомки с материалом. Так видно
+/// и попадание по луноходу, у которого меши лежат в дочерних сущностях модели.
 #[derive(Component)]
 struct HitFlash {
     remaining: f32,
+}
+
+/// Меш светится вспышкой попадания и помнит свой материал.
+#[derive(Component)]
+struct FlashedMesh {
     /// Материал, который вернётся после вспышки.
     original: Handle<StandardMaterial>,
 }
@@ -246,16 +271,10 @@ fn apply_damage(
     mut commands: Commands,
     mut damages: MessageReader<Damage>,
     mut died: MessageWriter<Died>,
-    flash: Option<Res<FlashMaterial>>,
-    mut targets: Query<(
-        &mut Health,
-        Option<&GlobalTransform>,
-        Option<&mut MeshMaterial3d<StandardMaterial>>,
-        Option<&mut HitFlash>,
-    )>,
+    mut targets: Query<(&mut Health, Option<&GlobalTransform>)>,
 ) {
     for damage in damages.read() {
-        let Ok((mut health, transform, material, flashing)) = targets.get_mut(damage.target) else {
+        let Ok((mut health, transform)) = targets.get_mut(damage.target) else {
             continue;
         };
         if health.is_dead() || damage.amount <= 0.0 {
@@ -270,29 +289,49 @@ fn apply_damage(
             });
         }
 
-        // Вспышка: корпус на мгновение получает светящийся материал.
-        if let Some(mut flashing) = flashing {
-            flashing.remaining = FLASH_SECONDS;
-        } else if let (Some(mut material), Some(flash)) = (material, flash.as_ref()) {
-            let original = std::mem::replace(&mut material.0, flash.0.clone());
-            commands.entity(damage.target).try_insert(HitFlash {
-                remaining: FLASH_SECONDS,
-                original,
-            });
-        }
+        // Вспышка: корпус на мгновение получает светящийся материал. Новое попадание продлевает её.
+        commands.entity(damage.target).try_insert(HitFlash {
+            remaining: FLASH_SECONDS,
+        });
     }
 }
 
-/// Возвращает корпусу его материал, когда вспышка закончилась.
+/// Вспышка попадания: меши сущности и её потомков светятся, потом получают свой материал назад.
+///
+/// Потомки обходятся каждый кадр вспышки: части модели, загруженные позже, тоже вспыхивают.
 fn update_flash(
     mut commands: Commands,
     time: Res<Time>,
-    mut flashing: Query<(Entity, &mut HitFlash, &mut MeshMaterial3d<StandardMaterial>)>,
+    flash: Option<Res<FlashMaterial>>,
+    mut flashing: Query<(Entity, &mut HitFlash)>,
+    children: Query<&Children>,
+    mut meshes: Query<(&mut MeshMaterial3d<StandardMaterial>, Option<&FlashedMesh>)>,
 ) {
-    for (entity, mut flash, mut material) in &mut flashing {
-        flash.remaining -= time.delta_secs();
-        if flash.remaining <= 0.0 {
-            material.0 = flash.original.clone();
+    let Some(flash) = flash else {
+        return;
+    };
+    for (entity, mut hit) in &mut flashing {
+        hit.remaining -= time.delta_secs();
+        let done = hit.remaining <= 0.0;
+        for part in std::iter::once(entity).chain(children.iter_descendants(entity)) {
+            let Ok((mut material, flashed)) = meshes.get_mut(part) else {
+                continue;
+            };
+            match flashed {
+                Some(flashed) if done => {
+                    material.0 = flashed.original.clone();
+                    commands.entity(part).try_remove::<FlashedMesh>();
+                }
+                // Уже светится, в том числе от вспышки предка.
+                _ if done || material.0 == flash.0 => {}
+                Some(_) => {}
+                None => {
+                    let original = std::mem::replace(&mut material.0, flash.0.clone());
+                    commands.entity(part).try_insert(FlashedMesh { original });
+                }
+            }
+        }
+        if done {
             commands.entity(entity).try_remove::<HitFlash>();
         }
     }
@@ -489,26 +528,36 @@ mod tests {
         app.init_resource::<Time>().add_systems(Update, update_flash.after(apply_damage));
         let mut materials = Assets::<StandardMaterial>::default();
         let hull = materials.add(StandardMaterial::default());
+        let wheel = materials.add(StandardMaterial::default());
         let flash = materials.add(StandardMaterial::default());
         app.insert_resource(FlashMaterial(flash.clone()));
         let target = app
             .world_mut()
             .spawn((Health::new(100.0), MeshMaterial3d(hull.clone())))
             .id();
+        // Деталь модели в дочерней сущности, как у лунохода.
+        let part = app
+            .world_mut()
+            .spawn((MeshMaterial3d(wheel.clone()), ChildOf(target)))
+            .id();
 
         hit(&mut app, target, 10.0);
-        let material = |app: &App| app.world().get::<MeshMaterial3d<StandardMaterial>>(target).unwrap().0.clone();
-        assert_eq!(material(&app), flash);
+        let material = |app: &App, entity| {
+            app.world().get::<MeshMaterial3d<StandardMaterial>>(entity).unwrap().0.clone()
+        };
+        assert_eq!(material(&app, target), flash);
+        assert_eq!(material(&app, part), flash);
 
         // Второе попадание во время вспышки не теряет исходный материал.
         hit(&mut app, target, 10.0);
-        assert_eq!(material(&app), flash);
+        assert_eq!(material(&app, target), flash);
 
         app.world_mut()
             .resource_mut::<Time>()
             .advance_by(std::time::Duration::from_secs_f32(FLASH_SECONDS * 2.0));
         app.update();
-        assert_eq!(material(&app), hull);
+        assert_eq!(material(&app, target), hull);
+        assert_eq!(material(&app, part), wheel);
         assert!(app.world().get::<HitFlash>(target).is_none());
     }
 
