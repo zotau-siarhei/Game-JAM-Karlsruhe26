@@ -1,24 +1,60 @@
-//! Игровая камера: смотрит на фокус сверху с небольшим наклоном и плавно следует за ним.
+//! Игровая камера: смотрит на фокус сверху под углом 45° к земле и плавно следует за ним.
 //!
 //! Фокус — точка, вокруг которой показан и подгружен мир. В забеге это луноход, в меню —
 //! точка, летящая над планетой (её двигает `run`). Камера и подгрузка рельефа читают только
 //! [`Focus`], а не луноход.
+//!
+//! Камера не вращается вокруг вертикали: верх экрана всегда север. Когда рельеф между камерой
+//! и фокусом закрывает обзор (стенка глубокого кратера, гребень холма), камера плавно
+//! поднимается и смотрит круче, до почти отвесного вида, а на открытом месте возвращается
+//! к прежнему углу. Ниже рельефа камера не опускается. Угол не бывает положе 45°, поэтому небо
+//! в кадр не попадает.
 
 use bevy::prelude::*;
 
 use crate::frame::GameSet;
 use crate::rover::Rover;
 use crate::run::GameState;
+use crate::terrain::Terrain;
 
-/// Положение камеры относительно фокуса: над ним и южнее, взгляд под углом около 45° к земле, м.
-const CAMERA_OFFSET: Vec3 = Vec3::new(0.0, 25.0, 25.0);
+/// Расстояние от фокуса до камеры, м: как у прежнего смещения (0, 25, 25).
+const CAMERA_DISTANCE: f32 = 35.355;
+
+/// Наклон взгляда к земле в обычном виде и в самом крутом, рад.
+const PITCH_DEFAULT: f32 = std::f32::consts::FRAC_PI_4;
+const PITCH_STEEPEST: f32 = 80.0 * std::f32::consts::PI / 180.0;
+
+/// Ступени крутизны, которые проверяются на обзор: 0 — обычный вид, 1 — самый крутой.
+const STEEPNESS_STEPS: [f32; 5] = [0.0, 0.25, 0.5, 0.75, 1.0];
+
+/// Высота точки на луноходе, которую камера должна видеть, над фокусом, м.
+const LOOK_HEIGHT: f32 = 0.8;
+
+/// Обзор закрыт, если рельеф выше луча хотя бы на столько, м.
+const BLOCK_MARGIN: f32 = 0.3;
+
+/// Вернуться к виду положе можно, только если луч до него идёт выше рельефа на столько, м:
+/// запас не даёт камере дёргаться на границе.
+const RETURN_MARGIN: f32 = 2.0;
+
+/// Сколько точек луча проверяется.
+const RAY_SAMPLES: usize = 16;
+
+/// Скорость подъёма и возврата крутизны, долей в секунду.
+const STEEPEN_SPEED: f32 = 2.5;
+const RELAX_SPEED: f32 = 0.6;
+
+/// Наименьшая высота камеры над рельефом под ней, м.
+const GROUND_CLEARANCE: f32 = 3.0;
 
 /// Скорость, с которой камера догоняет фокус, 1/с.
 const FOLLOW_DECAY: f32 = 8.0;
 
-/// Игровая камера.
-#[derive(Component)]
-pub struct GameCamera;
+/// Игровая камера и её текущая крутизна: 0 — обычный вид, 1 — самый крутой.
+#[derive(Component, Default)]
+pub struct GameCamera {
+    steepness: f32,
+}
 
 /// Точка мира, за которой идут камера и подгрузка мира.
 #[derive(Resource, Default, Debug, Clone, Copy)]
@@ -53,23 +89,121 @@ fn focus_on_rover(mut focus: ResMut<Focus>, rover: Single<&Transform, With<Rover
     }
 }
 
-/// Ставит камеру над фокусом. Поворот задаётся один раз и больше не меняется.
+/// Смещение камеры от фокуса при крутизне `steepness`: над ним и южнее.
+fn camera_offset(steepness: f32) -> Vec3 {
+    let pitch = PITCH_DEFAULT + (PITCH_STEEPEST - PITCH_DEFAULT) * steepness.clamp(0.0, 1.0);
+    Vec3::new(0.0, pitch.sin(), pitch.cos()) * CAMERA_DISTANCE
+}
+
+/// Поворот камеры при крутизне `steepness`: взгляд на фокус, север вверху экрана.
+fn camera_rotation(steepness: f32) -> Quat {
+    Transform::from_translation(camera_offset(steepness))
+        .looking_at(Vec3::ZERO, Vec3::NEG_Z)
+        .rotation
+}
+
+/// Закрывает ли рельеф `height` луч от `from` до `to` с запасом `margin`. Точки у самого
+/// `from` не проверяются: там земля под луноходом.
+fn ray_blocked(height: impl Fn(f32, f32) -> f32, from: Vec3, to: Vec3, margin: f32) -> bool {
+    (1..=RAY_SAMPLES).any(|i| {
+        let point = from.lerp(to, i as f32 / RAY_SAMPLES as f32);
+        height(point.x, point.z) + margin > point.y
+    })
+}
+
+/// Наименьшая ступень крутизны, с которой точка `look` видна. Ступени положе нынешней
+/// `current` требуют большего запаса. Если обзор закрыт отовсюду — самая крутая.
+fn needed_steepness(height: impl Fn(f32, f32) -> f32, look: Vec3, current: f32) -> f32 {
+    STEEPNESS_STEPS
+        .iter()
+        .copied()
+        .find(|&steepness| {
+            let margin = if steepness < current { RETURN_MARGIN } else { BLOCK_MARGIN };
+            !ray_blocked(&height, look, look + camera_offset(steepness), margin)
+        })
+        .unwrap_or(1.0)
+}
+
+/// Ставит камеру над фокусом в обычном виде.
 pub fn spawn_camera(mut commands: Commands, focus: Res<Focus>) {
-    let target = focus.0;
     commands.spawn((
-        GameCamera,
+        GameCamera::default(),
         Camera3d::default(),
         // Без сглаживания MSAA и с простой фильтрацией теней: так плавнее на слабой видеокарте.
         bevy::render::view::Msaa::Off,
         bevy::light::ShadowFilteringMethod::Hardware2x2,
-        Transform::from_translation(target + CAMERA_OFFSET).looking_at(target, Vec3::NEG_Z),
+        Transform::from_translation(focus.0 + camera_offset(0.0)).with_rotation(camera_rotation(0.0)),
     ));
 }
 
-/// Плавно двигает камеру за фокусом, не вращая её.
-pub fn follow_focus(time: Res<Time>, focus: Res<Focus>, mut camera: Single<&mut Transform, With<GameCamera>>) {
-    let target = focus.0 + CAMERA_OFFSET;
-    camera
+/// Плавно двигает камеру за фокусом. Когда рельеф закрывает фокус, камера поднимается
+/// и смотрит круче, потом возвращается; ниже рельефа не опускается.
+pub fn follow_focus(
+    time: Res<Time>,
+    focus: Res<Focus>,
+    terrain: Res<Terrain>,
+    camera: Single<(&mut Transform, &mut GameCamera)>,
+) {
+    let (mut transform, mut camera) = camera.into_inner();
+    let dt = time.delta_secs();
+    let height = |x: f32, z: f32| terrain.height_at(x, z);
+
+    let wanted = needed_steepness(height, focus.0 + Vec3::Y * LOOK_HEIGHT, camera.steepness);
+    let step = if wanted > camera.steepness { STEEPEN_SPEED } else { RELAX_SPEED } * dt;
+    let steepness = camera.steepness + (wanted - camera.steepness).clamp(-step, step);
+    if steepness != camera.steepness {
+        camera.steepness = steepness;
+        transform.rotation = camera_rotation(steepness);
+    }
+
+    let target = focus.0 + camera_offset(camera.steepness);
+    transform
         .translation
-        .smooth_nudge(&target, FOLLOW_DECAY, time.delta_secs());
+        .smooth_nudge(&target, FOLLOW_DECAY, dt);
+    // Под рельеф камера не уходит даже на мгновение, пока догоняет фокус.
+    let here = transform.translation;
+    let floor = terrain.height_at(here.x, here.z) + GROUND_CLEARANCE;
+    if here.y < floor {
+        transform.translation.y = floor;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_view_is_the_old_45_degree_offset() {
+        let offset = camera_offset(0.0);
+        assert!((offset - Vec3::new(0.0, 25.0, 25.0)).length() < 0.01);
+        // Самый крутой вид — почти над фокусом, на том же расстоянии.
+        let steep = camera_offset(1.0);
+        assert!(steep.y > 34.0 && steep.z > 0.0 && steep.z < 7.0);
+    }
+
+    #[test]
+    fn view_never_reaches_the_horizon() {
+        // Взгляд направлен вниз не положе 45°: верх кадра при обзоре 45° не видит неба.
+        for steepness in STEEPNESS_STEPS {
+            let forward = camera_rotation(steepness) * Vec3::NEG_Z;
+            assert!(forward.y <= -std::f32::consts::FRAC_1_SQRT_2 + 1e-4);
+        }
+    }
+
+    #[test]
+    fn flat_ground_keeps_the_default_view() {
+        let flat = |_: f32, _: f32| 0.0;
+        assert_eq!(needed_steepness(flat, Vec3::Y, 0.0), 0.0);
+        assert_eq!(needed_steepness(flat, Vec3::Y, 1.0), 0.0);
+    }
+
+    #[test]
+    fn crater_wall_to_the_south_makes_the_view_steeper() {
+        // Луноход на дне кратера глубиной 20 м и радиусом 15 м: южная стенка закрывает вид под 45°.
+        let crater = |x: f32, z: f32| if x.hypot(z) < 15.0 { -20.0 } else { 0.0 };
+        let look = Vec3::new(0.0, -20.0 + LOOK_HEIGHT, 0.0);
+        let steepness = needed_steepness(crater, look, 0.0);
+        assert!(steepness > 0.0);
+        assert!(!ray_blocked(crater, look, look + camera_offset(steepness), BLOCK_MARGIN));
+    }
 }

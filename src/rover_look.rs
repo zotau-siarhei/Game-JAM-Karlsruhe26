@@ -9,13 +9,24 @@
 //! Гусеница в модели неподвижна, поэтому поверх неё по контуру «стадион» бегут грунтозацепы.
 //! Путь каждого борта считается по фактическому движению лунохода: при езде вперёд верхняя
 //! ветвь бежит вперёд, нижняя назад, а на повороте на месте борта бегут в разные стороны.
+//!
+//! Подвеска: каждый гусеничный блок садится на рельеф под своими концами — поднимается,
+//! опускается и наклоняется в пределах хода. Из-под задних концов гусениц летит пыль, тем
+//! больше, чем быстрее едет луноход. С потерей здоровья корпус покрывается копотью, а ниже
+//! половины здоровья луноход дымит, тем гуще, чем меньше здоровья осталось. Частиц — по доле
+//! ступени качества.
 
+use std::collections::HashMap;
 use std::f32::consts::{FRAC_PI_2, PI};
 
 use bevy::prelude::*;
+use bevy_hanabi::prelude::*;
 
+use crate::combat::Health;
 use crate::models::{FallbackSpawner, Models};
-use crate::rover::{RIDE_HEIGHT, Rover};
+use crate::quality::Quality;
+use crate::rover::{MAX_FORWARD_SPEED, RIDE_HEIGHT, ROVER_SCALE, Rover, RoverMotion};
+use crate::terrain::Terrain;
 
 /// Идентификаторы моделей корпуса и гусеничного блока в списке моделей.
 const BODY_MODEL: &str = "rover_body";
@@ -62,6 +73,36 @@ const SPARE_HULL_COLOR: Color = Color::srgb(0.10, 0.62, 0.62);
 const SPARE_DECK_COLOR: Color = Color::srgb(0.90, 0.90, 0.86);
 const SPARE_RUBBER_COLOR: Color = Color::srgb(0.12, 0.12, 0.13);
 
+/// Ход подвески гусеничного блока вверх и вниз, м.
+const SUSPENSION_TRAVEL: f32 = 0.35;
+
+/// Наибольший наклон гусеничного блока вдоль хода относительно корпуса, рад.
+const SUSPENSION_PITCH: f32 = 0.35;
+
+/// Скорость, с которой блок догоняет рельеф под собой, 1/с.
+const SUSPENSION_SMOOTHING: f32 = 18.0;
+
+/// Пыль: частиц в секунду с каждой гусеницы на полной скорости.
+const DUST_RATE: f32 = 28.0;
+
+/// Дым: частиц в секунду при нулевом здоровье.
+const SMOKE_RATE: f32 = 14.0;
+
+/// Ниже этой доли здоровья луноход дымит.
+const SMOKE_BELOW: f32 = 0.5;
+
+/// Копоть при нулевом здоровье: доля цвета копоти в цвете материалов.
+const SOOT_MAX: f32 = 0.7;
+
+/// Цвет копоти.
+const SOOT_COLOR: Color = Color::srgb(0.07, 0.06, 0.05);
+
+/// Копоть перекрашивает материалы, только когда её доля изменилась хотя бы на столько.
+const SOOT_STEP: f32 = 0.02;
+
+/// Цикл эмиттеров пыли и дыма, с: новая густота вступает в силу не позже чем через него.
+const EMIT_PERIOD: f32 = 0.1;
+
 /// Плагин облика лунохода.
 pub struct RoverLookPlugin;
 
@@ -69,9 +110,26 @@ impl Plugin for RoverLookPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Update,
-            (attach_look, run_tracks).chain().in_set(crate::frame::GameSet::Presentation),
+            (attach_look, run_tracks, fit_suspension, emit_dust_and_smoke, apply_soot)
+                .chain()
+                .in_set(crate::frame::GameSet::Presentation),
         );
     }
+}
+
+/// Эмиттер пыли у заднего конца гусеницы.
+#[derive(Component)]
+struct DustEmitter;
+
+/// Эмиттер дыма над корпусом.
+#[derive(Component)]
+struct SmokeEmitter;
+
+/// Копоть на материалах лунохода: исходные цвета и последняя нанесённая доля.
+#[derive(Default)]
+struct Soot {
+    base: HashMap<AssetId<StandardMaterial>, Color>,
+    applied: f32,
 }
 
 /// Борт гусеницы: -1 левый, 1 правый.
@@ -209,8 +267,11 @@ fn attach_look(
     mut models: Models,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut effects: ResMut<Assets<EffectAsset>>,
 ) {
     for rover in &rovers {
+        let dust = effects.add(dust_effect());
+        let smoke = effects.add(smoke_effect());
         let spare = SpareLook::new(&mut meshes, &mut materials);
         let grouser_mesh = meshes.add(Cuboid::from_size(GROUSER_SIZE));
         let grouser_material = materials.add(StandardMaterial {
@@ -249,8 +310,234 @@ fn attach_look(
                                 ));
                             }
                         });
+                    // Пыль у заднего конца гусеницы, у самой земли.
+                    parent.spawn((
+                        DustEmitter,
+                        emitter(&dust),
+                        Transform::from_xyz(side * TRACK_X, -RIDE_HEIGHT + 0.1, TRACK_HALF_STRAIGHT + TRACK_RADIUS),
+                    ));
                 }
+                parent.spawn((SmokeEmitter, emitter(&smoke), Transform::from_xyz(0.0, 0.5, 0.2)));
             });
+    }
+}
+
+/// Эмиттер постоянного эффекта: густоту задаёт `emit_dust_and_smoke`, сначала он молчит.
+fn emitter(effect: &Handle<EffectAsset>) -> impl Bundle {
+    let settings = SpawnerSettings::new(0.0.into(), EMIT_PERIOD.into(), EMIT_PERIOD.into(), 0);
+    (ParticleEffect::new(effect.clone()), EffectSpawner::new(&settings))
+}
+
+/// Пыль из-под гусениц: светлые клубы, поднимаются и расходятся.
+fn dust_effect() -> EffectAsset {
+    let writer = ExprWriter::new();
+    let init_pos = SetPositionSphereModifier {
+        center: writer.lit(Vec3::ZERO).expr(),
+        radius: writer.lit(0.2).expr(),
+        dimension: ShapeDimension::Volume,
+    };
+    let init_vel = SetVelocitySphereModifier {
+        center: writer.lit(Vec3::Y * -0.5).expr(),
+        speed: writer.lit(0.6).uniform(writer.lit(1.6)).expr(),
+    };
+    let init_lifetime = SetAttributeModifier::new(Attribute::LIFETIME, writer.lit(0.7).uniform(writer.lit(1.3)).expr());
+    let init_age = SetAttributeModifier::new(Attribute::AGE, writer.lit(0.0).expr());
+    let update_rise = AccelModifier::new(writer.lit(Vec3::Y * 0.6).expr());
+    let update_drag = LinearDragModifier::new(writer.lit(2.0).expr());
+    let round = RoundModifier {
+        roundness: writer.lit(1.0).expr(),
+    };
+
+    let mut color = bevy_hanabi::Gradient::new();
+    color.add_key(0.0, Vec4::new(0.62, 0.55, 0.43, 0.0));
+    color.add_key(0.15, Vec4::new(0.62, 0.55, 0.43, 0.45));
+    color.add_key(1.0, Vec4::new(0.55, 0.5, 0.42, 0.0));
+    let mut size = bevy_hanabi::Gradient::new();
+    size.add_key(0.0, Vec3::splat(0.35));
+    size.add_key(1.0, Vec3::splat(1.6));
+
+    EffectAsset::new(64, SpawnerSettings::rate(0.0.into()), writer.finish())
+        .with_name("rover_dust")
+        .init(init_pos)
+        .init(init_vel)
+        .init(init_lifetime)
+        .init(init_age)
+        .update(update_rise)
+        .update(update_drag)
+        .render(OrientModifier::new(OrientMode::FaceCameraPosition))
+        .render(round)
+        .render(ColorOverLifetimeModifier {
+            gradient: color,
+            blend: ColorBlendMode::Overwrite,
+            mask: ColorBlendMask::RGBA,
+        })
+        .render(SizeOverLifetimeModifier {
+            gradient: size,
+            screen_space_size: false,
+        })
+}
+
+/// Дым повреждённого лунохода: тёмные клубы, поднимаются и сносятся ветром.
+fn smoke_effect() -> EffectAsset {
+    let writer = ExprWriter::new();
+    let init_pos = SetPositionSphereModifier {
+        center: writer.lit(Vec3::ZERO).expr(),
+        radius: writer.lit(0.3).expr(),
+        dimension: ShapeDimension::Volume,
+    };
+    let init_vel = SetVelocitySphereModifier {
+        center: writer.lit(Vec3::Y * -1.0).expr(),
+        speed: writer.lit(0.8).uniform(writer.lit(1.8)).expr(),
+    };
+    let init_lifetime = SetAttributeModifier::new(Attribute::LIFETIME, writer.lit(1.8).uniform(writer.lit(2.8)).expr());
+    let init_age = SetAttributeModifier::new(Attribute::AGE, writer.lit(0.0).expr());
+    // Ветер в ту же сторону, что у дыма взрывов.
+    let update_wind = AccelModifier::new(writer.lit(Vec3::new(0.8, 1.6, -0.4)).expr());
+    let update_drag = LinearDragModifier::new(writer.lit(1.0).expr());
+    let round = RoundModifier {
+        roundness: writer.lit(1.0).expr(),
+    };
+
+    let mut color = bevy_hanabi::Gradient::new();
+    color.add_key(0.0, Vec4::new(0.12, 0.11, 0.1, 0.0));
+    color.add_key(0.1, Vec4::new(0.12, 0.11, 0.1, 0.6));
+    color.add_key(0.6, Vec4::new(0.28, 0.27, 0.26, 0.35));
+    color.add_key(1.0, Vec4::new(0.4, 0.4, 0.4, 0.0));
+    let mut size = bevy_hanabi::Gradient::new();
+    size.add_key(0.0, Vec3::splat(0.5));
+    size.add_key(1.0, Vec3::splat(2.6));
+
+    EffectAsset::new(64, SpawnerSettings::rate(0.0.into()), writer.finish())
+        .with_name("rover_smoke")
+        .init(init_pos)
+        .init(init_vel)
+        .init(init_lifetime)
+        .init(init_age)
+        .update(update_wind)
+        .update(update_drag)
+        .render(OrientModifier::new(OrientMode::FaceCameraPosition))
+        .render(round)
+        .render(ColorOverLifetimeModifier {
+            gradient: color,
+            blend: ColorBlendMode::Overwrite,
+            mask: ColorBlendMask::RGBA,
+        })
+        .render(SizeOverLifetimeModifier {
+            gradient: size,
+            screen_space_size: false,
+        })
+}
+
+/// Густота пыли, частиц в секунду с гусеницы: по доле от полной скорости.
+pub fn dust_rate(speed: f32) -> f32 {
+    DUST_RATE * (speed.abs() / MAX_FORWARD_SPEED).min(1.0)
+}
+
+/// Густота дыма, частиц в секунду: ноль выше [`SMOKE_BELOW`] здоровья, растёт к нулю здоровья.
+pub fn smoke_rate(health: f32) -> f32 {
+    SMOKE_RATE * ((SMOKE_BELOW - health) / SMOKE_BELOW).clamp(0.0, 1.0)
+}
+
+/// Доля копоти по доле здоровья: целый луноход чистый.
+pub fn soot_share(health: f32) -> f32 {
+    SOOT_MAX * (1.0 - health.clamp(0.0, 1.0))
+}
+
+/// Сдвиг и наклон гусеничного блока по высотам земли под его передним и задним концом,
+/// отсчитанным от земли, на которой стоит корпус, м. Расстояние между концами — `length`.
+pub fn suspension_pose(front: f32, back: f32, length: f32) -> (f32, f32) {
+    let lift = ((front + back) * 0.5).clamp(-SUSPENSION_TRAVEL, SUSPENSION_TRAVEL);
+    let pitch = (front - back).atan2(length).clamp(-SUSPENSION_PITCH, SUSPENSION_PITCH);
+    (lift, pitch)
+}
+
+/// Подвеска: гусеничный блок поднимается, опускается и наклоняется по рельефу под концами.
+fn fit_suspension(
+    time: Res<Time>,
+    terrain: Res<Terrain>,
+    rover: Query<&Transform, With<Rover>>,
+    mut frames: Query<(&TrackSide, &mut Transform), Without<Rover>>,
+) {
+    let Some(rover) = rover.iter().next() else {
+        return;
+    };
+    let to_local = rover.compute_affine().inverse();
+    let reach = TRACK_HALF_STRAIGHT + TRACK_RADIUS * 0.5;
+    let blend = 1.0 - (-SUSPENSION_SMOOTHING * time.delta_secs()).exp();
+    for (side, mut frame) in &mut frames {
+        // Высота земли под концом блока над землёй корпуса, в метрах мира.
+        let ground = |z: f32| {
+            let world = rover.transform_point(Vec3::new(side.0 * TRACK_X, -RIDE_HEIGHT, z));
+            let below = Vec3::new(world.x, terrain.height_at(world.x, world.z), world.z);
+            (to_local.transform_point3(below).y + RIDE_HEIGHT) * ROVER_SCALE
+        };
+        let (lift, pitch) = suspension_pose(ground(-reach), ground(reach), 2.0 * reach * ROVER_SCALE);
+        let wanted = Transform::from_xyz(side.0 * TRACK_X, TRACK_Y + lift / ROVER_SCALE, 0.0)
+            .with_rotation(Quat::from_rotation_x(pitch));
+        frame.translation = frame.translation.lerp(wanted.translation, blend);
+        frame.rotation = frame.rotation.slerp(wanted.rotation, blend);
+    }
+}
+
+/// Густота пыли по скорости и дыма по здоровью с долей частиц ступени качества.
+fn emit_dust_and_smoke(
+    quality: Res<Quality>,
+    rover: Query<(&RoverMotion, &Health), With<Rover>>,
+    mut dust: Query<&mut EffectSpawner, (With<DustEmitter>, Without<SmokeEmitter>)>,
+    mut smoke: Query<&mut EffectSpawner, (With<SmokeEmitter>, Without<DustEmitter>)>,
+) {
+    let Some((motion, health)) = rover.iter().next() else {
+        return;
+    };
+    let share = quality.particle_share();
+    let set = |spawner: &mut EffectSpawner, rate: f32| {
+        let count = rate * share * EMIT_PERIOD;
+        if spawner.settings.count() != count.into() {
+            spawner.settings.set_count(count.into());
+        }
+    };
+    for mut spawner in &mut dust {
+        set(&mut spawner, dust_rate(motion.speed));
+    }
+    for mut spawner in &mut smoke {
+        set(&mut spawner, smoke_rate(health.fraction()));
+    }
+}
+
+/// Копоть: материалы корпуса и гусениц темнеют по доле потерянного здоровья. Материалы
+/// модели появляются, когда она загрузится, поэтому новые подхватываются по ходу.
+fn apply_soot(
+    rover: Query<(Entity, &Health), With<Rover>>,
+    children: Query<&Children>,
+    meshes: Query<&MeshMaterial3d<StandardMaterial>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut soot: Local<Soot>,
+) {
+    let Some((rover, health)) = rover.iter().next() else {
+        return;
+    };
+    let mut found = false;
+    for entity in children.iter_descendants(rover) {
+        let Ok(material) = meshes.get(entity) else {
+            continue;
+        };
+        let id = material.id();
+        if !soot.base.contains_key(&id)
+            && let Some(loaded) = materials.get(id)
+        {
+            soot.base.insert(id, loaded.base_color);
+            found = true;
+        }
+    }
+    let share = soot_share(health.fraction());
+    if !found && (share - soot.applied).abs() < SOOT_STEP && (share > 0.0 || soot.applied == 0.0) {
+        return;
+    }
+    soot.applied = share;
+    for (id, base) in &soot.base {
+        if let Some(mut material) = materials.get_mut(*id) {
+            material.base_color = base.mix(&SOOT_COLOR, share);
+        }
     }
 }
 
@@ -339,6 +626,32 @@ mod tests {
         let top = track_point(3.0 * A + PI * R, A, R).0.x;
         let top_later = track_point(3.0 * A + PI * R + 0.1, A, R).0.x;
         assert!(top_later < top);
+    }
+
+    #[test]
+    fn dust_grows_with_speed_and_smoke_with_damage() {
+        assert_eq!(dust_rate(0.0), 0.0);
+        assert!(dust_rate(-3.0) > 0.0);
+        assert_eq!(dust_rate(MAX_FORWARD_SPEED * 2.0), DUST_RATE);
+        assert_eq!(smoke_rate(1.0), 0.0);
+        assert_eq!(smoke_rate(SMOKE_BELOW), 0.0);
+        assert!(smoke_rate(0.1) > smoke_rate(0.3));
+        assert_eq!(smoke_rate(0.0), SMOKE_RATE);
+        assert_eq!(soot_share(1.0), 0.0);
+        assert!(soot_share(0.2) > soot_share(0.6));
+    }
+
+    #[test]
+    fn suspension_follows_the_ground_within_its_travel() {
+        let (lift, pitch) = suspension_pose(0.0, 0.0, 2.0);
+        assert_eq!((lift, pitch), (0.0, 0.0));
+        // Бугор под передним концом: блок приподнят и задран носом вверх.
+        let (lift, pitch) = suspension_pose(0.2, 0.0, 2.0);
+        assert!(lift > 0.0 && pitch > 0.0);
+        // Глубокая яма: ход ограничен.
+        let (lift, pitch) = suspension_pose(-5.0, -5.0, 2.0);
+        assert_eq!(lift, -SUSPENSION_TRAVEL);
+        assert_eq!(pitch, 0.0);
     }
 
     #[test]
