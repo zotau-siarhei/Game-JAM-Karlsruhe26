@@ -1,4 +1,4 @@
-//! Объекты на поверхности: деревья, кусты, камни, валуны, кристаллы, заборы, столбы и антенны.
+//! Объекты на поверхности: деревья, кусты, камни, валуны, кристаллы кварца, заборы, столбы и антенны.
 //!
 //! Объекты генерируются для каждого участка рельефа при первом обращении: сетка ячеек со
 //! случайным сдвигом точки, а три маски низкочастотного шума решают, что где растёт — рощи,
@@ -57,13 +57,18 @@ const STONE_COLORS: [Color; VARIANTS] = [
     Color::srgb(0.30, 0.29, 0.28),
 ];
 
-/// Цвета кристаллов по вариантам.
+/// Цвета кварца по вариантам: молочно-белый, бледно-голубой, сероватый, голубоватый лёд.
+/// Кварц не светится: свечение оставлено огню, вспышкам, лазеру, лаве и раскалённому металлу.
 const GEM_COLORS: [Color; VARIANTS] = [
-    Color::srgb(0.30, 0.85, 1.00),
-    Color::srgb(0.85, 0.40, 1.00),
-    Color::srgb(0.40, 1.00, 0.70),
-    Color::srgb(1.00, 0.85, 0.30),
+    Color::srgb(0.90, 0.92, 0.94),
+    Color::srgb(0.76, 0.85, 0.93),
+    Color::srgb(0.84, 0.85, 0.83),
+    Color::srgb(0.83, 0.91, 0.95),
 ];
+
+/// Шероховатость матовых поверхностей и гладких граней кварца.
+const MATTE: f32 = 0.8;
+const GLOSSY: f32 = 0.25;
 
 /// Подключает объекты поверхности.
 pub struct PropsPlugin;
@@ -437,15 +442,13 @@ fn create_prop_assets(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let mut mat = |color: Color, emissive: LinearRgba| {
+    let mut mat = |color: Color, roughness: f32| {
         materials.add(StandardMaterial {
             base_color: color,
-            emissive,
-            perceptual_roughness: 0.8,
+            perceptual_roughness: roughness,
             ..default()
         })
     };
-    let none = LinearRgba::BLACK;
 
     let sphere = meshes.add(Sphere::new(1.0).mesh().ico(2).unwrap());
     let rock = meshes.add(Sphere::new(1.0).mesh().ico(1).unwrap());
@@ -454,15 +457,15 @@ fn create_prop_assets(
     let crystal = meshes.add(Cylinder::new(1.0, 1.0).mesh().resolution(5));
     let cone = meshes.add(Cone::new(1.0, 1.0));
 
-    let trunk = mat(Color::srgb(0.42, 0.28, 0.20), none);
-    let wood = mat(Color::srgb(0.62, 0.46, 0.30), none);
-    let metal = mat(Color::srgb(0.75, 0.78, 0.82), none);
-    // Зелёные кроны: лиственная, хвойная, тополь, зонтичная.
+    let trunk = mat(Color::srgb(0.42, 0.28, 0.20), MATTE);
+    let wood = mat(Color::srgb(0.62, 0.46, 0.30), MATTE);
+    let metal = mat(Color::srgb(0.75, 0.78, 0.82), MATTE);
+    // Зелёные кроны: лиственное дерево, ель, тополь, сосна. Хвоя темнее листвы.
     let crowns = [
         Color::srgb(0.24, 0.50, 0.18),
         Color::srgb(0.12, 0.34, 0.18),
         Color::srgb(0.36, 0.56, 0.20),
-        Color::srgb(0.28, 0.44, 0.14),
+        Color::srgb(0.16, 0.38, 0.20),
     ];
     let bushes = [
         Color::srgb(0.22, 0.45, 0.16),
@@ -481,11 +484,11 @@ fn create_prop_assets(
     };
     let mut looks = HashMap::new();
     for v in 0..VARIANTS {
-        let crown = mat(crowns[v], none);
-        let bush = mat(bushes[v], none);
-        let stone = mat(stones[v], none);
-        let gem_color = gems[v].to_linear();
-        let gem = mat(gems[v], gem_color * 1.5);
+        let crown = mat(crowns[v], MATTE);
+        let bush = mat(bushes[v], MATTE);
+        let stone = mat(stones[v], MATTE);
+        // Кварц без эмиссии: грани блестят на солнце за счёт гладкой поверхности.
+        let gem = mat(gems[v], GLOSSY);
         let fv = v as f32;
 
         // Дерево: высокий ствол и крона выше лунохода, разная форма у каждого варианта.
@@ -515,10 +518,11 @@ fn create_prop_assets(
                 (&sphere, Vec3::new(0.0, 1.8, 0.0), Vec3::new(0.8, 2.4, 0.8)),
                 (&sphere, Vec3::new(0.2, 0.8, 0.1), Vec3::new(0.7, 1.2, 0.7)),
             ],
-            // Зонтичное: широкая плоская крона.
+            // Сосна: голый высокий ствол и плотная шапка хвои наверху.
             _ => vec![
-                (&sphere, Vec3::new(0.0, 0.4, 0.0), Vec3::new(2.2, 0.55, 2.0)),
-                (&sphere, Vec3::new(0.5, 0.8, -0.3), Vec3::new(1.3, 0.45, 1.2)),
+                (&sphere, Vec3::new(0.0, 0.5, 0.0), Vec3::new(1.5, 0.9, 1.4)),
+                (&sphere, Vec3::new(0.4, 1.2, -0.2), Vec3::new(1.0, 0.7, 1.0)),
+                (&sphere, Vec3::new(-0.8, 0.1, 0.3), Vec3::new(0.8, 0.5, 0.8)),
             ],
         };
         for (mesh, offset, scale) in crown_parts {
@@ -571,7 +575,7 @@ fn create_prop_assets(
                 ),
             ],
         );
-        // Кристалл: несколько вытянутых светящихся призм под разными углами.
+        // Кварц: несколько вытянутых призм под разными углами.
         let mut shards = Vec::new();
         for (i, (h, lean)) in [(2.6, 0.0), (1.7, 0.45), (1.3, -0.5), (1.0, 0.7)]
             .iter()
