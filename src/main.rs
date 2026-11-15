@@ -62,6 +62,7 @@ mod steering;
 mod terrain;
 mod tracks;
 mod trains;
+mod tunnel_view;
 mod upgrades;
 mod vehicle;
 mod weapon_sfx;
@@ -163,6 +164,8 @@ fn game_plugins(app: &mut App) {
             repair::RepairPlugin,
             residents::ResidentsPlugin,
         ))
+        // Облицовка окон в туннель: рядом с путями, но в группе путей нет места.
+        .add_plugins(tunnel_view::TunnelViewPlugin)
         .add_plugins((
             voice::VoicePlugin,
             hq::HqPlugin,

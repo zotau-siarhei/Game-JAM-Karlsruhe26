@@ -10,8 +10,10 @@
 //!
 //! На входах в туннель стоят каменные порталы с тёмным проёмом и коллайдером. Если выстрелами
 //! срыть гору над туннелем ниже уровня путей плюс 6 м, участок туннеля в 8 м вскрывается: полоса
-//! над путями опускается до их уровня с откосами, летят камни, встаёт облако пыли, звенья под
-//! ним — завал. Туннель — только под горой длиной не меньше 30 м, короткий гребень прорезан выемкой.
+//! над путями опускается до их уровня с откосами, от краёв полосы летят камни, встаёт облако пыли.
+//! Пути в окне целые: их рвут, как везде, взрыв и провал. Облицовку окна строит `tunnel_view`
+//! по [`TunnelOpened`]. Туннель — только под горой длиной не меньше 30 м, короткий гребень прорезан
+//! выемкой.
 
 use std::collections::{HashMap, HashSet};
 
@@ -23,7 +25,7 @@ use crate::combat::Team;
 use crate::craters;
 use crate::explosion::Explosion;
 use crate::debris::SpawnDebris;
-use crate::frame::GameSet;
+use crate::frame::{GameSet, RunMessages};
 use crate::obstacles::{Obstacle, Shape};
 use crate::railway::{EMBANKMENT_HEIGHT, Family, LineId, Lines, TRACK_BAND, TRACK_FLAT, embankment};
 use crate::settlements::Footprint;
@@ -47,7 +49,10 @@ const BREAK_POWER: f32 = 0.45;
 const BREAK_SAG: f32 = 0.5;
 
 /// Длина участка туннеля, который вскрывается целиком, м.
-const TUNNEL_SEGMENT: f32 = 8.0;
+pub const TUNNEL_SEGMENT: f32 = 8.0;
+
+/// Половина ширины колеи, м: для облицовки туннеля.
+pub const GAUGE: f32 = GAUGE_HALF * 2.0;
 
 /// Гора над туннелем ниже уровня путей плюс столько — свод вскрыт, м.
 const OPEN_DEPTH: f32 = 6.0;
@@ -85,6 +90,7 @@ impl Plugin for RailsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SpawnedLinks>()
             .init_resource::<TrackDamage>()
+            .add_run_message::<TunnelOpened>()
             .add_systems(Startup, create_rail_assets)
             .add_systems(
                 Update,
@@ -97,6 +103,13 @@ impl Plugin for RailsPlugin {
                 ),
             );
     }
+}
+
+/// Вскрыт участок туннеля номер `segment` длиной [`TUNNEL_SEGMENT`] на линии `line`.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct TunnelOpened {
+    pub line: LineId,
+    pub segment: i32,
 }
 
 /// Адрес звена: линия и номер звена вдоль неё.
@@ -115,6 +128,11 @@ impl TrackDamage {
     /// Проходит ли путь на параметре `s` в невскрытом туннеле.
     pub fn in_tunnel(&self, terrain: &Terrain, line: LineId, s: f32) -> bool {
         terrain.is_tunnel(line, s) && !self.opened.contains(&(line, (s / TUNNEL_SEGMENT).floor() as i32))
+    }
+
+    /// Все вскрытые участки туннелей: линия и номер участка.
+    pub fn opened(&self) -> impl Iterator<Item = LinkKey> + '_ {
+        self.opened.iter().copied()
     }
 
     /// Разрушено ли звено, на которое приходится параметр пути `s`.
@@ -474,7 +492,8 @@ fn spawn_portal(commands: &mut Commands, assets: &RailAssets, at: Vec2, inward: 
 }
 
 /// Вскрывает туннели, над которыми гора срыта ниже уровня путей плюс [`OPEN_DEPTH`]: опускает
-/// полосу над путями до их уровня с откосами, бросает камни, рвёт звенья и пересоздаёт участок.
+/// полосу над путями до их уровня с откосами, бросает камни от краёв полосы и пересоздаёт участок.
+/// Звенья в окне остаются целыми.
 ///
 /// Об изменении рельефа сообщает [`TerrainChanged`] через команды: эта система сама читает
 /// `TerrainChanged`, поэтому писать его напрямую не может. Сообщение приходит в конце набора,
@@ -483,17 +502,15 @@ fn spawn_portal(commands: &mut Commands, assets: &RailAssets, at: Vec2, inward: 
 fn open_tunnels(
     mut commands: Commands,
     mut changes: MessageReader<TerrainChanged>,
-    mut explosions: MessageReader<Explosion>,
     mut terrain: ResMut<Terrain>,
     mut damage: ResMut<TrackDamage>,
     mut spawned: ResMut<SpawnedLinks>,
     visible: Res<VisibleChunks>,
     assets: Res<RailAssets>,
     mut debris: MessageWriter<SpawnDebris>,
+    mut opened: MessageWriter<TunnelOpened>,
 ) {
     let areas: Vec<(Vec2, f32)> = changes.read().map(|c| (Vec2::new(c.center.x, c.center.z), c.radius)).collect();
-    let blasts: Vec<(Vec2, f32, Team)> =
-        explosions.read().map(|e| (Vec2::new(e.position.x, e.position.z), e.radius, e.source_team)).collect();
     let mut dirty: HashSet<IVec2> = HashSet::new();
     for (center, radius) in areas {
         for near in terrain.lines().near(center, radius + TRACK_BAND) {
@@ -511,6 +528,7 @@ fn open_tunnels(
                     continue;
                 }
                 damage.opened.insert((line, seg));
+                opened.write(TunnelOpened { line, segment: seg });
                 // Полоса над путями опускается до уровня путей с насыпью, дальше откос к
                 // нетронутому склону.
                 let s0 = seg as f32 * TUNNEL_SEGMENT;
@@ -547,24 +565,18 @@ fn open_tunnels(
                     center: Vec3::new(mid.x, level, mid.y),
                     radius: TUNNEL_SEGMENT * 0.5 + TRACK_BAND,
                 });
-                // Звенья вскрытого участка — завал. Виновник — ближайший взрыв этого кадра рядом.
-                let culprit = blasts
-                    .iter()
-                    .filter(|&&(c, r, _)| c.distance(mid) <= r * 1.6 + TUNNEL_SEGMENT)
-                    .min_by(|x, y| x.0.distance(mid).total_cmp(&y.0.distance(mid)))
-                    .map_or(Team::Neutral, |&(_, _, team)| team);
-                let li0 = (s0 / LINK_LENGTH).floor() as i32;
-                for i in li0..li0 + (TUNNEL_SEGMENT / LINK_LENGTH) as i32 + 1 {
-                    damage.break_link_by((line, i), culprit);
-                }
-                // Каменные обломки и пыль от обвала свода.
+                // Каменные обломки свода летят от краёв полосы наружу, на пути не ложатся; пыль — над окном.
                 let base = Vec3::new(mid.x, level + 1.0, mid.y);
+                let t = terrain.lines().tangent(line, s_mid);
+                let side = Vec2::new(-t.y, t.x);
                 for k in 0..10u32 {
-                    let a = k as f32 * 2.39996;
-                    let r = 1.0 + (k % 3) as f32;
+                    let out = if k % 2 == 0 { side } else { -side };
+                    let along = t * ((k / 2) as f32 - 2.0) * 1.6;
+                    let edge = mid + along + out * (TRACK_FLAT + 1.0);
+                    let speed = 2.0 + (k % 3) as f32;
                     debris.write(SpawnDebris {
-                        position: base + Vec3::new(a.cos() * r, (k % 4) as f32, a.sin() * r),
-                        velocity: Vec3::new(a.cos() * 3.0, 3.0 + (k % 5) as f32, a.sin() * 3.0),
+                        position: Vec3::new(edge.x, level + 2.0 + (k % 4) as f32, edge.y),
+                        velocity: Vec3::new(out.x * speed, 3.0 + (k % 5) as f32, out.y * speed),
                         size: Vec3::splat(0.5 + (k % 4) as f32 * 0.25),
                         color: Color::srgb(0.46, 0.44, 0.41),
                         burning: false,
@@ -590,7 +602,7 @@ fn open_tunnels(
 }
 
 /// Псевдослучайное число от 0 до 1 по звену и номеру: вид разрушения не меняется между загрузками.
-fn link_hash(key: LinkKey, salt: u32) -> f32 {
+pub(crate) fn link_hash(key: LinkKey, salt: u32) -> f32 {
     let mut h = (key.0.index as u32).wrapping_mul(0x9E37_79B9) ^ (key.1 as u32).wrapping_mul(0x85EB_CA6B) ^ salt.wrapping_mul(0xC2B2_AE35);
     h ^= h >> 15;
     h = h.wrapping_mul(0x2C1B_3C6D);
