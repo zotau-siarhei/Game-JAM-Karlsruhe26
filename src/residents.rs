@@ -18,7 +18,7 @@ use crate::mortar::FireShell;
 use crate::obstacles::Obstacle;
 use crate::rng::GameRng;
 use crate::rover::{Rover, RoverMotion};
-use crate::run::RunScoped;
+use crate::run::{RunScoped, WorldRebuilt};
 use crate::settlements::{HouseId, HouseStatus, Settlements};
 use crate::sound_list::Dice;
 use crate::terrain::Terrain;
@@ -74,6 +74,7 @@ impl Plugin for ResidentsPlugin {
             .add_systems(
                 Update,
                 (
+                    reset_danger.in_set(GameSet::Reset),
                     // Походка считается от высоты, которую ставит `walk`: только вместе с ним.
                     (
                         spawn_residents,
@@ -202,6 +203,13 @@ fn create_assets(
             ..default()
         }),
     });
+}
+
+/// Мир перестроен: дома-укрытия прошлого мира забываются.
+fn reset_danger(mut rebuilt: MessageReader<WorldRebuilt>, mut danger: ResMut<Danger>) {
+    if rebuilt.read().last().is_some() {
+        *danger = Danger::default();
+    }
 }
 
 /// Когда дом появляется в сцене, рядом с ним выходят его жители, кроме прячущихся.

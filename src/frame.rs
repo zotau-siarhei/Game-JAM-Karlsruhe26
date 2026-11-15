@@ -116,4 +116,21 @@ mod tests {
             panic!("кадр не собирается: {error:?}");
         }
     }
+
+    #[derive(Message)]
+    struct Shot;
+
+    #[test]
+    fn world_rebuild_forgets_unread_run_messages() {
+        let mut app = App::new();
+        app.add_message::<WorldRebuilt>().add_run_message::<Shot>();
+        app.world_mut().write_message(Shot);
+        app.update();
+        assert_eq!(app.world().resource::<Messages<Shot>>().len(), 1);
+
+        app.world_mut().write_message(Shot);
+        app.world_mut().write_message(WorldRebuilt { seed: 1 });
+        app.update();
+        assert!(app.world().resource::<Messages<Shot>>().is_empty());
+    }
 }
