@@ -320,7 +320,6 @@ fn open_tunnels(
     mut spawned: ResMut<SpawnedLinks>,
     visible: Res<VisibleChunks>,
     mut debris: MessageWriter<SpawnDebris>,
-    mut changed: MessageWriter<TerrainChanged>,
 ) {
     let areas: Vec<(Vec2, f32)> = changes.read().map(|c| (Vec2::new(c.center.x, c.center.z), c.radius)).collect();
     let mut dirty: HashSet<IVec2> = HashSet::new();
@@ -389,10 +388,6 @@ fn open_tunnels(
                         burning: false,
                     });
                 }
-                changed.write(TerrainChanged {
-                    center: base,
-                    radius: TUNNEL_SEGMENT + TRACK_BAND,
-                });
             }
         }
     }
