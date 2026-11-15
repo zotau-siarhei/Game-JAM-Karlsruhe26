@@ -7,6 +7,10 @@
 //! Разрушенные звенья хранятся в [`TrackDamage`] до конца забега. Разрушенное звено рисуется
 //! изломанными кусками рельсов, свисающими к текущей поверхности, и сбитыми шпалами; вид задаётся
 //! хешем индекса звена, поэтому после отъезда и возвращения он тот же.
+//!
+//! На входах в туннель стоят каменные порталы с тёмным проёмом и коллайдером. Если выстрелами
+//! срыть гору над туннелем ниже уровня путей плюс 6 м, участок туннеля в 8 м вскрывается: полоса
+//! над путями опускается до их уровня с откосами, летят камни, звенья под ним — завал.
 
 use std::collections::{HashMap, HashSet};
 
@@ -14,10 +18,13 @@ use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 
 use crate::explosion::Explosion;
-use crate::railway::{Family, LineId, Lines, TUNNEL_DEPTH};
+use crate::debris::SpawnDebris;
+use crate::obstacles::{Obstacle, Shape};
+use crate::railway::{Family, LineId, Lines, TRACK_BAND, TRACK_FLAT, TUNNEL_DEPTH};
+use crate::settlements::Footprint;
 use crate::run::{RunScoped, RunStarted};
 use crate::subsidence::TerrainChanged;
-use crate::terrain::{CHUNK_SIZE, ChunkMesh, Terrain, VisibleChunks, chunk_coord_at, chunk_origin};
+use crate::terrain::{CHUNK_SIZE, ChunkDirty, ChunkMesh, Terrain, VisibleChunks, chunk_coord_at, chunk_origin};
 
 /// Длина звена, м.
 pub const LINK_LENGTH: f32 = 4.0;
@@ -34,6 +41,17 @@ const BREAK_POWER: f32 = 0.45;
 /// Рельеф под концом звена ниже уровня путей на столько — звено разорвано, м.
 const BREAK_SAG: f32 = 0.5;
 
+/// Длина участка туннеля, который вскрывается целиком, м.
+const TUNNEL_SEGMENT: f32 = 8.0;
+
+/// Гора над туннелем ниже уровня путей плюс столько — свод вскрыт, м.
+const OPEN_DEPTH: f32 = 6.0;
+
+/// Портал: полуширина, высота и толщина, м.
+const PORTAL_HALF_WIDTH: f32 = 3.4;
+const PORTAL_HEIGHT: f32 = 6.5;
+const PORTAL_DEPTH: f32 = 2.0;
+
 /// Подключает звенья путей.
 pub struct RailsPlugin;
 
@@ -42,7 +60,7 @@ impl Plugin for RailsPlugin {
         app.init_resource::<SpawnedLinks>()
             .init_resource::<TrackDamage>()
             .add_systems(Startup, create_rail_assets)
-            .add_systems(Update, (forget_links, stream_links, break_links).chain());
+            .add_systems(Update, (forget_links, open_tunnels, stream_links, break_links).chain());
     }
 }
 
@@ -53,9 +71,18 @@ pub type LinkKey = (LineId, i32);
 #[derive(Resource, Default)]
 pub struct TrackDamage {
     broken: HashSet<LinkKey>,
+    /// Вскрытые участки туннелей: линия и номер участка длиной [`TUNNEL_SEGMENT`].
+    opened: HashSet<LinkKey>,
 }
 
 impl TrackDamage {
+    /// Проходит ли путь на параметре `s` в невскрытом туннеле.
+    pub fn in_tunnel(&self, terrain: &Terrain, line: LineId, s: f32) -> bool {
+        let p = terrain.lines().point(line, s);
+        terrain.raw_height(p.x, p.y) > terrain.track_level(line, s) + TUNNEL_DEPTH
+            && !self.opened.contains(&(line, (s / TUNNEL_SEGMENT).floor() as i32))
+    }
+
     /// Разрушено ли звено, на которое приходится параметр пути `s`.
     // Читают поезда (задача 4.1).
     #[allow(dead_code)]
@@ -77,9 +104,14 @@ struct SpawnedLink {
     entity: Entity,
 }
 
-/// Звенья по участкам рельефа, которые сейчас в сцене.
+/// Звенья и порталы по участкам рельефа, которые сейчас в сцене.
 #[derive(Resource, Default)]
-struct SpawnedLinks(HashMap<IVec2, Vec<SpawnedLink>>);
+struct SpawnedLinks {
+    links: HashMap<IVec2, Vec<SpawnedLink>>,
+    portals: HashMap<IVec2, Vec<Entity>>,
+    /// Участки, звенья которых надо создать заново: туннель над ними вскрыт.
+    refresh: HashSet<IVec2>,
+}
 
 #[derive(Resource)]
 struct RailAssets {
@@ -87,6 +119,8 @@ struct RailAssets {
     rail: Handle<StandardMaterial>,
     sleeper: Handle<StandardMaterial>,
     ballast: Handle<StandardMaterial>,
+    stone: Handle<StandardMaterial>,
+    dark: Handle<StandardMaterial>,
 }
 
 fn create_rail_assets(
@@ -108,6 +142,16 @@ fn create_rail_assets(
             perceptual_roughness: 1.0,
             ..default()
         }),
+        stone: materials.add(StandardMaterial {
+            base_color: Color::srgb(0.5, 0.48, 0.45),
+            perceptual_roughness: 0.95,
+            ..default()
+        }),
+        dark: materials.add(StandardMaterial {
+            base_color: Color::srgb(0.02, 0.02, 0.025),
+            unlit: true,
+            ..default()
+        }),
     });
 }
 
@@ -118,8 +162,8 @@ fn forget_links(
 ) {
     if started.read().last().is_some() {
         // Сущности прошлого забега удалены через RunScoped.
-        spawned.0.clear();
-        damage.broken.clear();
+        *spawned = SpawnedLinks::default();
+        *damage = TrackDamage::default();
     }
 }
 
@@ -159,10 +203,20 @@ fn stream_links(
     chunks: Query<&ChunkMesh>,
     assets: Res<RailAssets>,
 ) {
-    if !visible.is_changed() {
+    if !visible.is_changed() && spawned.refresh.is_empty() {
         return;
     }
-    spawned.0.retain(|&coord, links| {
+    let spawned = &mut *spawned;
+    // Участки со вскрытым туннелем пересоздаются целиком.
+    for coord in std::mem::take(&mut spawned.refresh) {
+        for link in spawned.links.remove(&coord).unwrap_or_default() {
+            commands.entity(link.entity).try_despawn();
+        }
+        for portal in spawned.portals.remove(&coord).unwrap_or_default() {
+            commands.entity(portal).try_despawn();
+        }
+    }
+    spawned.links.retain(|&coord, links| {
         let keep = visible.entity(coord).is_some();
         if !keep {
             for link in links.iter() {
@@ -171,24 +225,184 @@ fn stream_links(
         }
         keep
     });
+    spawned.portals.retain(|&coord, portals| {
+        let keep = visible.entity(coord).is_some();
+        if !keep {
+            for &portal in portals.iter() {
+                commands.entity(portal).try_despawn();
+            }
+        }
+        keep
+    });
     for chunk in &chunks {
         let coord = chunk.0;
-        if spawned.0.contains_key(&coord) || visible.entity(coord).is_none() {
+        if spawned.links.contains_key(&coord) || visible.entity(coord).is_none() {
             continue;
         }
         let mut links = Vec::new();
+        let mut portals = Vec::new();
         for (key, a, b) in links_in_chunk(terrain.lines(), coord) {
-            let mid = (a + b) * 0.5;
+            let (line, i) = key;
+            let mid_s = |k: i32| (k as f32 + 0.5) * LINK_LENGTH;
             // В туннеле путь скрыт горой.
-            let near = terrain.lines().nearest(mid);
-            if terrain.raw_height(mid.x, mid.y) > terrain.track_level(near.line, near.s) + TUNNEL_DEPTH {
+            if damage.in_tunnel(&terrain, line, mid_s(i)) {
                 continue;
+            }
+            // Соседнее звено в туннеле — здесь вход: портал на конце звена.
+            for (k, end, toward) in [(i + 1, b, b - a), (i - 1, a, a - b)] {
+                if damage.in_tunnel(&terrain, line, mid_s(k)) {
+                    let level = terrain.track_level(line, Lines::param(line, end));
+                    portals.push(spawn_portal(&mut commands, &assets, end, toward, level));
+                }
             }
             let broken = damage.broken.contains(&key);
             let entity = spawn_link(&mut commands, &assets, &terrain, key, a, b, broken);
             links.push(SpawnedLink { key, a, b, entity });
         }
-        spawned.0.insert(coord, links);
+        spawned.links.insert(coord, links);
+        spawned.portals.insert(coord, portals);
+    }
+}
+
+/// Портал туннеля: каменная арка с тёмным проёмом, утопленная в склон, и коллайдер.
+/// `at` — вход на оси пути, `inward` — направление в туннель.
+fn spawn_portal(commands: &mut Commands, assets: &RailAssets, at: Vec2, inward: Vec2, level: f32) -> Entity {
+    let dir = inward.normalize_or(Vec2::X);
+    let yaw = dir.x.atan2(dir.y);
+    // Портал стоит чуть внутри склона, чтобы не висел в воздухе.
+    let center = at + dir * (PORTAL_DEPTH * 0.5);
+    let w = PORTAL_HALF_WIDTH;
+    let pillar = 1.1;
+    let parts = [
+        // Пилоны.
+        (assets.stone.clone(), Vec3::new(-w + pillar * 0.5, PORTAL_HEIGHT * 0.5, 0.0), Vec3::new(pillar, PORTAL_HEIGHT + 2.0, PORTAL_DEPTH)),
+        (assets.stone.clone(), Vec3::new(w - pillar * 0.5, PORTAL_HEIGHT * 0.5, 0.0), Vec3::new(pillar, PORTAL_HEIGHT + 2.0, PORTAL_DEPTH)),
+        // Перемычка и карниз.
+        (assets.stone.clone(), Vec3::new(0.0, PORTAL_HEIGHT - 0.6, 0.0), Vec3::new(w * 2.0, 1.2, PORTAL_DEPTH)),
+        (assets.stone.clone(), Vec3::new(0.0, PORTAL_HEIGHT + 0.15, -0.2), Vec3::new(w * 2.0 + 0.6, 0.4, PORTAL_DEPTH + 0.4)),
+        // Тёмный проём.
+        (assets.dark.clone(), Vec3::new(0.0, (PORTAL_HEIGHT - 1.2) * 0.5, 0.3), Vec3::new(w * 2.0 - pillar * 2.0, PORTAL_HEIGHT - 1.2, PORTAL_DEPTH)),
+    ];
+    commands
+        .spawn((
+            RunScoped,
+            Transform::from_xyz(center.x, level - 0.5, center.y).with_rotation(Quat::from_rotation_y(yaw)),
+            Visibility::default(),
+            Obstacle {
+                shape: Shape::Rect(Footprint {
+                    center,
+                    yaw,
+                    half: Vec2::new(w, PORTAL_DEPTH * 0.5),
+                }),
+                top: level + PORTAL_HEIGHT,
+            },
+        ))
+        .with_children(|portal| {
+            for (material, position, size) in parts {
+                portal.spawn((
+                    Mesh3d(assets.cube.clone()),
+                    MeshMaterial3d(material),
+                    Transform::from_translation(position).with_scale(size),
+                ));
+            }
+        })
+        .id()
+}
+
+/// Вскрывает туннели, над которыми гора срыта ниже уровня путей плюс [`OPEN_DEPTH`]: опускает
+/// полосу над путями до их уровня с откосами, бросает камни, рвёт звенья и пересоздаёт участок.
+#[allow(clippy::too_many_arguments)]
+fn open_tunnels(
+    mut commands: Commands,
+    mut changes: MessageReader<TerrainChanged>,
+    mut terrain: ResMut<Terrain>,
+    mut damage: ResMut<TrackDamage>,
+    mut spawned: ResMut<SpawnedLinks>,
+    visible: Res<VisibleChunks>,
+    mut debris: MessageWriter<SpawnDebris>,
+    mut changed: MessageWriter<TerrainChanged>,
+) {
+    let areas: Vec<(Vec2, f32)> = changes.read().map(|c| (Vec2::new(c.center.x, c.center.z), c.radius)).collect();
+    let mut dirty: HashSet<IVec2> = HashSet::new();
+    for (center, radius) in areas {
+        for near in terrain.lines().near(center, radius + TRACK_BAND) {
+            let line = near.line;
+            let first = ((near.s - radius) / TUNNEL_SEGMENT).floor() as i32;
+            let last = ((near.s + radius) / TUNNEL_SEGMENT).ceil() as i32;
+            for seg in first..=last {
+                let s_mid = (seg as f32 + 0.5) * TUNNEL_SEGMENT;
+                if !damage.in_tunnel(&terrain, line, s_mid) {
+                    continue;
+                }
+                let axis = terrain.lines().point(line, s_mid);
+                let level = terrain.track_level(line, s_mid);
+                if terrain.height_at(axis.x, axis.y) >= level + OPEN_DEPTH {
+                    continue;
+                }
+                damage.opened.insert((line, seg));
+                // Полоса над путями опускается до уровня путей, дальше откос к нетронутому склону.
+                let s0 = seg as f32 * TUNNEL_SEGMENT;
+                let samples = 8;
+                for k in 0..=samples * 2 {
+                    let s = s0 + k as f32 * TUNNEL_SEGMENT / (samples * 2) as f32;
+                    let p = terrain.lines().point(line, s);
+                    let t = terrain.lines().tangent(line, s);
+                    let side = Vec2::new(-t.y, t.x);
+                    let level = terrain.track_level(line, s);
+                    let reach = TRACK_BAND;
+                    let mut d = -reach;
+                    while d <= reach {
+                        let q = p + side * d;
+                        let (vx, vz) = (q.x.round() as i32, q.y.round() as i32);
+                        let dist = d.abs();
+                        let edge = ((dist - TRACK_FLAT) / (reach - TRACK_FLAT)).clamp(0.0, 1.0);
+                        let limit = level + edge * edge * (reach - TRACK_FLAT) * 1.4;
+                        for c in terrain.edit_vertex(vx, vz, |h, color| {
+                            if *h > limit {
+                                *h = limit;
+                                color[0] = 0.32;
+                                color[1] = 0.29;
+                                color[2] = 0.26;
+                            }
+                        }) {
+                            dirty.insert(c);
+                        }
+                        d += 0.7;
+                    }
+                }
+                // Звенья вскрытого участка — завал.
+                let li0 = (s0 / LINK_LENGTH).floor() as i32;
+                for i in li0..li0 + (TUNNEL_SEGMENT / LINK_LENGTH) as i32 + 1 {
+                    damage.break_link((line, i));
+                }
+                // Каменные обломки и пыль от обвала свода.
+                let mid = terrain.lines().point(line, s_mid);
+                let base = Vec3::new(mid.x, level + 1.0, mid.y);
+                for k in 0..10u32 {
+                    let a = k as f32 * 2.39996;
+                    let r = 1.0 + (k % 3) as f32;
+                    debris.write(SpawnDebris {
+                        position: base + Vec3::new(a.cos() * r, (k % 4) as f32, a.sin() * r),
+                        velocity: Vec3::new(a.cos() * 3.0, 3.0 + (k % 5) as f32, a.sin() * 3.0),
+                        size: Vec3::splat(0.5 + (k % 4) as f32 * 0.25),
+                        color: Color::srgb(0.46, 0.44, 0.41),
+                        burning: false,
+                    });
+                }
+                changed.write(TerrainChanged {
+                    center: base,
+                    radius: TUNNEL_SEGMENT + TRACK_BAND,
+                });
+            }
+        }
+    }
+    for coord in dirty {
+        for o in [IVec2::ZERO, IVec2::X, IVec2::NEG_X, IVec2::Y, IVec2::NEG_Y] {
+            if let Some(e) = visible.entity(coord + o) {
+                commands.entity(e).try_insert(ChunkDirty);
+            }
+        }
+        spawned.refresh.insert(coord);
     }
 }
 
@@ -333,7 +547,7 @@ fn break_links(
             (a + ab * t).distance(*c) <= *r
         })
     };
-    for links in spawned.0.values_mut() {
+    for links in spawned.links.values_mut() {
         for link in links.iter_mut() {
             let blasted = near(&blasts, link.a, link.b);
             let moved = near(&changed, link.a, link.b);
