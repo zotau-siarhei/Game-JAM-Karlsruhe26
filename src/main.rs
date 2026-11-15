@@ -14,6 +14,7 @@ mod camera;
 mod capsule;
 mod collapse;
 mod combat;
+mod comic;
 mod debris;
 mod craters;
 mod enemy;
@@ -124,6 +125,7 @@ fn main() {
             sound::SoundPlugin,
             music::MusicPlugin,
             audio_events::AudioEventsPlugin,
+            comic::ComicPlugin,
         ))
         .add_systems(Startup, spawn_light)
         .run();
