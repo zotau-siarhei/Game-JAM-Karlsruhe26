@@ -33,7 +33,6 @@ Negative prompt (если поле есть): `realistic, gritty, dark, rusty, b
 |---|---|---|
 | `rover_body` | 15000 | `cute retro moon rover inspired by a 1970s lunar rover: round tub-shaped body like a bathtub with a hinged solar-panel lid on top, turquoise and white paint, a short camera mast with two big friendly round glass eyes, two springy antennas, a small rotating turret ring on top (empty, weapon attached separately), body only, no wheels or tracks` + суффикс |
 | `rover_track` | 1500 (×2) | `one chunky cartoon tank track pod for a small rover: rounded rubber tread loop around four visible road wheels, turquoise side cover with white rim, side view length 2x height` + суффикс |
-| `resident` | 800 | `small funny alien villager: capsule-shaped body, big round head with huge cute eyes, two short arms, one antenna with a little ball on top, pastel color, optional tiny scarf` + суффикс |
 | `enemy_rammer` | 5000 | `small aggressive alien buggy with a heavy front ram bumper and one stubby gun, purple body with yellow details, big chunky wheels, angry headlights like eyes` + суффикс |
 | `tree_1` | 1500 | `alien tree: short thick trunk, crown made of 2-3 round blobs in a strange color (violet, teal or orange), cartoon` + суффикс |
 | `boulder` | 1500 | `round lumpy cartoon boulder, grey-violet stone, a few flat facets` + суффикс |
@@ -83,6 +82,20 @@ Negative prompt (если поле есть): `realistic, gritty, dark, rusty, b
 | `weapon_mg` / `weapon_mortar` / `weapon_rockets` / `weapon_laser` | ~1500 | `Weapon attachment for the turret of a cute cartoon moon rover: twin machine gun` / `short fat mortar tube` / `rocket launcher box` / `sci-fi laser emitter` + `turquoise and white housing ... flat round mounting plate` | ствол на −X, у ракет на +X; мортира смотрит вверх |
 
 `service_car` не делали: машины Службы защиты в коде пока нет.
+
+### Жители-люди (2026-11-15)
+Решение пользователя: жители — как настоящие люди (`residents`, раздел 7). Мультяшный `resident` удалён.
+Image: Pose = A-Pose, 3:4, промпт `realistic adult man / woman / elderly man / young woman, casual everyday clothes in earthy colors,
+full body, A-pose, plain light grey background`. Image to 3D: Smart Topology 6000, Pose A-Pose. Animate → Rig → Humanoid,
+рост 1,7 м, метки суставов ставятся сами (метку «Groin» не трогать: это тазобедренный сустав). Анимации из библиотеки
+(бесплатно): Idle 1, Walking, Running, Talk with Hands Open. Скачивание: glb, Mixamo, All Added, Single file.
+
+| id | треуг. | клипы | куда смотрит |
+|---|---|---|---|
+| `resident_man`, `resident_woman`, `resident_elder`, `resident_young` | ~6000 | `Idle_02`, `Walking`, `Running`, `Talk_with_Hands_Open` | перёд +Z, `rotation_y` = π; ступни на y = 0, рост в метрах |
+
+Скины: `scripts/recolor_people.py` (Blender) перекрашивает текстуру по классам цветов (кожа, волосы, верх, низ),
+верх и низ делят UV-острова меша по большинству; результат — `assets/models/skins/<id>_<1..7>.png`, 512 px.
 
 ## Первая планета (по гиту)
 В гите нет отдельной «планеты с названием». Первая (и пока единственная) планета описана так:

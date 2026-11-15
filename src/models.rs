@@ -209,6 +209,14 @@ impl Models<'_> {
             .is_some_and(|model| !matches!(model.state, ModelState::Missing | ModelState::Failed))
     }
 
+    /// Файл glTF модели `id`, если она уже запрошена: из него берутся анимации.
+    pub fn gltf(&self, id: &str) -> Option<Handle<Gltf>> {
+        match &self.bank.models.get(id)?.state {
+            ModelState::Loading(handles) | ModelState::Ready(handles) => Some(handles.gltf.clone()),
+            _ => None,
+        }
+    }
+
     /// Вешает на объект облик `id`: модель из списка или запасной облик из примитивов.
     ///
     /// `ground` — низ объекта в системе родителя: от него отсчитываются смещение, поворот

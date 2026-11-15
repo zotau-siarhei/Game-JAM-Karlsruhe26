@@ -41,6 +41,7 @@ mod rails;
 mod railway;
 mod records;
 mod repair;
+mod resident_anim;
 mod residents;
 mod rng;
 mod rockets;
@@ -100,7 +101,7 @@ fn main() {
 /// Все плагины игры. Отдельной функцией, чтобы тест собирал тот же кадр, что и игра.
 fn game_plugins(app: &mut App) {
     // Порядок кадра и игровой генератор случайных чисел.
-    app.add_plugins((frame::FramePlugin, rng::RngPlugin))
+    app.add_plugins((frame::FramePlugin, rng::RngPlugin, resident_anim::ResidentAnimPlugin))
         // Посёлки, объекты поверхности и разрушение.
         .add_plugins((
             settlements::SettlementsPlugin,

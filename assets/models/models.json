@@ -207,6 +207,38 @@
       "rotation_y": -1.5708,
       "offset_y": 0.163,
       "budget": 1500
+    },
+    {
+      "id": "resident_man",
+      "file": "resident_man.glb",
+      "scale": 1.0,
+      "rotation_y": 3.14159,
+      "offset_y": 0.0,
+      "budget": 7000
+    },
+    {
+      "id": "resident_woman",
+      "file": "resident_woman.glb",
+      "scale": 1.0,
+      "rotation_y": 3.14159,
+      "offset_y": 0.0,
+      "budget": 7000
+    },
+    {
+      "id": "resident_elder",
+      "file": "resident_elder.glb",
+      "scale": 1.0,
+      "rotation_y": 3.14159,
+      "offset_y": 0.0,
+      "budget": 7000
+    },
+    {
+      "id": "resident_young",
+      "file": "resident_young.glb",
+      "scale": 1.0,
+      "rotation_y": 3.14159,
+      "offset_y": 0.0,
+      "budget": 7000
     }
   ]
 }

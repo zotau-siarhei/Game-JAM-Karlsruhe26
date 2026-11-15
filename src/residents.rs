@@ -15,6 +15,7 @@ use crate::enemy::Enemy;
 use crate::explosion::Explosion;
 use crate::frame::{GameSet, RunMessages};
 use crate::models::Models;
+use crate::resident_anim::{Animator, ResidentModel};
 use crate::mortar::FireShell;
 use crate::obstacles::{Obstacle, ObstacleGrid};
 use crate::rng::GameRng;
@@ -80,10 +81,12 @@ const HAIR_COLORS: [Color; 4] = [
     Color::srgb(0.66, 0.66, 0.64),
 ];
 
-/// Идентификатор модели жителя в списке моделей. Записи в списке нет: житель собран из
-/// примитивов, у каждого свои цвета и аксессуар, руки машут при ходьбе и панике. Модель
-/// подключается записью с этим идентификатором, но у неё нет рук-[`Arm`] и вариантов.
-const RESIDENT_MODEL: &str = "resident";
+/// Модели людей в списке моделей: житель получает одну из них. Пока модель грузится или без
+/// файла житель — фигура из примитивов со своими цветами и аксессуаром, ноги и руки шагают.
+/// Скелетную анимацию модели ведёт `resident_anim`.
+const RESIDENT_MODELS: [&str; 4] = ["resident_man", "resident_woman", "resident_elder", "resident_young"];
+/// Перекрашенных скинов у каждой модели: `assets/models/skins/<модель>_<1..=SKINS>.png`.
+const SKINS: usize = 7;
 
 /// Плагин жителей.
 pub struct ResidentsPlugin;
@@ -151,12 +154,24 @@ pub struct Resident {
     stuck: f32,
     phase: f32,
     velocity: Vec2,
+    /// Личный темп: множитель скорости шага и бега. Кто-то гуляет, кто-то спешит, пожилые медленнее.
+    pace: f32,
 }
 
 impl Resident {
     /// Житель в панике: такого подбирает машина Службы.
     pub fn is_panicking(&self) -> bool {
         matches!(self.mood, Mood::Panic(_))
+    }
+
+    /// Житель болтает с соседом: говорит с жестами.
+    pub fn is_chatting(&self) -> bool {
+        matches!(self.mood, Mood::Chat(_))
+    }
+
+    /// Житель бежит: в панике или уворачивается от машины.
+    pub fn is_running(&self) -> bool {
+        matches!(self.mood, Mood::Panic(_) | Mood::Dodge(_))
     }
 
     /// Дом жителя.
@@ -327,6 +342,10 @@ fn spawn_resident(
     let skin = assets.skin[dice.below(assets.skin.len())].clone();
     let hair = assets.hair[dice.below(assets.hair.len())].clone();
     let accessory = dice.below(3);
+    let model = RESIDENT_MODELS[dice.below(RESIDENT_MODELS.len())];
+    // Скин — перекраска одежды, волос и тона кожи модели: 0 — как в файле.
+    let look = dice.below(SKINS + 1) as u8;
+    let pace = if model == "resident_elder" { dice.range(0.6, 0.9) } else { dice.range(0.75, 1.25) };
     let y = terrain.height_at(p.x, p.y);
     commands
         .spawn((
@@ -340,6 +359,7 @@ fn spawn_resident(
                 stuck: 0.0,
                 phase: dice.range(0.0, 10.0),
                 velocity: Vec2::ZERO,
+                pace,
             },
             RunScoped,
             Health::new(1.0),
@@ -347,10 +367,11 @@ fn spawn_resident(
             Collider { radius: 0.35 },
             Transform::from_xyz(p.x, y, p.y),
             Visibility::default(),
+            ResidentModel(model, look),
         ))
         .with_children(|r| {
-            // Модель из списка или человечек из примитивов; значок испуга общий для обоих.
-            models.spawn_visual(r, RESIDENT_MODEL, Transform::IDENTITY, |r| {
+            // Модель человека или фигура из примитивов; значок испуга общий для обоих.
+            models.spawn_visual(r, model, Transform::IDENTITY, |r| {
                 r.spawn((Mesh3d(assets.body.clone()), MeshMaterial3d(clothes.clone()), NotShadowCaster, Transform::from_xyz(0.0, 0.45 + LIFT, 0.0)));
                 r.spawn((Mesh3d(assets.head.clone()), MeshMaterial3d(skin.clone()), NotShadowCaster, Transform::from_xyz(0.0, 0.95 + LIFT, 0.0)));
                 // Волосы: шапочка на макушке и затылке, лицо открыто.
@@ -554,9 +575,9 @@ fn walk(
         let p = Vec2::new(transform.translation.x, transform.translation.z);
         let (speed, facing_target) = match resident.mood {
             Mood::Wander if resident.pause > 0.0 => (0.0, false),
-            Mood::Wander => (WALK_SPEED, true),
+            Mood::Wander => (WALK_SPEED * resident.pace, true),
             Mood::Chat(_) => (0.0, true),
-            Mood::Panic(_) => (RUN_SPEED, true),
+            Mood::Panic(_) => (RUN_SPEED * resident.pace, true),
             Mood::Dodge(_) => (0.0, false),
         };
         let to = resident.target - p;
@@ -657,13 +678,13 @@ fn dodge_vehicles(
 /// Покачивание при ходьбе, руки маятником; в панике руки вверх с тряской и подпрыгивание.
 fn animate(
     time: Res<Time>,
-    mut residents: Query<(&mut Resident, &Children, &mut Transform)>,
+    mut residents: Query<(&mut Resident, &Children, &mut Transform, Has<Animator>)>,
     mut arms: Query<(&Arm, &mut Transform), (Without<Resident>, Without<Leg>)>,
     mut legs: Query<(&Leg, &mut Transform), (Without<Resident>, Without<Arm>)>,
     mut alerts: Query<&mut Visibility, With<Alert>>,
 ) {
     let dt = time.delta_secs();
-    for (mut resident, children, mut transform) in &mut residents {
+    for (mut resident, children, mut transform, animated) in &mut residents {
         let (rate, panic) = match resident.mood {
             Mood::Panic(_) => (18.0, true),
             Mood::Wander if resident.pause <= 0.0 => (9.0, false),
@@ -684,7 +705,10 @@ fn animate(
         };
         // Выше всего тело, когда ноги проходят под ним.
         let hop = if panic { phase.cos().abs() * 0.18 } else { phase.cos().abs() * 0.05 * step / STEP_SWING.0 };
-        transform.translation.y += hop;
+        // У модели со скелетом шаг и подскок уже в анимации.
+        if !animated {
+            transform.translation.y += hop;
+        }
         for child in children.iter() {
             if let Ok((arm, mut t)) = arms.get_mut(child) {
                 let swing = if panic {
