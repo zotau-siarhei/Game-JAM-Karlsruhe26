@@ -108,7 +108,7 @@ fn spawn_bullets(
         };
         let material = match shot.team {
             Team::Player => assets.player.clone(),
-            Team::Enemy => assets.enemy.clone(),
+            Team::Enemy | Team::Neutral => assets.enemy.clone(),
         };
         commands.spawn((
             RunScoped,
@@ -219,7 +219,7 @@ fn move_bullets(
         if let (true, Some(assets)) = (into_ground, assets.as_ref()) {
             let material = match bullet.team {
                 Team::Player => assets.player.clone(),
-                Team::Enemy => assets.enemy.clone(),
+                Team::Enemy | Team::Neutral => assets.enemy.clone(),
             };
             commands.spawn((
                 RunScoped,

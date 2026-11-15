@@ -33,6 +33,7 @@ mod rails;
 mod railway;
 mod records;
 mod repair;
+mod residents;
 mod rockets;
 mod rover;
 mod rover_look;
@@ -111,6 +112,7 @@ fn main() {
             weapons::WeaponsPlugin,
             run::RunPlugin,
             repair::RepairPlugin,
+            residents::ResidentsPlugin,
         ))
         .add_plugins((
             voice::VoicePlugin,

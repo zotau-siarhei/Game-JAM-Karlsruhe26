@@ -134,6 +134,10 @@ pub struct HouseState {
     pub status: HouseStatus,
     /// Сторона, где враг выбил дверь и выехал: 0 — +Z, 1 — −Z, 2 — +X, 3 — −X в осях дома.
     pub broken_door: Option<u8>,
+    /// Сколько живых жителей приписано к дому.
+    pub residents: u8,
+    /// Сколько жителей сейчас прячется внутри.
+    pub hiding: u8,
 }
 
 impl HouseState {
@@ -369,6 +373,8 @@ fn place_houses(
             health: kind.max_health(),
             status: HouseStatus::Intact,
             broken_door: None,
+            residents: 0,
+            hiding: 0,
         };
         let footprint = house.footprint();
         if near_start && footprint.distance(Vec2::ZERO) < START_CLEARANCE {
@@ -390,7 +396,23 @@ fn place_houses(
         }
         houses.push(house);
     }
+    assign_residents(&mut houses);
     RegionState { houses }
+}
+
+/// Раздаёт посёлку 8–12 жителей по домам по кругу. Число — хеш от места первого дома, без общего
+/// генератора, чтобы не сдвинуть расстановку домов.
+fn assign_residents(houses: &mut [HouseState]) {
+    if houses.is_empty() {
+        return;
+    }
+    let first = houses[0].position;
+    let h = first.x.to_bits().wrapping_mul(0x9E37_79B9) ^ first.y.to_bits().wrapping_mul(0x85EB_CA6B);
+    let total = 8 + (h >> 7) % 5;
+    for i in 0..total as usize {
+        let n = houses.len();
+        houses[i % n].residents += 1;
+    }
 }
 
 /// Уклон под прямоугольником не круче [`MAX_SLOPE`]: и в каждой точке, и между углами.

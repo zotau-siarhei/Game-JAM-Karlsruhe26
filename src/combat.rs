@@ -98,9 +98,9 @@ impl Health {
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Team {
     Player,
-    // Враги появятся в следующих задачах.
-    #[allow(dead_code)]
     Enemy,
+    /// Ничьи: жители. Их ранят все, своего ослабленного урона у них нет.
+    Neutral,
 }
 
 /// Круглый коллайдер для попаданий и тарана.
