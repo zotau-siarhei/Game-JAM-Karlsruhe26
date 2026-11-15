@@ -6,12 +6,13 @@
 //! в кольцевом буфере [`Tracks`] и рисуются одним мешем-лентой поверх рельефа: углы ленты стоят
 //! на тех же треугольниках, что и меш участка, и подняты на [`LIFT`]. Отрезки бледнеют за
 //! последние [`FADE`] секунд из [`LIFETIME`], пропадают там, где рельеф изменился
-//! (`TerrainChanged`), и не ложатся на лаву, рельсы и пол вскрытого туннеля.
+//! (`TerrainChanged`), и не ложатся на лаву, рельсы, пол вскрытого туннеля и воду.
 //!
 //! «Колосс» шагает: через каждые [`STRIDE`] метров одна из четырёх ступней вдавливает рельеф
 //! на [`FOOT_DEPTH`] и оставляет тёмный отпечаток до конца забега.
 //!
-//! Луж пока нет (`puddles` не сделан), поэтому мокрого следа и пропуска следов в воде нет.
+//! Мокрый след: опора, вышедшая из воды (`Puddles::at`), ещё [`WET_LENGTH`] метров кладёт
+//! тёмные и плотные отрезки, к концу обычные. В воде пыли нет.
 
 use std::collections::VecDeque;
 
@@ -27,6 +28,7 @@ use bevy_hanabi::prelude::*;
 use crate::boss::Boss;
 use crate::frame::GameSet;
 use crate::lava::{self, LavaPools};
+use crate::puddles::Puddles;
 use crate::quality::Quality;
 use crate::railway::TRACK_FLAT;
 use crate::rover::Rover;
@@ -70,6 +72,13 @@ const FEET_ALPHA: f32 = 0.7;
 
 /// Цвет следа в линейном RGB: тёмный влажный грунт.
 const TRACK_COLOR: [f32; 3] = [0.07, 0.05, 0.03];
+
+/// Сколько метров за опорой тянется мокрый след после воды, м.
+const WET_LENGTH: f32 = 6.0;
+
+/// Мокрый след: насколько темнее цвет и какая непрозрачность у самого мокрого отрезка.
+const WET_DARKEN: f32 = 0.6;
+const WET_ALPHA: f32 = 0.85;
 
 /// Длина одного повтора рисунка гусеницы вдоль следа, м: два грунтозацепа.
 const TREAD_REPEAT: f32 = 0.85;
@@ -160,6 +169,8 @@ struct TrackTrail {
     stride: f32,
     /// Какая ступня следующая.
     foot: usize,
+    /// Сколько метров мокрого следа ещё осталось у левой и правой опоры.
+    wet: [f32; 2],
 }
 
 /// Точка касания опоры: края полосы на рельефе.
@@ -182,6 +193,8 @@ struct Segment {
     kind: TrackKind,
     /// Время появления по часам игры, с.
     born: f32,
+    /// Насколько отрезок мокрый: 0 — сухой, 1 — только из воды.
+    wet: f32,
 }
 
 /// Отпечаток ступни.
@@ -401,7 +414,7 @@ fn attach_makers(
 
 /// Высота поверхности меша рельефа в точке: на том же треугольнике клетки, что у меша
 /// участка (`terrain::mesh`), а не билинейная, иначе лента местами уходит под землю.
-fn mesh_height(terrain: &Terrain, x: f32, z: f32) -> f32 {
+pub fn mesh_height(terrain: &Terrain, x: f32, z: f32) -> f32 {
     let (fx, fz) = (x.floor(), z.floor());
     let (tx, tz) = (x - fx, z - fz);
     let (vx, vz) = (fx as i32, fz as i32);
@@ -463,6 +476,7 @@ fn lay_tracks(
     time: Res<Time>,
     terrain: Res<Terrain>,
     pools: Res<LavaPools>,
+    puddles: Res<Puddles>,
     mut tracks: ResMut<Tracks>,
     mut makers: Query<(&GlobalTransform, &TrackMaker, &mut TrackTrail)>,
 ) {
@@ -480,27 +494,36 @@ fn lay_tracks(
         for (side, sign) in [(0, -1.0f32), (1, 1.0)] {
             let center = position.xz() + right * sign * maker.gauge * 0.5;
             let last = trail.last[side];
-            let distance = match last {
+            let (distance, step) = match last {
                 Some(last) => {
                     let step = last.center.distance(center);
                     if step < SEGMENT_STEP {
                         continue;
                     }
-                    last.distance + step
+                    (last.distance + step, step)
                 }
-                None => 0.0,
+                None => (0.0, 0.0),
             };
+            // В воде следа нет, а на выходе опора мокрая.
+            if puddles.at(center) {
+                trail.wet[side] = WET_LENGTH;
+                trail.last[side] = None;
+                continue;
+            }
             if forbidden(&terrain, &pools, center) {
                 trail.last[side] = None;
                 continue;
             }
             let here = contact(&terrain, center, right, maker.width, distance);
+            let wet = trail.wet[side] / WET_LENGTH;
+            trail.wet[side] = (trail.wet[side] - step).max(0.0);
             if let Some(from) = last {
                 tracks.push(Segment {
                     from,
                     to: here,
                     kind: maker.kind,
                     born: now,
+                    wet,
                 });
             }
             trail.last[side] = Some(here);
@@ -614,7 +637,9 @@ fn build_mesh(tracks: &Tracks, terrain: &Terrain, now: f32) -> Mesh {
             TrackKind::Treads => (TREADS_ALPHA, TREAD_REPEAT),
             _ => (WHEELS_ALPHA, WHEEL_REPEAT),
         };
-        let color = [r, g, b, alpha * fade];
+        let dark = 1.0 - WET_DARKEN * segment.wet;
+        let alpha = alpha + (WET_ALPHA - alpha) * segment.wet;
+        let color = [r * dark, g * dark, b * dark, alpha * fade];
         let (u0, u1) = column(segment.kind);
         let base = positions.len() as u32;
         for c in [segment.from, segment.to] {
@@ -696,10 +721,11 @@ pub fn wheel_dust_rate(speed: f32) -> f32 {
     DUST_RATE * ((speed.abs() - DUST_FROM_SPEED) / (DUST_FULL_SPEED - DUST_FROM_SPEED)).clamp(0.0, 1.0)
 }
 
-/// Густота пыли машин: по скорости, ноль на лаве, вдали от лунохода и на ступени «Низкая».
+/// Густота пыли машин: по скорости, ноль на лаве, в воде, вдали от лунохода и на ступени «Низкая».
 fn emit_dust(
     quality: Res<Quality>,
     pools: Res<LavaPools>,
+    puddles: Res<Puddles>,
     rover: Query<&GlobalTransform, With<Rover>>,
     vehicles: Query<(&GroundVehicle, &GlobalTransform)>,
     mut dust: Query<(&ChildOf, &mut EffectSpawner), With<WheelDust>>,
@@ -711,7 +737,8 @@ fn emit_dust(
         };
         let position = transform.translation();
         let near = rover.is_some_and(|r| r.distance(position) < DUST_RANGE);
-        let rate = if *quality == Quality::Low || !near || lava::is_lava(&pools, position) {
+        let wet = puddles.at(position.xz());
+        let rate = if *quality == Quality::Low || !near || wet || lava::is_lava(&pools, position) {
             0.0
         } else {
             wheel_dust_rate(vehicle.speed) * quality.particle_share()
@@ -743,6 +770,7 @@ mod tests {
             to: point(x + SEGMENT_STEP),
             kind: TrackKind::Wheels,
             born,
+            wet: 0.0,
         }
     }
 

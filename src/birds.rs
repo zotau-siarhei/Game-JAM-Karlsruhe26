@@ -25,10 +25,11 @@ use crate::camera::Focus;
 use crate::explosion::Explosion;
 use crate::frame::GameSet;
 use crate::lava::{self, LavaPools};
+use crate::puddles::{self, Puddles};
 use crate::railway::TRACK_BAND;
 use crate::rover::Rover;
 use crate::run::{RunScoped, WorldRebuilt};
-use crate::terrain::{self, CHUNK_SIZE, LOAD_RADIUS, Terrain, VisibleChunks, chunk_coord_at, chunk_origin};
+use crate::terrain::{CHUNK_SIZE, LOAD_RADIUS, Terrain, VisibleChunks, chunk_coord_at, chunk_origin};
 use crate::vehicle::{GroundVehicle, heading_towards};
 
 /// Доля участков со стаей.
@@ -94,7 +95,7 @@ impl Plugin for BirdsPlugin {
                 Update,
                 (
                     reset_birds.in_set(GameSet::Reset),
-                    stream_flocks.after(terrain::stream_chunks).in_set(GameSet::Streaming),
+                    stream_flocks.after(puddles::place_puddles).in_set(GameSet::Streaming),
                     (scare_flocks, fly_flocks, animate_birds).chain().in_set(GameSet::Presentation),
                 ),
             );
@@ -287,6 +288,7 @@ fn stream_flocks(
     mut birds: ResMut<Birds>,
     terrain: Res<Terrain>,
     pools: Res<LavaPools>,
+    puddles: Res<Puddles>,
     visible: Res<VisibleChunks>,
     focus: Res<Focus>,
     houses: Query<&GlobalTransform, With<House>>,
@@ -313,6 +315,7 @@ fn stream_flocks(
                 flock_site(&terrain, coord).filter(|(p, _)| {
                     let at = Vec3::new(p.x, 0.0, p.y);
                     !lava::is_lava(&pools, at)
+                        && !puddles.at(*p)
                         && houses.iter().all(|h| h.translation().xz().distance(*p) > HOUSE_CLEAR)
                 })
             };

@@ -43,6 +43,7 @@ mod obstacles;
 mod music;
 mod pickups;
 mod props;
+mod puddles;
 mod quality;
 mod rails;
 mod railway;
@@ -173,6 +174,8 @@ fn game_plugins(app: &mut App) {
         .add_plugins(tunnel_view::TunnelViewPlugin)
         .add_plugins(grass::GrassPlugin)
         .add_plugins((fire::FirePlugin, debug_shot::DebugShotPlugin))
+        // Лужи и вода в кратерах.
+        .add_plugins(puddles::PuddlesPlugin)
         .add_plugins((
             voice::VoicePlugin,
             hq::HqPlugin,

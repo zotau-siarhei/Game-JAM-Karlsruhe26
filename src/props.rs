@@ -24,7 +24,7 @@ use crate::combat::{Collider, Damage, Died, Health, blast_damage};
 use crate::debris::SpawnDebris;
 use crate::explosion::Explosion;
 use crate::settlements::{HouseState, REGION_SIZE, Settlements, region_of};
-use crate::terrain::{self, CHUNK_SIZE, Terrain, VisibleChunks, chunk_coord_at, chunk_origin};
+use crate::terrain::{CHUNK_SIZE, Terrain, VisibleChunks, chunk_coord_at, chunk_origin};
 
 /// Ячеек сетки по стороне участка: шаг около 2,5 м.
 /// Сколько дымит крона после огня, с.
@@ -96,7 +96,8 @@ impl Plugin for PropsPlugin {
                     shockwave_props.in_set(GameSet::Damage),
                     (remember_prop_health, break_props).chain().in_set(GameSet::Death),
                     remove_dead_props.in_set(GameSet::Cleanup),
-                    stream_props.after(terrain::stream_chunks).in_set(GameSet::Streaming),
+                    // После луж: объекты на месте лужи уступают ей до появления.
+                    stream_props.after(crate::puddles::place_puddles).in_set(GameSet::Streaming),
                     (fly_shards, fell_trees, sway_trees, burn_crowns).chain().in_set(GameSet::Presentation),
                 ),
             );

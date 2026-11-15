@@ -480,10 +480,11 @@ fn fit_suspension(
 }
 
 /// Густота пыли по скорости и дыма по здоровью с долей частиц ступени качества. На лаве
-/// и на ступени «Низкая» пыли нет.
+/// и на ступени «Низкая» пыли нет, в воде тоже.
 fn emit_dust_and_smoke(
     quality: Res<Quality>,
     pools: Res<crate::lava::LavaPools>,
+    puddles: Res<crate::puddles::Puddles>,
     rover: Query<(&RoverMotion, &Health, &Transform), With<Rover>>,
     mut dust: Query<&mut EffectSpawner, (With<DustEmitter>, Without<SmokeEmitter>)>,
     mut smoke: Query<&mut EffectSpawner, (With<SmokeEmitter>, Without<DustEmitter>)>,
@@ -492,7 +493,9 @@ fn emit_dust_and_smoke(
         return;
     };
     let share = quality.particle_share();
-    let dusty = *quality != Quality::Low && !crate::lava::is_lava(&pools, transform.translation);
+    let dusty = *quality != Quality::Low
+        && !crate::lava::is_lava(&pools, transform.translation)
+        && !puddles.at(transform.translation.xz());
     let set = |spawner: &mut EffectSpawner, rate: f32| {
         let count = rate * share * EMIT_PERIOD;
         if spawner.settings.count() != count.into() {

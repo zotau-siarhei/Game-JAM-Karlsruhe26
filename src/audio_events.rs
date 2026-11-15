@@ -27,6 +27,7 @@ use crate::music::{MusicState, Track};
 use crate::pickups::Popup;
 use crate::upgrades::WeaponUpgraded;
 use crate::props::{Prop, PropKind};
+use crate::puddles::WaterSplash;
 use crate::records::{Records, records_path};
 use crate::repair::{MedkitPicked, RepairChanged};
 use crate::residents::ResidentDied;
@@ -105,7 +106,7 @@ impl Plugin for AudioEventsPlugin {
         app.init_resource::<AudioMemory>()
             .add_systems(OnEnter(GameState::Menu), menu_music)
             .add_systems(Update, sound_trains.in_set(GameSet::Presentation))
-            .add_systems(Update, (sound_casings, sound_birds).in_set(GameSet::Presentation))
+            .add_systems(Update, (sound_casings, sound_birds, sound_splashes).in_set(GameSet::Presentation))
             .add_systems(OnExit(GameState::Menu), click)
             .add_systems(OnExit(GameState::GameOver), click)
             .add_systems(OnEnter(GameState::Paused), pause_blip)
@@ -398,6 +399,13 @@ fn music_follows_enemies(
 fn sound_casings(mut clinks: MessageReader<CasingClink>, mut sounds: MessageWriter<PlaySound>) {
     for clink in clinks.read() {
         sounds.write(PlaySound::at("casing_clink", clink.position));
+    }
+}
+
+/// Луноход въехал в воду: всплеск. Записи `splash` в списке звуков пока нет, как и у гильз.
+fn sound_splashes(mut splashes: MessageReader<WaterSplash>, mut sounds: MessageWriter<PlaySound>) {
+    for splash in splashes.read() {
+        sounds.write(PlaySound::at("splash", splash.position));
     }
 }
 

@@ -3,11 +3,9 @@
 //!
 //! Гильз не больше [`MAX_CASINGS`]: сверх предела исчезает самая старая. Лежащая гильза через
 //! [`REST_TIME`] секунд уменьшается до нуля за [`SHRINK_TIME`]. Кратер (`TerrainChanged`) убирает
-//! гильзы в своём круге, на лаве гильза исчезает при касании. Гильзы ни с чем не сталкиваются:
+//! гильзы в своём круге, на лаве и в воде гильза исчезает при касании. Гильзы ни с чем не сталкиваются:
 //! у них нет коллайдера и здоровья. Звон о землю — только у гильз лунохода, сообщением
 //! [`CasingClink`], звук ставит `audio_events`.
-//!
-//! Луж пока нет (`puddles` не сделан), поэтому исчезновения гильз в воде нет.
 
 use std::collections::VecDeque;
 use std::f32::consts::FRAC_PI_2;
@@ -19,6 +17,7 @@ use crate::bullet::FireBullet;
 use crate::combat::Team;
 use crate::frame::GameSet;
 use crate::lava::{self, LavaPools};
+use crate::puddles::Puddles;
 use crate::run::{RunScoped, WorldRebuilt};
 use crate::subsidence::TerrainChanged;
 use crate::terrain::Terrain;
@@ -213,6 +212,7 @@ fn fly_casings(
     time: Res<Time>,
     terrain: Res<Terrain>,
     pools: Res<LavaPools>,
+    puddles: Res<Puddles>,
     mut casings: ResMut<Casings>,
     mut flying: Query<(Entity, &mut Transform, &mut Casing)>,
     mut clinks: MessageWriter<CasingClink>,
@@ -235,7 +235,7 @@ fn fly_casings(
         if p.y > ground {
             continue;
         }
-        if lava::is_lava(&pools, p) {
+        if lava::is_lava(&pools, p) || puddles.at(p.xz()) {
             commands.entity(entity).try_despawn();
             casings.forget(entity);
             continue;
