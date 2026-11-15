@@ -298,12 +298,27 @@ fn voice_residents(
 fn voice_crust(
     mut breaches: MessageReader<CrustBreached>,
     mut memory: ResMut<AudioMemory>,
+    mut music: ResMut<MusicState>,
     mut cues: MessageWriter<VoiceCue>,
 ) {
     let count = breaches.read().count();
     if count > 0 {
         memory.destruction += BREACH_WEIGHT * count as f32;
         cues.write(VoiceCue::new("big_explosion"));
+        // Музыкальный акцент: прорыв поднимает бой, и он держится не меньше `LULL_DELAY`.
+        let wanted = music_after_breach(music.track);
+        if wanted != music.track {
+            music.track = wanted;
+        }
+        memory.calm = 0.0;
+    }
+}
+
+/// Музыка после прорыва коры: из передышки — бой; тема босса, меню и конец забега не меняются.
+fn music_after_breach(current: Track) -> Track {
+    match current {
+        Track::Lull | Track::Combat => Track::Combat,
+        other => other,
     }
 }
 
@@ -720,6 +735,15 @@ mod tests {
         assert_eq!(music_for(false, false, LULL_DELAY + 0.1, Track::Combat), Track::Lull);
         // Из передышки без врагов в бой не переходит.
         assert_eq!(music_for(false, false, 0.5, Track::Lull), Track::Lull);
+    }
+
+    #[test]
+    fn прорыв_коры_поднимает_боевую_музыку() {
+        assert_eq!(music_after_breach(Track::Lull), Track::Combat);
+        assert_eq!(music_after_breach(Track::Boss), Track::Boss);
+        assert_eq!(music_after_breach(Track::GameOver), Track::GameOver);
+        // Без врагов бой держится `LULL_DELAY`, затем передышка.
+        assert_eq!(music_for(false, false, 0.0, Track::Combat), Track::Combat);
     }
 
     #[test]
