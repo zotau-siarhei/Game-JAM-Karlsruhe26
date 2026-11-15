@@ -20,6 +20,7 @@ mod comic;
 mod debris;
 mod craters;
 mod enemy;
+mod enemy_look;
 mod explosion;
 mod explosion_fx;
 mod frame;
@@ -101,7 +102,12 @@ fn main() {
 /// Все плагины игры. Отдельной функцией, чтобы тест собирал тот же кадр, что и игра.
 fn game_plugins(app: &mut App) {
     // Порядок кадра и игровой генератор случайных чисел.
-    app.add_plugins((frame::FramePlugin, rng::RngPlugin, resident_anim::ResidentAnimPlugin))
+    app.add_plugins((
+        frame::FramePlugin,
+        rng::RngPlugin,
+        resident_anim::ResidentAnimPlugin,
+        enemy_look::EnemyLookPlugin,
+    ))
         // Посёлки, объекты поверхности и разрушение.
         .add_plugins((
             settlements::SettlementsPlugin,

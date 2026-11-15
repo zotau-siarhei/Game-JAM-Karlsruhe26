@@ -17,6 +17,7 @@ use crate::buildings::{BreakDoor, House};
 use crate::settlements::Settlements;
 use crate::bullet::FireBullet;
 use crate::combat::{Collider, Damage, Died, Health, Team};
+use crate::enemy_look;
 use crate::explosion::Explosion;
 use crate::frame::{GameSet, RunMessages};
 use crate::laser::FireLaser;
@@ -51,7 +52,7 @@ const ENEMY_RADIUS: f32 = 1.2;
 /// Размер корпуса врага: ширина, высота, длина, м.
 const HULL_SIZE: Vec3 = Vec3::new(1.4, 0.7, 2.0);
 
-/// Радиус колеса врага, м.
+/// Радиус колеса врага, м: задаёт посадку корпуса. Сами колёса машин — `enemy_look`.
 const WHEEL_RADIUS: f32 = 0.32;
 
 /// Высота центра корпуса врага над поверхностью, м.
@@ -90,8 +91,8 @@ const MUZZLE_HEIGHT: f32 = 0.5;
 /// Взрыв при гибели врага: радиус, м, и мощность. Мощность ниже порога кратера.
 const DEATH_BLAST: (f32, f32) = (2.5, 0.25);
 
-/// Цвет корпуса врага.
-const HULL_COLOR: Color = Color::srgb(0.72, 0.16, 0.12);
+/// Цвет корпуса врага: тёмный графит, как у моделей.
+const HULL_COLOR: Color = Color::srgb(0.24, 0.25, 0.27);
 
 /// Цвет колёс и тарана врага.
 const DARK_COLOR: Color = Color::srgb(0.1, 0.1, 0.12);
@@ -112,7 +113,7 @@ const MORTAR_RELOAD: f32 = 3.0;
 const MORTAR_SCATTER: f32 = 3.0;
 
 /// Цвет корпуса мортирщика.
-const MORTAR_COLOR: Color = Color::srgb(0.5, 0.2, 0.62);
+const MORTAR_COLOR: Color = Color::srgb(0.2, 0.21, 0.23);
 
 /// Здоровье ракетчика.
 pub const ROCKETEER_HEALTH: f32 = 50.0;
@@ -133,7 +134,7 @@ const COVER_RECHECK: f32 = 0.5;
 /// Высота пускового контейнера над центром корпуса, м.
 const LAUNCHER_HEIGHT: f32 = 0.9;
 /// Цвет ракетчика.
-const ROCKETEER_COLOR: Color = Color::srgb(0.85, 0.55, 0.12);
+const ROCKETEER_COLOR: Color = Color::srgb(0.3, 0.32, 0.35);
 
 /// Здоровье тяжёлого танка.
 pub const TANK_HEALTH: f32 = 220.0;
@@ -336,7 +337,8 @@ fn create_enemy_assets(
 ) {
     commands.insert_resource(EnemyAssets {
         hull: meshes.add(Cuboid::from_size(HULL_SIZE)),
-        wheel: meshes.add(Cylinder::new(WHEEL_RADIUS, 0.28)),
+        // Запасное колесо диаметром 1 м: `enemy_look` растягивает его под размер колеса машины.
+        wheel: meshes.add(Cylinder::new(0.5, 0.45)),
         ram: meshes.add(Cuboid::new(HULL_SIZE.x + 0.5, 0.35, 0.35)),
         barrel: meshes.add(Cylinder::new(0.28, 1.5)),
         launcher: meshes.add(Cuboid::new(1.0, 0.5, 1.2)),
@@ -481,25 +483,18 @@ fn spawn_enemy(
             flank: None,
         }),
     };
+    // Робота анимирует скелет: шаг и бег по скорости.
+    if kind == EnemyKind::Rocketeer {
+        enemy.insert(enemy_look::Walker::default());
+    }
     let Some(model) = enemy_model(kind) else {
         return;
     };
     // Модель врага стоит низом на земле; пока она грузится или без неё — корпус из примитивов.
+    // Колёса машин — отдельные сущности, они крутятся и поворачивают.
     enemy.with_children(|parent| {
         models.spawn_visual(parent, model, Transform::from_xyz(0.0, -RIDE_HEIGHT, 0.0), |spare| {
             spare.spawn((Mesh3d(assets.hull.clone()), MeshMaterial3d(material)));
-            for (side, along) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
-                spare.spawn((
-                    Mesh3d(assets.wheel.clone()),
-                    MeshMaterial3d(assets.dark_material.clone()),
-                    Transform::from_xyz(
-                        side * (HULL_SIZE.x * 0.5 + 0.14),
-                        -HULL_SIZE.y * 0.5,
-                        along * HULL_SIZE.z * 0.33,
-                    )
-                    .with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
-                ));
-            }
             match kind {
                 // Таран на носу: видно, куда враг едет.
                 EnemyKind::RamShooter => spare.spawn((
@@ -522,6 +517,15 @@ fn spawn_enemy(
                 )),
             };
         });
+        let wheels = match kind {
+            EnemyKind::RamShooter => Some(&enemy_look::RAMMER_WHEELS),
+            EnemyKind::Mortar => Some(&enemy_look::MORTAR_WHEELS),
+            EnemyKind::Rocketeer | EnemyKind::HeavyTank => None,
+        };
+        if let Some(layout) = wheels {
+            let fallback = (assets.wheel.clone(), assets.dark_material.clone());
+            enemy_look::spawn_wheels(parent, models, layout, -RIDE_HEIGHT, fallback);
+        }
     });
 }
 

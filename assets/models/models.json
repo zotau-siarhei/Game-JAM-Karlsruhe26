@@ -19,26 +19,34 @@
     {
       "id": "enemy_rammer",
       "file": "enemy_rammer.glb",
-      "scale": 1.263,
+      "scale": 2.52,
       "rotation_y": -1.5708,
-      "offset_y": 0.72,
+      "offset_y": 0.607,
       "budget": 5000
     },
     {
       "id": "enemy_mortar",
       "file": "enemy_mortar.glb",
-      "scale": 1.368,
+      "scale": 2.72,
       "rotation_y": -1.5708,
-      "offset_y": 1.218,
+      "offset_y": 0.702,
       "budget": 5000
     },
     {
       "id": "enemy_rocket_robot",
       "file": "enemy_rocket_robot.glb",
-      "scale": 1.263,
+      "scale": 1.1,
       "rotation_y": 3.14159,
-      "offset_y": 1.2,
-      "budget": 5000
+      "offset_y": 0.0,
+      "budget": 6500
+    },
+    {
+      "id": "enemy_wheel",
+      "file": "enemy_wheel.glb",
+      "scale": 1.05,
+      "rotation_y": 1.5708,
+      "offset_y": 0.0,
+      "budget": 1500
     },
     {
       "id": "house_small",

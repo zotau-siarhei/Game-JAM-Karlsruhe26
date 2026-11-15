@@ -7,7 +7,7 @@
 - Силуэт узнаваем **сверху**: камера смотрит сверху с небольшим наклоном.
 - Цвета сторон:
   - луноход — бирюзовый с белым;
-  - враги — фиолетовый с жёлтыми деталями;
+  - враги — тёмный графит с янтарно-жёлтыми метками, реалистичная боевая техника (решение 2026-11-15, раздел «Враги» ниже; танк и босс пока фиолетовые);
   - Служба защиты — белый с оранжевым, без мигалок, сирен, надписей и полицейской раскраски;
   - жители — пастельные, разноцветные;
   - **красный только для опасности**. В моделях красного нет вообще: ни на крышах, ни на вагонах.
@@ -33,7 +33,6 @@ Negative prompt (если поле есть): `realistic, gritty, dark, rusty, b
 |---|---|---|
 | `rover_body` | 15000 | `cute retro moon rover inspired by a 1970s lunar rover: round tub-shaped body like a bathtub with a hinged solar-panel lid on top, turquoise and white paint, a short camera mast with two big friendly round glass eyes, two springy antennas, a small rotating turret ring on top (empty, weapon attached separately), body only, no wheels or tracks` + суффикс |
 | `rover_track` | 1500 (×2) | `one chunky cartoon tank track pod for a small rover: rounded rubber tread loop around four visible road wheels, turquoise side cover with white rim, side view length 2x height` + суффикс |
-| `enemy_rammer` | 5000 | `small aggressive alien buggy with a heavy front ram bumper and one stubby gun, purple body with yellow details, big chunky wheels, angry headlights like eyes` + суффикс |
 | `boulder` | 1500 | `round lumpy cartoon boulder, grey-violet stone, a few flat facets` + суффикс |
 | `crystal` | 1500 | `cluster of tall glowing crystal prisms, cyan, emissive look` + суффикс |
 | `house_small` | 4000 | `small cozy alien cottage: pastel walls, saturated colored round-ish roof (blue, yellow or violet, not red), round door and round windows` + суффикс |
@@ -41,8 +40,6 @@ Negative prompt (если поле есть): `realistic, gritty, dark, rusty, b
 ### Желательно (волны после первой минуты)
 | id | бюджет | промпт |
 |---|---|---|
-| `enemy_mortar` | 5000 | `squat alien artillery vehicle with a short fat mortar tube pointing up, purple body, yellow stripes, six chunky wheels` + суффикс |
-| `enemy_rocket_robot` | 5000 | `two-legged walking alien robot with a shoulder rocket pod, purple armor plates, yellow visor, chunky legs` + суффикс |
 | `service_car` | 4000 | `rounded white alien patrol car with orange stripes, big chunky wheels, a rotating dish antenna on the roof, friendly look, no lights, no sirens, no text` + суффикс |
 | `house_two_story` | 4000 | `two-story alien house, pastel walls, saturated colored roof (not red), round windows, small balcony` + суффикс |
 | `weapon_mg` / `weapon_mortar` / `weapon_rockets` | 1500 | `turret attachment for a cartoon rover: twin machine gun` / `short fat mortar tube` / `small 4-tube rocket launcher box` + `turquoise and white` + суффикс |
@@ -113,6 +110,28 @@ full body, A-pose, plain light grey background`. Image to 3D: Smart Topology 600
 
 Скины: `scripts/recolor_people.py` (Blender) перекрашивает текстуру по классам цветов (кожа, волосы, верх, низ),
 верх и низ делят UV-острова меша по большинству; результат — `assets/models/skins/<id>_<1..7>.png`, 512 px.
+
+### Враги (2026-11-15)
+Решение пользователя: фиолетовые мультяшные машинка и робот не подходят — враги в одном стиле с людьми
+(`visual-style` 7.3). Без мультяшного суффикса. Машины сделаны по частям: сначала картинка целой машины,
+потом по ней как образцу (Image References) корпус без колёс и одно колесо. Колесо общее для обеих машин.
+
+| id | треуг. | промпт |
+|---|---|---|
+| — (образец) | — | `A compact armored combat buggy, enemy vehicle for a top-down action game, semi-realistic hard-surface 3D game asset: low angular dark graphite armor plates, a heavy steel ram plow on the front bumper, a small machine gun turret on the roof pointing forward, four big off-road wheels, amber-yellow warning markings and small amber sensor lights, rugged military look, single vehicle, centered, 3/4 view from above, plain light grey background, no text, no logos, no red` |
+| `enemy_rammer` | 3888 | `Only the body of the same armored buggy as in the reference image, as a separate game part: NO wheels at all, empty wheel arches, the body hovers with nothing under it, keep the front ram plow and the roof machine gun turret pointing forward, same dark graphite armor and amber-yellow markings, semi-realistic hard-surface 3D game asset, 3/4 view from above, plain light grey background, no text, no red` |
+| — (образец) | — | `A six-wheeled armored mortar carrier, enemy vehicle for a top-down action game, semi-realistic hard-surface 3D game asset: boxy dark graphite armored body, a short thick mortar tube on a turntable at the rear pointing up at 45 degrees, six big off-road wheels, amber-yellow warning stripes and small amber sensor lights, rugged military look, single vehicle, centered, 3/4 view from above, plain light grey background, no text, no logos, no red` |
+| `enemy_mortar` | 3594 | `Only the body of the same six-wheeled armored mortar carrier as in the reference image, as a separate game part: NO wheels at all, empty wheel arches, the body hovers with nothing under it, keep the mortar tube on its turntable at the rear, same dark graphite armor and amber-yellow markings, semi-realistic hard-surface 3D game asset, 3/4 view from above, plain light grey background, no text, no red` |
+| `enemy_wheel` | 1476 | `ONE single wheel of the same armored vehicle as in the reference image, as a separate game part: chunky black off-road tire with deep tread and a dark graphite steel rim with amber-yellow bolts, only one wheel, no vehicle, no axle, side 3/4 view, semi-realistic 3D game asset, centered, plain light grey background, no text` |
+| `enemy_rocket_robot` | 5934 | `A humanoid combat robot soldier, enemy for a top-down action game, semi-realistic sci-fi hard-surface 3D game asset: human proportions, dark graphite armor plates over a grey mechanical frame, amber-yellow warning markings, a single glowing amber visor slit on the head, a boxy four-tube rocket launcher pod mounted on its right shoulder, sturdy mechanical legs with feet, full body, standing in A-pose, front view, plain light grey background, no text, no logos, no red` |
+
+- Корпуса смотрят носом на −X (`rotation_y` = −π/2). Колёсные арки измерены по профилю модели, оси, колея и
+  радиус колёс записаны в `src/enemy_look.rs` (`RAMMER_WHEELS`, `MORTAR_WHEELS`): при замене модели их надо
+  перемерить.
+- Колесо: ось вдоль Z, диаметр 0,95, ступица на +Z; в `models.json` масштаб до диаметра 1 м и ось по X, размер
+  колеса задаёт `enemy_look`.
+- Робот: Image с Pose = A-Pose → Image to 3D (Smart Topology 6000, Pose A-Pose) → Rig → Humanoid, рост 2 м → клипы
+  `Idle_02`, `Walking`, `Running`, как у жителей. Перёд +Z, ступни на y = 0, в игре 2,2 м.
 
 ## Первая планета (по гиту)
 В гите нет отдельной «планеты с названием». Первая (и пока единственная) планета описана так:
