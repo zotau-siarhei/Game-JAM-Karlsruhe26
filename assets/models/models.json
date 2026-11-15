@@ -79,6 +79,14 @@
       "rotation_y": 0.0,
       "offset_y": 0.7,
       "budget": 1500
+    },
+    {
+      "id": "enemy_heavy_tank",
+      "file": "enemy_heavy_tank.glb",
+      "scale": 3.0,
+      "rotation_y": 0.0,
+      "offset_y": 1.023,
+      "budget": 5000
     }
   ]
 }

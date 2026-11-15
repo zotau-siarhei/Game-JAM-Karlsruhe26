@@ -153,6 +153,14 @@ const TANK_FIRE_RANGE: f32 = 36.0;
 const TANK_AIM_TIME: f32 = 1.0;
 /// Перезарядка танка, с.
 const TANK_RELOAD: f32 = 4.0;
+/// Модель танка из Meshy: центр в нуле, размер около 0,96 × 0,68 × 0,78 при масштабе 1.
+const TANK_MODEL: &str = "models/enemy_heavy_tank.glb";
+/// Масштаб модели в мире: танк около 2,9 м в длину.
+const TANK_MODEL_SCALE: f32 = 3.0;
+/// Поворот модели вокруг вертикали, чтобы пушка смотрела вперёд, на -Z.
+const TANK_MODEL_YAW: f32 = 0.0;
+/// Половина высоты модели при масштабе 1, м.
+const TANK_MODEL_HALF_HEIGHT: f32 = 0.341;
 /// Цвет танка.
 const TANK_COLOR: Color = Color::srgb(0.32, 0.36, 0.3);
 
@@ -326,6 +334,7 @@ struct EnemyAssets {
     barrel: Handle<Mesh>,
     launcher: Handle<Mesh>,
     aim_line: Handle<Mesh>,
+    tank_scene: Handle<WorldAsset>,
     rocketeer_material: Handle<StandardMaterial>,
     tank_material: Handle<StandardMaterial>,
     aim_material: Handle<StandardMaterial>,
@@ -338,6 +347,7 @@ fn create_enemy_assets(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    asset_server: Res<AssetServer>,
 ) {
     commands.insert_resource(EnemyAssets {
         hull: meshes.add(Cuboid::from_size(HULL_SIZE)),
@@ -347,6 +357,7 @@ fn create_enemy_assets(
         launcher: meshes.add(Cuboid::new(1.0, 0.5, 1.2)),
         // Ось цилиндра — Y; линия поворачивается вдоль -Z при создании.
         aim_line: meshes.add(Cylinder::new(0.04, 1.0)),
+        tank_scene: asset_server.load(GltfAssetLabel::Scene(0).from_asset(TANK_MODEL)),
         rocketeer_material: materials.add(ROCKETEER_COLOR),
         tank_material: materials.add(TANK_COLOR),
         aim_material: materials.add(StandardMaterial {
@@ -451,12 +462,16 @@ fn spawn_enemy(
         },
         GroundVehicle::new(heading, RIDE_HEIGHT * scale, Vec2::new(HULL_SIZE.x, HULL_SIZE.z) * 0.5 * scale),
         Steering::new(heading, turn),
-        Mesh3d(assets.hull.clone()),
-        MeshMaterial3d(material),
         Transform::from_translation(position)
             .with_rotation(Quat::from_rotation_y(heading))
             .with_scale(Vec3::splat(scale)),
     ));
+    // Танк — модель Meshy дочерней сценой, остальные враги пока собраны из примитивов.
+    if kind == EnemyKind::HeavyTank {
+        enemy.insert(Visibility::default());
+    } else {
+        enemy.insert((Mesh3d(assets.hull.clone()), MeshMaterial3d(material)));
+    }
     match kind {
         EnemyKind::RamShooter => enemy.insert(EnemyWeapons {
             ram_cooldown: 0.0,
@@ -481,7 +496,12 @@ fn spawn_enemy(
         }),
     };
     enemy.with_children(|parent| {
-            for (side, along) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+            let wheels: &[(f32, f32)] = if kind == EnemyKind::HeavyTank {
+                &[]
+            } else {
+                &[(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)]
+            };
+            for &(side, along) in wheels {
                 parent.spawn((
                     Mesh3d(assets.wheel.clone()),
                     MeshMaterial3d(assets.dark_material.clone()),
@@ -513,14 +533,16 @@ fn spawn_enemy(
                     MeshMaterial3d(assets.dark_material.clone()),
                     Transform::from_xyz(0.0, HULL_SIZE.y * 0.5 + 0.25, 0.2),
                 )),
-                // Длинный ствол лазера вперёд и линия прицела, пока скрытая.
+                // Модель танка: низом на земле, пушкой вперёд. Родитель уже растянут на
+                // `TANK_SCALE`, поэтому масштаб и сдвиг модели делятся на него. Линия прицела
+                // лазера — отдельно, пока скрытая.
                 EnemyKind::HeavyTank => {
+                    let model_y = -RIDE_HEIGHT + TANK_MODEL_HALF_HEIGHT * TANK_MODEL_SCALE / TANK_SCALE;
                     parent.spawn((
-                        Mesh3d(assets.barrel.clone()),
-                        MeshMaterial3d(assets.dark_material.clone()),
-                        Transform::from_xyz(0.0, HULL_SIZE.y * 0.5 + 0.2, -0.9)
-                            .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2))
-                            .with_scale(Vec3::new(0.5, 1.2, 0.5)),
+                        WorldAssetRoot(assets.tank_scene.clone()),
+                        Transform::from_xyz(0.0, model_y, 0.0)
+                            .with_rotation(Quat::from_rotation_y(TANK_MODEL_YAW))
+                            .with_scale(Vec3::splat(TANK_MODEL_SCALE / TANK_SCALE)),
                     ));
                     let length = TANK_FIRE_RANGE / TANK_SCALE;
                     parent.spawn((
