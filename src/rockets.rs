@@ -140,6 +140,13 @@ pub struct Rocket {
     homing: Option<Homing>,
 }
 
+impl Rocket {
+    /// Чья ракета.
+    pub fn team(&self) -> Team {
+        self.team
+    }
+}
+
 /// Наведение самонаводящейся ракеты.
 struct Homing {
     /// Сколько ещё длится взлёт веером.

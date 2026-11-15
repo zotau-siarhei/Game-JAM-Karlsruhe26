@@ -54,6 +54,7 @@ mod steering;
 mod terrain;
 mod trains;
 mod vehicle;
+mod weapon_sfx;
 mod weapons;
 mod voice;
 mod waves;
@@ -150,6 +151,7 @@ fn game_plugins(app: &mut App) {
             music::MusicPlugin,
             audio_events::AudioEventsPlugin,
             comic::ComicPlugin,
+            weapon_sfx::WeaponSfxPlugin,
         ));
 }
 
