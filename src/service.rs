@@ -62,6 +62,10 @@ pub mod balance {
     pub const PICKUP_REACH: f32 = 2.5;
     /// Скорость у жителя: медленнее, чем жители отскакивают от машин, м/с.
     pub const PICKUP_SPEED: f32 = 2.5;
+    /// Паникующие жители не дальше этого от кольца притягивают к себе точку кольца, м.
+    pub const RING_RESIDENTS: f32 = 15.0;
+    /// На сколько за раз кольцо доворачивается к паникующим жителям, рад.
+    pub const RING_PULL: f32 = 0.5;
 
     /// Патрульный вездеход: здоровье, скорость, м/с, ступень, с которой приезжает.
     pub const PATROL: (f32, f32, u8) = (25.0, 13.0, 1);
@@ -233,6 +237,13 @@ pub struct ServiceVehicle {
     burst_timer: f32,
     /// Сколько жителей в машине.
     passengers: u8,
+}
+
+impl ServiceVehicle {
+    /// Машина подбирает жителей: не уезжает и есть свободные места.
+    pub fn takes_passengers(&self) -> bool {
+        !self.leaving && self.passengers < balance::SEATS
+    }
 }
 
 /// Антенна-тарелка: вращается.
@@ -607,7 +618,18 @@ fn drive_service(
         }
         ring.push((entity, angle_around(rover, position)));
     }
-    let targets = ring_targets(&mut ring);
+    // Паникующие жители у кольца: точка кольца доворачивается к ним, машине ближе их подобрать.
+    let panicking: Vec<Vec3> = residents
+        .iter()
+        .filter(|(_, r)| r.is_panicking())
+        .map(|(t, _)| t.translation)
+        .filter(|p| p.with_y(0.0).distance(rover.with_y(0.0)) < balance::RING_RADIUS + balance::RING_RESIDENTS)
+        .collect();
+    let toward = (!panicking.is_empty()).then(|| {
+        let center = panicking.iter().sum::<Vec3>() / panicking.len() as f32;
+        angle_around(rover, center)
+    });
+    let targets = ring_targets(&mut ring, toward);
     for (entity, target_angle) in targets {
         let Ok((_, transform, vehicle, mut steering)) = vehicles.get_mut(entity) else {
             continue;
@@ -630,14 +652,26 @@ fn drive_service(
 ///
 /// Машины расходятся ровно по кругу в том же порядке, в каком стоят; поворот кольца — средний
 /// по машинам, чтобы никому не ехать через центр, плюс опережение [`balance::RING_LEAD`].
-fn ring_targets(ring: &mut [(Entity, f32)]) -> Vec<(Entity, f32)> {
+/// Если задан угол `toward` к паникующим жителям, вместо опережения кольцо доворачивается так,
+/// чтобы ближайшая к ним точка смотрела на них, не больше [`balance::RING_PULL`] за раз.
+fn ring_targets(ring: &mut [(Entity, f32)], toward: Option<f32>) -> Vec<(Entity, f32)> {
     ring.sort_by(|a, b| a.1.total_cmp(&b.1));
     let n = ring.len() as f32;
     let (sin, cos) = ring.iter().enumerate().fold((0.0, 0.0), |(s, c), (i, (_, angle))| {
         let offset = angle - TAU * i as f32 / n;
         (s + offset.sin(), c + offset.cos())
     });
-    let offset = sin.atan2(cos) + balance::RING_LEAD;
+    let mean = sin.atan2(cos);
+    let offset = match toward {
+        Some(angle) if !ring.is_empty() => {
+            // Разница до ближайшей точки кольца: точки идут через TAU / n.
+            let step = TAU / n;
+            let delta = (angle - mean).rem_euclid(step);
+            let delta = if delta > step * 0.5 { delta - step } else { delta };
+            mean + delta.clamp(-balance::RING_PULL, balance::RING_PULL)
+        }
+        _ => mean + balance::RING_LEAD,
+    };
     ring.iter()
         .enumerate()
         .map(|(i, (entity, _))| (*entity, offset + TAU * i as f32 / n))
@@ -909,7 +943,7 @@ mod tests {
         let e = |i: u32| Entity::from_raw_u32(i).unwrap();
         // Три машины приехали кучей с одной стороны.
         let mut ring = vec![(e(1), 0.1), (e(2), -0.1), (e(3), 0.0)];
-        let targets = ring_targets(&mut ring);
+        let targets = ring_targets(&mut ring, None);
         assert_eq!(targets.len(), 3);
         // Порядок по углу сохраняется, точки ровно через треть круга.
         let order: Vec<Entity> = targets.iter().map(|t| t.0).collect();
@@ -926,7 +960,23 @@ mod tests {
     #[test]
     fn lone_vehicle_heads_to_the_ring_on_its_own_side() {
         let mut ring = vec![(Entity::from_raw_u32(7).unwrap(), 1.0)];
-        let targets = ring_targets(&mut ring);
+        let targets = ring_targets(&mut ring, None);
         assert!((targets[0].1 - (1.0 + balance::RING_LEAD)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn кольцо_доворачивается_к_паникующим_жителям() {
+        let e = |i: u32| Entity::from_raw_u32(i).unwrap();
+        // Две машины напротив друг друга, жители чуть в стороне от первой: ближайшая точка
+        // смотрит на жителей.
+        let mut ring = vec![(e(1), 0.0), (e(2), std::f32::consts::PI)];
+        let targets = ring_targets(&mut ring, Some(0.3));
+        let first = targets.iter().find(|t| t.0 == e(1)).unwrap().1;
+        assert!((first - 0.3).abs() < 1e-4, "{first}");
+        // Далеко в стороне — доворот не больше предела за раз.
+        let mut ring = vec![(e(1), 0.0), (e(2), std::f32::consts::PI)];
+        let targets = ring_targets(&mut ring, Some(1.4));
+        let first = targets.iter().find(|t| t.0 == e(1)).unwrap().1;
+        assert!((first - balance::RING_PULL).abs() < 1e-4, "{first}");
     }
 }

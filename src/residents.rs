@@ -20,6 +20,7 @@ use crate::mortar::FireShell;
 use crate::obstacles::{Obstacle, ObstacleGrid};
 use crate::rng::GameRng;
 use crate::rover::{Rover, RoverMotion};
+use crate::service::{ServiceVehicle, balance as service_balance};
 use crate::run::{RunScoped, WorldRebuilt};
 use crate::settlements::{HouseId, HouseStatus, Settlements};
 use crate::sound_list::Dice;
@@ -105,6 +106,7 @@ impl Plugin for ResidentsPlugin {
                         spawn_residents,
                         gather_danger,
                         react_to_danger,
+                        run_to_rescue,
                         think,
                         walk,
                         dodge_vehicles,
@@ -319,14 +321,19 @@ fn spawn_residents(
             continue;
         };
         let present = residents.iter().filter(|r| r.home == id).count();
-        let outside = (state.residents.saturating_sub(state.hiding) as usize).saturating_sub(present);
-        for _ in 0..outside {
+        for _ in 0..missing_outside(state.residents as usize, state.hiding as usize, present) {
             let angle = dice.range(0.0, std::f32::consts::TAU);
             let r = state.kind.half_extents().length() + dice.range(1.0, 4.0);
             let p = state.position + Vec2::from_angle(angle) * r;
             spawn_resident(&mut commands, &assets, &mut models, &terrain, &mut dice, id, p);
         }
     }
+}
+
+/// Сколько жителей дома создать при его появлении: живые минус прячущиеся минус те, кто уже
+/// в сцене.
+fn missing_outside(alive: usize, hiding: usize, present: usize) -> usize {
+    alive.saturating_sub(hiding).saturating_sub(present)
 }
 
 fn spawn_resident(
@@ -480,6 +487,37 @@ fn react_to_danger(
             resident.shelter = None;
             let center = scared.iter().sum::<Vec2>() / scared.len() as f32;
             resident.target = p + (p - center).normalize_or(Vec2::X) * FLEE_DISTANCE;
+        }
+    }
+}
+
+/// Паникующий житель бежит к машине Службы с местами, если она рядом: она его подберёт.
+/// Пока машина рядом, убежище в доме забыто.
+fn run_to_rescue(
+    vehicles: Query<(&Transform, &ServiceVehicle), Without<Resident>>,
+    mut residents: Query<(&Transform, &mut Resident)>,
+) {
+    let cars: Vec<Vec2> = vehicles
+        .iter()
+        .filter(|(_, v)| v.takes_passengers())
+        .map(|(t, _)| Vec2::new(t.translation.x, t.translation.z))
+        .collect();
+    if cars.is_empty() {
+        return;
+    }
+    for (transform, mut resident) in &mut residents {
+        if !resident.is_panicking() {
+            continue;
+        }
+        let p = Vec2::new(transform.translation.x, transform.translation.z);
+        let nearest = cars
+            .iter()
+            .copied()
+            .filter(|c| c.distance(p) < service_balance::PICKUP_SEEK)
+            .min_by(|a, b| a.distance_squared(p).total_cmp(&b.distance_squared(p)));
+        if let Some(car) = nearest {
+            resident.shelter = None;
+            resident.target = car;
         }
     }
 }
@@ -959,6 +997,15 @@ mod tests {
         assert!(foot(limb(hip, LEG_LENGTH, 0.0, 0.0)).y.abs() < 1e-5);
         let forward = foot(limb(hip, LEG_LENGTH, 0.5, 0.0));
         assert!(forward.z < -0.1 && forward.y > 0.0);
+    }
+
+    #[test]
+    fn при_загрузке_создаётся_живых_минус_прячущихся() {
+        assert_eq!(missing_outside(10, 3, 0), 7);
+        // Руины на месте дома застают выживших в сцене: создаются только недостающие.
+        assert_eq!(missing_outside(10, 3, 5), 2);
+        assert_eq!(missing_outside(10, 3, 9), 0);
+        assert_eq!(missing_outside(2, 4, 0), 0);
     }
 
     #[test]

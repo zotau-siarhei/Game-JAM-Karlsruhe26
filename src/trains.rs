@@ -35,6 +35,7 @@ use crate::obstacles::{Obstacle, Shape};
 use crate::pickups::{SpawnLoot, crate_weapons};
 use crate::quality::Quality;
 use crate::rails::{LINK_LENGTH, TrackDamage};
+use crate::residents::Resident;
 use crate::railway::{LineId, Lines};
 use crate::rng::GameRng;
 use crate::rover::{Rover, RoverMotion};
@@ -71,6 +72,10 @@ const FLOOR: f32 = 0.6;
 const HIT_DAMAGE: f32 = ROVER_MAX_HEALTH * 0.2;
 /// Скорость отброса, м/с.
 const KNOCK_SPEED: f32 = 15.0;
+/// Сошедший вагон сбивает жителя, пока летит быстрее этого, м/с.
+const RESIDENT_HIT_SPEED: f32 = 4.0;
+/// Радиус жителя для удара вагоном, м.
+const RESIDENT_RADIUS: f32 = 0.5;
 /// Урон от кувыркающегося вагона: 2/15 здоровья лунохода (было 40 при здоровье 300).
 const TUMBLE_DAMAGE: f32 = ROVER_MAX_HEALTH * 2.0 / 15.0;
 /// Радиус коллайдера вагона для пуль и лазера: половина ширины и четверть длины, м. Круг не
@@ -144,6 +149,7 @@ impl Plugin for TrainsPlugin {
                         move_trains,
                         place_cars,
                         hit_vehicles,
+                        run_over_residents,
                         move_wrecks,
                         tumble_damage,
                         settle_wrecks,
@@ -1202,6 +1208,34 @@ fn move_wrecks(
             let impulse = n * rel * 0.6;
             aw.velocity -= impulse;
             bw.velocity += impulse;
+        }
+    }
+}
+
+/// Вагон на ходу и кувыркающийся вагон сбивают жителей насмерть: от поезда не отскочишь.
+#[allow(clippy::type_complexity)]
+fn run_over_residents(
+    cars: Query<(&Transform, &Car, &Visibility, Option<&Wreck>), Or<(With<OnTrack>, With<Wreck>)>>,
+    residents: Query<(Entity, &Transform, &Health), With<Resident>>,
+    mut damage: MessageWriter<Damage>,
+) {
+    for (transform, car, visibility, wreck) in &cars {
+        if *visibility == Visibility::Hidden || wreck.is_some_and(|w| w.velocity.length() < RESIDENT_HIT_SPEED) {
+            continue;
+        }
+        let footprint = car_footprint(transform, car.kind);
+        let roof = transform.translation.y + car.kind.size().1 + 1.0;
+        for (entity, resident, health) in &residents {
+            let p = Vec2::new(resident.translation.x, resident.translation.z);
+            // Житель на горе над туннелем вагон не задевает.
+            if health.is_dead() || footprint.distance(p) > RESIDENT_RADIUS || resident.translation.y > roof {
+                continue;
+            }
+            damage.write(Damage {
+                target: entity,
+                amount: health.current + 1.0,
+                source_team: Team::Neutral,
+            });
         }
     }
 }
