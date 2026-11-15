@@ -53,6 +53,9 @@ Negative prompt (если поле есть): `realistic, gritty, dark, rusty, b
 | id | бюджет | промпт |
 |---|---|---|
 | `enemy_heavy_tank` | 5000 | `heavy slow alien tank with a big laser cannon, purple armor with yellow glowing details, wide tracks` + суффикс |
+| `boss_colossus` | 15000 | `giant walking alien fortress on four mechanical legs, purple armor, yellow glowing core, mortar and rocket pods on its back` + суффикс |
+| `train_loco` / `train_wagon` | 4000 | `chunky cartoon alien locomotive, pastel blue and yellow (not red)` / `matching cargo wagon` + суффикс |
+| `house_barrack` | 4000 | `long low alien barrack, pastel walls, flat saturated roof` + суффикс |
 
 Тяжёлый танк сделан по частям, чтобы башня поворачивалась, а гусеницы бежали (`src/tank_look.rs`).
 Сначала картинка целого танка, потом по ней как образцу (Image References) — корпус и башня:
@@ -61,9 +64,23 @@ Negative prompt (если поле есть): `realistic, gritty, dark, rusty, b
 Гусеницу с образцом целого танка модель упорно рисует парой, поэтому её промпт — без образца:
 `A single isolated tank track unit, one piece only... Only one object in the picture`. Лимит полигонов к ней
 не применился (25 тыс.), её упростили в Blender модификатором Decimate до 2 тыс.
-| `boss_colossus` | 15000 | `giant walking alien fortress on four mechanical legs, purple armor, yellow glowing core, mortar and rocket pods on its back` + суффикс |
-| `train_loco` / `train_wagon` | 4000 | `chunky cartoon alien locomotive, pastel blue and yellow (not red)` / `matching cargo wagon` + суффикс |
-| `house_barrack` | 4000 | `long low alien barrack, pastel walls, flat saturated roof` + суффикс |
+
+### Сделано 2026-11-15: поезда, дома, босс, оружие
+Все через Image (2 варианта, взят первый) → Image to 3D, Smart Topology с бюджетом из таблицы. Бюджеты
+соблюдены, упрощать не пришлось. В коде пока не подключены. `scale` и `offset_y` в `models.json` подобраны
+под размеры из кода (`trains.rs`, `settlements.rs`, `boss.rs`); у оружия масштаб пробный, уточнить при подключении.
+
+| id | треуг. | как сделана | куда смотрит в файле |
+|---|---|---|---|
+| `train_loco` | 3957 | `Chunky cartoon alien diesel locomotive ... pastel blue body with bright yellow stripes and a yellow rounded cab at the front` | кабина на −X, `rotation_y` ставит её на +Z, как в `trains.rs` |
+| `train_wagon_passenger` / `_freight` / `_tank` | ~3980 | картинка локомотива в Image References: `A passenger railway car` / `A freight boxcar railway wagon` / `A tank car railway wagon matching the locomotive in the reference image` | вдоль X, симметричны |
+| `house_two_story` | 3711 | `Two-story cozy alien house: pastel mint walls, saturated violet rounded roof, ... small balcony` | дверь на +Z |
+| `house_barrack` | 3823 | `Long low one-story alien barrack: ... three times longer than wide, pastel peach walls, flat saturated teal roof` | длинный по X, повёрнут вдоль Z |
+| `boss_body` | 7944 | сначала картинка целого босса (`Giant walking alien fortress boss ... four thick mechanical legs`), по ней `Only the body of the same boss robot ... NO legs at all` | ядро на +Z, центр в начале координат |
+| `boss_leg` | 1572 | по картинке босса: `ONE single mechanical leg ... only one leg, not a pair` | стоит по Y, центр в начале координат |
+| `weapon_mg` / `weapon_mortar` / `weapon_rockets` / `weapon_laser` | ~1500 | `Weapon attachment for the turret of a cute cartoon moon rover: twin machine gun` / `short fat mortar tube` / `rocket launcher box` / `sci-fi laser emitter` + `turquoise and white housing ... flat round mounting plate` | ствол на −X, у ракет на +X; мортира смотрит вверх |
+
+`service_car` не делали: машины Службы защиты в коде пока нет.
 
 ## Первая планета (по гиту)
 В гите нет отдельной «планеты с названием». Первая (и пока единственная) планета описана так:
