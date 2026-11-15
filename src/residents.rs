@@ -169,6 +169,32 @@ impl Resident {
 #[derive(Component)]
 struct Arm(f32);
 
+/// Нога: сторона, 1 или -1.
+#[derive(Component)]
+struct Leg(f32);
+
+/// На сколько фигура жителя поднята над землёй ногами, м.
+const LIFT: f32 = 0.18;
+/// Длина ноги от бедра до ступни, м: прямая нога касается земли.
+const LEG_LENGTH: f32 = 0.34;
+/// Бедро: в стороны от оси и высота.
+const HIP: Vec2 = Vec2::new(0.1, LEG_LENGTH);
+/// Длина руки от плеча до кисти, м.
+const ARM_LENGTH: f32 = 0.37;
+/// Плечо: в стороны от оси и высота.
+const SHOULDER: Vec2 = Vec2::new(0.28, 0.78 + LIFT);
+/// Размах ног при ходьбе и беге, рад.
+const STEP_SWING: (f32, f32) = (0.55, 0.9);
+/// Размах рук при ходьбе, рад: крупно, чтобы читалось сверху.
+const ARM_SWING: f32 = 0.85;
+
+/// Положение конечности, которая висит от точки `pivot` и повёрнута вперёд на `swing`
+/// (плюс — ступня или кисть уходит вперёд, на -Z) и в сторону на `splay`.
+fn limb(pivot: Vec3, length: f32, swing: f32, splay: f32) -> Transform {
+    let rotation = Quat::from_rotation_x(swing) * Quat::from_rotation_z(splay);
+    Transform::from_translation(pivot + rotation * Vec3::new(0.0, -length * 0.5, 0.0)).with_rotation(rotation)
+}
+
 /// Восклицательный знак над головой.
 #[derive(Component)]
 struct Alert;
@@ -197,6 +223,7 @@ struct ResidentAssets {
     body: Handle<Mesh>,
     head: Handle<Mesh>,
     arm: Handle<Mesh>,
+    leg: Handle<Mesh>,
     ball: Handle<Mesh>,
     cube: Handle<Mesh>,
     hat: Handle<Mesh>,
@@ -206,6 +233,8 @@ struct ResidentAssets {
     hair: Vec<Handle<StandardMaterial>>,
     white: Handle<StandardMaterial>,
     black: Handle<StandardMaterial>,
+    /// Брюки: тёмные, общие для всех.
+    trousers: Handle<StandardMaterial>,
     alert: Handle<StandardMaterial>,
     puff: Handle<StandardMaterial>,
 }
@@ -225,7 +254,8 @@ fn create_assets(
     commands.insert_resource(ResidentAssets {
         body: meshes.add(Capsule3d::new(0.22, 0.3)),
         head: meshes.add(Sphere::new(0.2).mesh().ico(2).expect("голова жителя")),
-        arm: meshes.add(Capsule3d::new(0.06, 0.25)),
+        arm: meshes.add(Capsule3d::new(0.06, ARM_LENGTH - 0.12)),
+        leg: meshes.add(Capsule3d::new(0.075, LEG_LENGTH - 0.15)),
         ball: meshes.add(Sphere::new(1.0).mesh().ico(1).expect("шарик")),
         cube: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
         hat: meshes.add(Cylinder::new(0.17, 0.18)),
@@ -234,6 +264,7 @@ fn create_assets(
         hair: HAIR_COLORS.iter().map(|c| materials.add(*c)).collect(),
         white: unlit(&mut materials, Color::WHITE),
         black: unlit(&mut materials, Color::srgb(0.05, 0.05, 0.05)),
+        trousers: materials.add(Color::srgb(0.22, 0.24, 0.3)),
         alert: unlit(&mut materials, Color::srgb(1.0, 0.85, 0.1)),
         puff: materials.add(StandardMaterial {
             base_color: Color::srgba(1.0, 1.0, 1.0, 0.9),
@@ -320,36 +351,40 @@ fn spawn_resident(
         .with_children(|r| {
             // Модель из списка или человечек из примитивов; значок испуга общий для обоих.
             models.spawn_visual(r, RESIDENT_MODEL, Transform::IDENTITY, |r| {
-                r.spawn((Mesh3d(assets.body.clone()), MeshMaterial3d(clothes.clone()), NotShadowCaster, Transform::from_xyz(0.0, 0.45, 0.0)));
-                r.spawn((Mesh3d(assets.head.clone()), MeshMaterial3d(skin.clone()), NotShadowCaster, Transform::from_xyz(0.0, 0.95, 0.0)));
+                r.spawn((Mesh3d(assets.body.clone()), MeshMaterial3d(clothes.clone()), NotShadowCaster, Transform::from_xyz(0.0, 0.45 + LIFT, 0.0)));
+                r.spawn((Mesh3d(assets.head.clone()), MeshMaterial3d(skin.clone()), NotShadowCaster, Transform::from_xyz(0.0, 0.95 + LIFT, 0.0)));
                 // Волосы: шапочка на макушке и затылке, лицо открыто.
                 r.spawn((Mesh3d(assets.ball.clone()), MeshMaterial3d(hair.clone()), NotShadowCaster,
-                    Transform::from_xyz(0.0, 1.07, 0.04).with_scale(Vec3::new(0.21, 0.13, 0.21))));
+                    Transform::from_xyz(0.0, 1.07 + LIFT, 0.04).with_scale(Vec3::new(0.21, 0.13, 0.21))));
                 // Большие глаза смотрят вперёд, на -Z.
                 for x in [-0.08, 0.08] {
                     r.spawn((Mesh3d(assets.ball.clone()), MeshMaterial3d(assets.white.clone()), NotShadowCaster,
-                        Transform::from_xyz(x, 1.0, -0.15).with_scale(Vec3::splat(0.075))));
+                        Transform::from_xyz(x, 1.0 + LIFT, -0.15).with_scale(Vec3::splat(0.075))));
                     r.spawn((Mesh3d(assets.ball.clone()), MeshMaterial3d(assets.black.clone()), NotShadowCaster,
-                        Transform::from_xyz(x, 1.0, -0.21).with_scale(Vec3::splat(0.035))));
+                        Transform::from_xyz(x, 1.0 + LIFT, -0.21).with_scale(Vec3::splat(0.035))));
                 }
                 for side in [-1.0, 1.0] {
+                    let shoulder = Vec3::new(side * SHOULDER.x, SHOULDER.y, 0.0);
                     r.spawn((Arm(side), Mesh3d(assets.arm.clone()), MeshMaterial3d(clothes.clone()), NotShadowCaster,
-                        Transform::from_xyz(side * 0.28, 0.6, 0.0)));
+                        limb(shoulder, ARM_LENGTH, 0.0, side * 0.15)));
+                    let hip = Vec3::new(side * HIP.x, HIP.y, 0.0);
+                    r.spawn((Leg(side), Mesh3d(assets.leg.clone()), MeshMaterial3d(assets.trousers.clone()), NotShadowCaster,
+                        limb(hip, LEG_LENGTH, 0.0, 0.0)));
                 }
                 match accessory {
                     0 => {
                         r.spawn((Mesh3d(assets.hat.clone()), MeshMaterial3d(assets.black.clone()), NotShadowCaster,
-                            Transform::from_xyz(0.0, 1.15, 0.0)));
+                            Transform::from_xyz(0.0, 1.15 + LIFT, 0.0)));
                     }
                     1 => {
                         r.spawn((Mesh3d(assets.cube.clone()), MeshMaterial3d(assets.white.clone()), NotShadowCaster,
-                            Transform::from_xyz(0.0, 0.75, 0.0).with_scale(Vec3::new(0.42, 0.08, 0.42))));
+                            Transform::from_xyz(0.0, 0.75 + LIFT, 0.0).with_scale(Vec3::new(0.42, 0.08, 0.42))));
                     }
                     _ => {}
                 }
             });
             r.spawn((Alert, Mesh3d(assets.cube.clone()), MeshMaterial3d(assets.alert.clone()), NotShadowCaster,
-                Visibility::Hidden, Transform::from_xyz(0.0, 1.7, 0.0).with_scale(Vec3::new(0.09, 0.3, 0.09))));
+                Visibility::Hidden, Transform::from_xyz(0.0, 1.7 + LIFT, 0.0).with_scale(Vec3::new(0.09, 0.3, 0.09))));
         })
         .id()
 }
@@ -623,7 +658,8 @@ fn dodge_vehicles(
 fn animate(
     time: Res<Time>,
     mut residents: Query<(&mut Resident, &Children, &mut Transform)>,
-    mut arms: Query<(&Arm, &mut Transform), Without<Resident>>,
+    mut arms: Query<(&Arm, &mut Transform), (Without<Resident>, Without<Leg>)>,
+    mut legs: Query<(&Leg, &mut Transform), (Without<Resident>, Without<Arm>)>,
     mut alerts: Query<&mut Visibility, With<Alert>>,
 ) {
     let dt = time.delta_secs();
@@ -637,20 +673,35 @@ fn animate(
         };
         resident.phase += dt * rate;
         let phase = resident.phase;
-        let hop = if panic { (phase * 0.5).sin().abs() * 0.25 } else { (phase).sin().abs() * 0.05 };
-        transform.translation.y += hop;
         let chatting = matches!(resident.mood, Mood::Chat(_));
+        // Шаг: в болтовне и на месте ноги стоят. Тело подпрыгивает на каждом шаге.
+        let step = if chatting || rate == 0.0 {
+            0.0
+        } else if panic {
+            STEP_SWING.1
+        } else {
+            STEP_SWING.0
+        };
+        // Выше всего тело, когда ноги проходят под ним.
+        let hop = if panic { phase.cos().abs() * 0.18 } else { phase.cos().abs() * 0.05 * step / STEP_SWING.0 };
+        transform.translation.y += hop;
         for child in children.iter() {
             if let Ok((arm, mut t)) = arms.get_mut(child) {
-                let angle = if panic {
+                let swing = if panic {
+                    // Руки вверх и машут над головой.
                     std::f32::consts::PI * 0.85 + (phase * 2.0 + arm.0).sin() * 0.3
                 } else if chatting && arm.0 > 0.0 {
                     1.2 + (phase * 1.5).sin() * 0.5
                 } else {
-                    phase.sin() * 0.5 * arm.0 * if rate > 0.0 { 1.0 } else { 0.0 }
+                    // Рука идёт вперёд вместе с противоположной ногой.
+                    phase.sin() * ARM_SWING * arm.0 * step / STEP_SWING.0
                 };
-                t.rotation = Quat::from_rotation_x(angle) * Quat::from_rotation_z(arm.0 * 0.15);
-                t.translation.y = if panic { 0.75 } else { 0.6 };
+                let shoulder = Vec3::new(arm.0 * SHOULDER.x, SHOULDER.y, 0.0);
+                *t = limb(shoulder, ARM_LENGTH, swing, arm.0 * 0.15);
+            }
+            if let Ok((leg, mut t)) = legs.get_mut(child) {
+                let hip = Vec3::new(leg.0 * HIP.x, HIP.y, 0.0);
+                *t = limb(hip, LEG_LENGTH, -phase.sin() * step * leg.0, 0.0);
             }
             if let Ok(mut v) = alerts.get_mut(child) {
                 let want = if panic { Visibility::Inherited } else { Visibility::Hidden };
@@ -876,6 +927,15 @@ fn remove_far_residents(
 mod tests {
     use super::*;
     use crate::settlements::generate_region;
+
+    #[test]
+    fn прямая_нога_достаёт_до_земли_а_шаг_уводит_ступню_вперёд() {
+        let hip = Vec3::new(HIP.x, HIP.y, 0.0);
+        let foot = |t: Transform| t.translation + t.rotation * Vec3::new(0.0, -LEG_LENGTH * 0.5, 0.0);
+        assert!(foot(limb(hip, LEG_LENGTH, 0.0, 0.0)).y.abs() < 1e-5);
+        let forward = foot(limb(hip, LEG_LENGTH, 0.5, 0.0));
+        assert!(forward.z < -0.1 && forward.y > 0.0);
+    }
 
     #[test]
     fn в_посёлке_от_8_до_12_жителей() {
