@@ -2,7 +2,7 @@
 name = "space_guard"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.97.1"
+rust-version = "1.99"
 description = "Game Jam Karlsruhe 2026: луноход на неизвестной планете, аркадный 3D-шутер"
 publish = false
 
