@@ -41,14 +41,6 @@
       "budget": 5000
     },
     {
-      "id": "resident",
-      "file": "resident.glb",
-      "scale": 0.579,
-      "rotation_y": 3.14159,
-      "offset_y": 0.55,
-      "budget": 800
-    },
-    {
       "id": "house_small",
       "file": "house_small.glb",
       "scale": 3.158,

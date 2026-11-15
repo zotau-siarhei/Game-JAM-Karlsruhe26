@@ -8,7 +8,7 @@
 use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 
-use crate::buildings::House;
+use crate::buildings::{House, Ruin};
 use crate::bullet::FireBullet;
 use crate::combat::{Collider, Damage, Died, Health, Team};
 use crate::enemy::Enemy;
@@ -16,7 +16,7 @@ use crate::explosion::Explosion;
 use crate::frame::{GameSet, RunMessages};
 use crate::models::Models;
 use crate::mortar::FireShell;
-use crate::obstacles::Obstacle;
+use crate::obstacles::{Obstacle, ObstacleGrid};
 use crate::rng::GameRng;
 use crate::rover::{Rover, RoverMotion};
 use crate::run::{RunScoped, WorldRebuilt};
@@ -80,7 +80,9 @@ const HAIR_COLORS: [Color; 4] = [
     Color::srgb(0.66, 0.66, 0.64),
 ];
 
-/// Идентификатор модели жителя в списке моделей. Пока модели нет, житель собран из примитивов.
+/// Идентификатор модели жителя в списке моделей. Записи в списке нет: житель собран из
+/// примитивов, у каждого свои цвета и аксессуар, руки машут при ходьбе и панике. Модель
+/// подключается записью с этим идентификатором, но у неё нет рук-[`Arm`] и вариантов.
 const RESIDENT_MODEL: &str = "resident";
 
 /// Плагин жителей.
@@ -109,7 +111,7 @@ impl Plugin for ResidentsPlugin {
                         .chain()
                         .in_set(GameSet::Simulation),
                     (resident_deaths, hidden_die_with_house).chain().in_set(GameSet::Death),
-                    remove_far_residents.in_set(GameSet::Cleanup),
+                    (remove_dead_residents, remove_far_residents).in_set(GameSet::Cleanup),
                     (window_eyes, fade_puffs).in_set(GameSet::Presentation),
                 ),
             );
@@ -237,7 +239,11 @@ fn reset_danger(mut rebuilt: MessageReader<WorldRebuilt>, mut danger: ResMut<Dan
     }
 }
 
-/// Когда дом появляется в сцене, рядом с ним выходят его жители, кроме прячущихся.
+/// Когда дом или руины появляются в сцене, рядом выходят их жители, кроме прячущихся.
+///
+/// Создаются только недостающие: руины, сменившие дом на глазах у игрока, застают его
+/// выживших жителей ещё в сцене.
+#[allow(clippy::too_many_arguments)]
 fn spawn_residents(
     mut commands: Commands,
     assets: Res<ResidentAssets>,
@@ -246,20 +252,21 @@ fn spawn_residents(
     settlements: Res<Settlements>,
     mut dice: ResMut<GameRng>,
     houses: Query<&House, Added<House>>,
+    ruins: Query<&Ruin, Added<Ruin>>,
+    residents: Query<&Resident>,
 ) {
-    for house in &houses {
-        let Some(state) = settlements.house(house.0) else {
+    let homes: Vec<HouseId> = houses.iter().map(|h| h.0).chain(ruins.iter().map(|r| r.0)).collect();
+    for id in homes {
+        let Some(state) = settlements.house(id) else {
             continue;
         };
-        if state.status == HouseStatus::Destroyed {
-            continue;
-        }
-        let outside = state.residents.saturating_sub(state.hiding);
+        let present = residents.iter().filter(|r| r.home == id).count();
+        let outside = (state.residents.saturating_sub(state.hiding) as usize).saturating_sub(present);
         for _ in 0..outside {
             let angle = dice.range(0.0, std::f32::consts::TAU);
             let r = state.kind.half_extents().length() + dice.range(1.0, 4.0);
             let p = state.position + Vec2::from_angle(angle) * r;
-            spawn_resident(&mut commands, &assets, &mut models, &terrain, &mut dice, house.0, p);
+            spawn_resident(&mut commands, &assets, &mut models, &terrain, &mut dice, id, p);
         }
     }
 }
@@ -451,6 +458,14 @@ fn think(
                 }
             }
             Mood::Panic(left) => {
+                // Убежище разрушено или просело, пока житель к нему бежал: бежит прочь от него.
+                if let Some((id, _)) = resident.shelter
+                    && settlements.house(id).is_none_or(|s| s.status != HouseStatus::Intact)
+                {
+                    resident.shelter = None;
+                    let from = settlements.house(id).map_or(p, |s| s.position);
+                    resident.target = p + (p - from).normalize_or(Vec2::X) * FLEE_DISTANCE;
+                }
                 let left = left - dt;
                 if left <= 0.0 && resident.shelter.is_none() {
                     // Паника прошла: возвращается к дому шагом.
@@ -460,7 +475,9 @@ fn think(
                     resident.mood = Mood::Panic(left.max(0.0));
                 }
                 if resident.stuck > 1.5 {
+                    // До убежища не пробиться: бежит куда-нибудь, паника кончится по времени.
                     resident.stuck = 0.0;
+                    resident.shelter = None;
                     resident.target = p + Vec2::from_angle(dice.range(0.0, std::f32::consts::TAU)) * 8.0;
                 }
             }
@@ -478,6 +495,7 @@ fn walk(
     time: Res<Time>,
     terrain: Res<Terrain>,
     mut settlements: ResMut<Settlements>,
+    grid: Res<ObstacleGrid>,
     obstacles: Query<&Obstacle, Without<Resident>>,
     mut residents: Query<(Entity, &mut Transform, &mut Resident)>,
 ) {
@@ -522,7 +540,7 @@ fn walk(
             }
         }
         let mut next = p + step;
-        for obstacle in &obstacles {
+        for obstacle in grid.near(next, 1.0).filter_map(|e| obstacles.get(e).ok()) {
             // В своё убежище можно упереться: он и есть цель.
             if let Some(push) = obstacle.shape.push_out(next, 0.3) {
                 next += push;
@@ -632,6 +650,7 @@ fn animate(
 }
 
 /// Гибель: облачко «пуф», отлетающая шляпа-кубик, учёт в доме и сообщение для тревоги.
+/// Сама сущность удаляется в уборке: её застают все читатели `Died`.
 fn resident_deaths(
     mut commands: Commands,
     mut died: MessageReader<Died>,
@@ -651,7 +670,15 @@ fn resident_deaths(
         }
         spawn_puff(&mut commands, &assets, &mut dice, at);
         deaths.write(ResidentDied { position: at });
-        commands.entity(death.entity).despawn();
+    }
+}
+
+/// Погибшие жители уходят из сцены.
+fn remove_dead_residents(mut commands: Commands, residents: Query<(Entity, &Health), With<Resident>>) {
+    for (entity, health) in &residents {
+        if health.is_dead() {
+            commands.entity(entity).try_despawn();
+        }
     }
 }
 
@@ -695,6 +722,7 @@ fn hidden_die_with_house(
     assets: Res<ResidentAssets>,
     mut dice: ResMut<GameRng>,
     mut settlements: ResMut<Settlements>,
+    terrain: Res<Terrain>,
     mut destroyed: MessageReader<crate::buildings::BuildingDestroyed>,
     mut deaths: MessageWriter<ResidentDied>,
     mut danger: ResMut<Danger>,
@@ -718,7 +746,8 @@ fn hidden_die_with_house(
         let victims = state.hiding;
         state.residents = state.residents.saturating_sub(victims);
         state.hiding = 0;
-        let at = Vec3::new(state.position.x, 0.0, state.position.y);
+        let ground = terrain.height_at(state.position.x, state.position.y);
+        let at = Vec3::new(state.position.x, ground, state.position.y);
         for _ in 0..victims {
             deaths.write(ResidentDied { position: at });
         }
@@ -813,19 +842,19 @@ fn window_eyes(
     }
 }
 
-/// Жители, чей дом выгружен вместе с участком, уходят из сцены: их число хранится в доме.
-/// Жители разрушенного дома остаются бродить у руин.
+/// Жители, чей дом или его руины выгружены вместе с участком, уходят из сцены: их число
+/// хранится в доме, и они вернутся, когда дом или руины снова появятся.
 fn remove_far_residents(
     mut commands: Commands,
-    settlements: Res<Settlements>,
     houses: Query<&House>,
+    ruins: Query<&Ruin>,
     residents: Query<(Entity, &Resident)>,
 ) {
-    let spawned: Vec<HouseId> = houses.iter().map(|h| h.0).collect();
+    let spawned: std::collections::HashSet<HouseId> =
+        houses.iter().map(|h| h.0).chain(ruins.iter().map(|r| r.0)).collect();
     for (entity, resident) in &residents {
-        let ruined = settlements.house(resident.home).is_none_or(|s| s.status == HouseStatus::Destroyed);
-        if !ruined && !spawned.contains(&resident.home) {
-            commands.entity(entity).despawn();
+        if !spawned.contains(&resident.home) {
+            commands.entity(entity).try_despawn();
         }
     }
 }

@@ -72,6 +72,7 @@ impl Plugin for BuildingsPlugin {
                     wobble_houses.in_set(GameSet::Simulation),
                     (break_doors, blast_houses, react_to_hits).chain().in_set(GameSet::Damage),
                     (remember_house_health, destroy_houses).chain().in_set(GameSet::Death),
+                    remove_destroyed_houses.in_set(GameSet::Cleanup),
                     stream_houses.after(terrain::stream_chunks).in_set(GameSet::Streaming),
                     darken_damaged_houses.in_set(GameSet::Presentation),
                 ),
@@ -82,6 +83,10 @@ impl Plugin for BuildingsPlugin {
 /// Сущность дома и адрес его состояния в [`Settlements`].
 #[derive(Component, Debug, Clone, Copy)]
 pub struct House(pub HouseId);
+
+/// Руины разрушенного дома: у них бродят выжившие жители, они оседают в новые кратеры.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct Ruin(pub HouseId);
 
 /// Просьба выбить дверь дома на стене `side`: из него выезжает враг.
 #[derive(Message, Debug, Clone, Copy)]
@@ -171,8 +176,7 @@ pub enum DestroyCause {
 /// Дом разрушен. Отправляется ровно один раз на дом: на него подпишутся тревога, жители и ящики.
 #[derive(Message, Debug, Clone, Copy)]
 pub struct BuildingDestroyed {
-    // Читают жители и ящики из следующих изменений.
-    #[allow(dead_code)]
+    /// Читают ящики (`src/pickups.rs`).
     pub position: Vec3,
     /// Читают угроза (`src/waves.rs`) и тревога (`src/alarm.rs`).
     pub cause: DestroyCause,
@@ -308,7 +312,7 @@ fn stream_houses(
                     continue;
                 }
                 let entity = if house.status == HouseStatus::Destroyed {
-                    spawn_ruin(&mut commands, &assets, &terrain, house)
+                    spawn_ruin(&mut commands, &assets, &terrain, id, house)
                 } else {
                     spawn_house(&mut commands, &assets, &terrain, id, house)
                 };
@@ -444,6 +448,7 @@ fn spawn_ruin(
     commands: &mut Commands,
     assets: &HouseAssets,
     terrain: &Terrain,
+    id: HouseId,
     house: &HouseState,
 ) -> Entity {
     let footprint = house.footprint();
@@ -460,6 +465,7 @@ fn spawn_ruin(
     ];
     commands
         .spawn((
+            Ruin(id),
             RunScoped,
             Transform::from_xyz(house.position.x, base, house.position.y)
                 .with_rotation(Quat::from_rotation_y(house.yaw)),
@@ -549,6 +555,7 @@ fn remember_house_health(mut settlements: ResMut<Settlements>, houses: Query<(&H
 }
 
 /// Дом с кончившейся прочностью сменяется руинами. Событие разрушения — один раз на дом.
+/// Сущность дома удаляется в уборке: её застают все читатели `Died`.
 fn destroy_houses(
     mut commands: Commands,
     mut died: MessageReader<Died>,
@@ -579,8 +586,7 @@ fn destroy_houses(
         state.status = HouseStatus::Destroyed;
         state.health = 0.0;
         let state = state.clone();
-        commands.entity(death.entity).try_despawn();
-        let ruin = spawn_ruin(&mut commands, &assets, &terrain, &state);
+        let ruin = spawn_ruin(&mut commands, &assets, &terrain, house.0, &state);
         spawned.0.insert(house.0, ruin);
         let cause = match death.killer {
             _ if collapsing => DestroyCause::Collapse,
@@ -598,6 +604,15 @@ fn destroy_houses(
             roof_material: assets.roofs[state.roof_color].clone(),
             blast: blast.map(|b| b.0),
         });
+    }
+}
+
+/// Разрушенные дома уходят из сцены: на их месте уже руины.
+fn remove_destroyed_houses(mut commands: Commands, houses: Query<(Entity, &Health), With<House>>) {
+    for (entity, health) in &houses {
+        if health.is_dead() {
+            commands.entity(entity).try_despawn();
+        }
     }
 }
 
