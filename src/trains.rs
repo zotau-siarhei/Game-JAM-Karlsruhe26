@@ -157,7 +157,7 @@ struct OnTrack {
 
 /// Вагон.
 #[derive(Component)]
-struct Car {
+pub struct Car {
     kind: CarKind,
 }
 

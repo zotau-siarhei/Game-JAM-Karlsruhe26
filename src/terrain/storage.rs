@@ -222,6 +222,12 @@ impl Terrain {
         }
     }
 
+    /// Цвет вершины мировой сетки в линейном RGBA, если её участок уже сгенерирован.
+    pub fn vertex_color(&self, vx: i32, vz: i32) -> Option<[f32; 4]> {
+        let (coord, ix, iz) = split_vertex(vx, vz);
+        self.chunks.get(&coord).map(|chunk| chunk.colors[ChunkData::index(ix, iz)])
+    }
+
     /// Высота поверхности в точке мира: билинейная интерполяция четырёх соседних вершин.
     pub fn height_at(&self, x: f32, z: f32) -> f32 {
         let (fx, fz) = (x.floor(), z.floor());
