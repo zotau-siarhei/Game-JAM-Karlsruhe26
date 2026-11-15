@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 
 use crate::airstrike::Strike;
-use crate::arsenal::WeaponDenied;
+use crate::arsenal::AmmoRanOut;
 use crate::buildings::BuildingDestroyed;
 use crate::bullet::FireBullet;
 use crate::capsule::{Capsule, FALL_SECONDS, MARK_SECONDS};
@@ -395,8 +395,8 @@ fn sound_buildings(
     }
 }
 
-/// Выбрано оружие без боезапаса — штаб замечает, что стрелять нечем.
-fn voice_weapon_denied(mut denied: MessageReader<WeaponDenied>, mut cues: MessageWriter<VoiceCue>) {
+/// Боезапас кончился на последнем выстреле — штаб замечает, что стрелять нечем.
+fn voice_weapon_denied(mut denied: MessageReader<AmmoRanOut>, mut cues: MessageWriter<VoiceCue>) {
     if denied.read().count() > 0 {
         cues.write(VoiceCue::new("ammo_empty"));
     }
