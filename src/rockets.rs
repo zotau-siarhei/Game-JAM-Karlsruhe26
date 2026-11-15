@@ -16,7 +16,7 @@ use crate::explosion::Explosion;
 use crate::frame::{GameSet, RunMessages};
 use crate::obstacles::{self, Obstacle};
 use crate::rover::{self, Rover};
-use crate::run::{GameState, RunScoped};
+use crate::run::{GameState, RunScoped, WorldRebuilt};
 use crate::terrain::Terrain;
 use crate::weapons::CurrentWeapon;
 
@@ -50,19 +50,32 @@ const RETARGET_RANGE: f32 = 15.0;
 const MAX_RANGE: f32 = 80.0;
 
 /// Как часто ракета оставляет клуб дыма, с.
-const PUFF_INTERVAL: f32 = 0.03;
+const PUFF_INTERVAL: f32 = 0.07;
 
-/// Сколько живёт клуб дыма, с.
-const PUFF_SECONDS: f32 = 1.5;
+/// Сколько живёт клуб дыма, с: на ракету в полёте приходится около дюжины клубов.
+const PUFF_SECONDS: f32 = 0.9;
+
+/// Сколько клубов дыма всех ракет может быть сразу: залп не плодит сотни сущностей.
+const MAX_PUFFS: usize = 90;
+
+/// Радиус шара пламени и клуба дыма в масштабе 1, м.
+const FLAME_RADIUS: f32 = 0.18;
+
+/// Начальный размер клуба: клубы реже, поэтому крупнее и сливаются в след.
+const PUFF_SIZE: f32 = 1.6;
 
 /// Подключает ракеты.
 pub struct RocketsPlugin;
 
 impl Plugin for RocketsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_run_message::<FireRocket>().add_systems(Startup, create_rocket_assets).add_systems(
+        app.init_resource::<Launchers>()
+            .add_run_message::<FireRocket>()
+            .add_systems(Startup, create_rocket_assets)
+            .add_systems(
             Update,
             (
+                reset_launchers.in_set(GameSet::Reset),
                 (fire_rockets, fire_homing)
                     .chain()
                     .after(rover::drive_rover)
@@ -71,6 +84,20 @@ impl Plugin for RocketsPlugin {
                 (show_locks, fade_puffs).in_set(GameSet::Presentation),
             ),
         );
+    }
+}
+
+/// Остаток перезарядки пусковых лунохода, с.
+#[derive(Resource, Default)]
+struct Launchers {
+    rockets: f32,
+    salvo: f32,
+}
+
+/// Мир перестроен: перезарядка прошлого забега не переходит в новый.
+fn reset_launchers(mut rebuilt: MessageReader<WorldRebuilt>, mut launchers: ResMut<Launchers>) {
+    if rebuilt.read().last().is_some() {
+        *launchers = Launchers::default();
     }
 }
 
@@ -120,10 +147,12 @@ struct Homing {
     entity: Option<Entity>,
 }
 
-/// Клуб дыма следа.
+/// Клуб дыма следа: вытянут вдоль пути, чтобы редкие клубы сливались в сплошной след.
 #[derive(Component)]
 struct Puff {
     remaining: f32,
+    /// Длина клуба вдоль пути в масштабе меша.
+    stretch: f32,
 }
 
 /// Метка захвата над врагом.
@@ -149,7 +178,7 @@ fn create_rocket_assets(
     commands.insert_resource(RocketAssets {
         body: meshes.add(Capsule3d::new(0.12, 0.6)),
         body_material: materials.add(Color::srgb(0.95, 0.85, 0.25)),
-        flame: meshes.add(Sphere::new(0.18)),
+        flame: meshes.add(Sphere::new(FLAME_RADIUS)),
         flame_material: materials.add(StandardMaterial {
             base_color: Color::srgb(1.0, 0.6, 0.15),
             emissive: LinearRgba::rgb(10.0, 4.0, 0.5),
@@ -206,9 +235,10 @@ fn fire_rockets(
     aim: Res<AimPoint>,
     assets: Res<RocketAssets>,
     mut inventory: ResMut<Inventory>,
-    mut cooldown: Local<f32>,
+    mut launchers: ResMut<Launchers>,
     rover: Single<(&Transform, &Health), With<Rover>>,
 ) {
+    let cooldown = &mut launchers.rockets;
     *cooldown = (*cooldown - time.delta_secs()).max(0.0);
     let (rover, health) = *rover;
     let trigger = mouse.pressed(MouseButton::Left)
@@ -262,10 +292,11 @@ fn fire_homing(
     aim: Res<AimPoint>,
     assets: Res<RocketAssets>,
     mut inventory: ResMut<Inventory>,
-    mut cooldown: Local<f32>,
+    mut launchers: ResMut<Launchers>,
     rover: Single<(&Transform, &Health), With<Rover>>,
     enemies: Query<(Entity, &GlobalTransform, &Health), With<Enemy>>,
 ) {
+    let cooldown = &mut launchers.salvo;
     *cooldown = (*cooldown - time.delta_secs()).max(0.0);
     let (rover, health) = *rover;
     let trigger = mouse.pressed(MouseButton::Left)
@@ -377,12 +408,14 @@ fn fly_rockets(
     targets: Query<(Entity, &GlobalTransform, &Collider, &Team, &Health)>,
     enemies: Query<(Entity, &GlobalTransform, &Health), With<Enemy>>,
     obstacles: Query<(Entity, &Obstacle)>,
+    puffs: Query<(), With<Puff>>,
     mut explosions: MessageWriter<Explosion>,
 ) {
     let dt = time.delta_secs();
     if dt <= 0.0 {
         return;
     }
+    let mut puff_count = puffs.iter().count();
     for (entity, mut transform, mut rocket) in &mut rockets {
         let from = transform.translation;
         let mut velocity = rocket.velocity;
@@ -473,17 +506,24 @@ fn fly_rockets(
         transform.rotation = Quat::from_rotation_arc(Vec3::Y, velocity.normalize_or(Vec3::Y));
 
         rocket.puff -= dt;
-        if rocket.puff <= 0.0 {
+        if rocket.puff <= 0.0 && puff_count < MAX_PUFFS {
             rocket.puff = PUFF_INTERVAL;
+            puff_count += 1;
+            let dir = velocity.normalize_or(Vec3::Y);
+            let length = velocity.length() * PUFF_INTERVAL;
+            let stretch = length / (2.0 * FLAME_RADIUS);
             commands.spawn((
                 Puff {
                     remaining: PUFF_SECONDS,
+                    stretch,
                 },
                 RunScoped,
                 NotShadowCaster,
                 Mesh3d(assets.flame.clone()),
                 MeshMaterial3d(assets.puff_material.clone()),
-                Transform::from_translation(from).with_scale(Vec3::splat(1.2)),
+                Transform::from_translation(from - dir * length * 0.5)
+                    .with_rotation(Quat::from_rotation_arc(Vec3::Y, dir))
+                    .with_scale(Vec3::new(PUFF_SIZE, stretch.max(PUFF_SIZE), PUFF_SIZE)),
             ));
         }
     }
@@ -499,7 +539,8 @@ fn fade_puffs(mut commands: Commands, time: Res<Time>, mut puffs: Query<(Entity,
             continue;
         }
         let t = puff.remaining / PUFF_SECONDS;
-        transform.scale = Vec3::splat(1.2 + (1.0 - t) * 2.0) * t.sqrt();
+        let width = (PUFF_SIZE + (1.0 - t) * 2.4) * t.sqrt();
+        transform.scale = Vec3::new(width, (puff.stretch * t.sqrt()).max(width), width);
         transform.translation.y += dt * 0.6;
     }
 }
