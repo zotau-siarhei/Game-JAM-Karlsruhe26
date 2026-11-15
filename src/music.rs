@@ -55,7 +55,7 @@ impl Plugin for MusicPlugin {
 }
 
 /// Что должно звучать.
-// Меню, бой и босс появятся с экранами и волнами.
+// `Boss` пока никто не включает: бой с боссом идёт под `Combat`.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Track {
