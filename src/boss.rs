@@ -44,8 +44,11 @@ const LANDING_BLAST: (f32, f32) = (6.0, 1.6);
 const BODY: Vec3 = Vec3::new(5.0, 3.0, 7.0);
 /// Высота центра корпуса над землёй, м: под корпусом ноги.
 const RIDE_HEIGHT: f32 = 3.4;
-/// Ядро на модели туловища: высота и вынос вперёд.
-const MODEL_CORE: (f32, f32) = (0.4, 3.4);
+/// Ядро на модели туловища: высота и вынос вперёд — янтарный глаз на переднем торце.
+const MODEL_CORE: (f32, f32) = (3.4, 3.35);
+/// Бёдра модели: шарниры под туловищем, куда крепятся ноги, м: поперёк, высота, вдоль.
+/// Модель ноги начинается от бедра и высотой до земли.
+const MODEL_HIPS: Vec3 = Vec3::new(1.7, -0.4, 1.7);
 /// Радиус коллайдера, м.
 const RADIUS: f32 = 4.2;
 /// Здоровье при нулевой угрозе; растёт на 40 % за единицу угрозы.
@@ -300,8 +303,9 @@ fn spawn_boss(
                 ));
             });
             for (x, z) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                let hip = Transform::from_xyz(x * MODEL_HIPS.x, MODEL_HIPS.y, z * MODEL_HIPS.z);
                 let leg = Transform::from_xyz(x * BODY.x * 0.45, -RIDE_HEIGHT * 0.5, z * BODY.z * 0.4);
-                models.spawn_visual(parent, "boss_leg", leg, |spare| {
+                models.spawn_visual(parent, "boss_leg", hip, |spare| {
                     spare.spawn((
                         Mesh3d(assets.leg.clone()),
                         MeshMaterial3d(assets.leg_material.clone()),

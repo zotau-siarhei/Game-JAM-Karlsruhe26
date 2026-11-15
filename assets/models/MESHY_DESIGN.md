@@ -7,7 +7,7 @@
 - Силуэт узнаваем **сверху**: камера смотрит сверху с небольшим наклоном.
 - Цвета сторон:
   - луноход — бирюзовый с белым;
-  - враги — тёмный графит с янтарно-жёлтыми метками, реалистичная боевая техника (решение 2026-11-15, раздел «Враги» ниже; танк и босс пока фиолетовые);
+  - враги — тёмный графит с янтарно-жёлтыми метками, реалистичная боевая техника (решение 2026-11-15, раздел «Враги» ниже);
   - Служба защиты — белый с оранжевым, без мигалок, сирен, надписей и полицейской раскраски;
   - жители — пастельные, разноцветные;
   - **красный только для опасности**. В моделях красного нет вообще: ни на крышах, ни на вагонах.
@@ -47,19 +47,12 @@ Negative prompt (если поле есть): `realistic, gritty, dark, rusty, b
 ### Позже
 | id | бюджет | промпт |
 |---|---|---|
-| `boss_colossus` | 15000 | `giant walking alien fortress on four mechanical legs, purple armor, yellow glowing core, mortar and rocket pods on its back` + суффикс |
 | `train_loco` / `train_wagon` | 4000 | `chunky cartoon alien locomotive, pastel blue and yellow (not red)` / `matching cargo wagon` + суффикс |
 | `house_barrack` | 4000 | `long low alien barrack, pastel walls, flat saturated roof` + суффикс |
 
-Тяжёлый танк (`enemy_tank_hull`, `_turret`, `_track`, 5000 / 3000 / 2000) — `heavy slow alien tank with a big laser cannon, purple armor with yellow glowing details, wide tracks` + суффикс. Сделан по частям, чтобы башня поворачивалась, а гусеницы бежали (`src/tank_look.rs`).
-Сначала картинка целого танка, потом по ней как образцу (Image References) — корпус и башня:
-`Only the hull of the same alien tank as in the reference image, as a separate game part: NO turret and NO tracks...`,
-`Only the turret ... one big laser cannon pointing straight forward, the cannon is centered and aligned with the turret`.
-Гусеницу с образцом целого танка модель упорно рисует парой, поэтому её промпт — без образца:
-`A single isolated tank track unit, one piece only... Only one object in the picture`. Лимит полигонов к ней
-не применился (25 тыс.), её упростили в Blender модификатором Decimate до 2 тыс.
+Тяжёлый танк (`enemy_tank_hull`, `_turret`, `_track`) и босс (`boss_body`, `boss_leg`) переделаны 2026-11-15 в стиле новых врагов — см. раздел «Враги» ниже.
 
-### Сделано 2026-11-15: поезда, дома, босс, оружие
+### Сделано 2026-11-15: поезда, дома, оружие (первый босс заменён, см. «Враги»)
 Все через Image (2 варианта, взят первый) → Image to 3D, Smart Topology с бюджетом из таблицы. Бюджеты
 соблюдены, упрощать не пришлось. Подключены через `Models::spawn_visual` (`src/models.rs`), примитивы — запасной облик. `scale` и `offset_y` в `models.json`
 подобраны под размеры из кода (`trains.rs`, `settlements.rs`, `boss.rs`) и проверены на снимках из игры.
@@ -72,8 +65,6 @@ Negative prompt (если поле есть): `realistic, gritty, dark, rusty, b
 | `train_wagon_passenger` / `_freight` / `_tank` | ~3980 | картинка локомотива в Image References: `A passenger railway car` / `A freight boxcar railway wagon` / `A tank car railway wagon matching the locomotive in the reference image` | вдоль X, симметричны |
 | `house_two_story` | 3711 | `Two-story cozy alien house: pastel mint walls, saturated violet rounded roof, ... small balcony` | дверь на +Z |
 | `house_barrack` | 3823 | `Long low one-story alien barrack: ... three times longer than wide, pastel peach walls, flat saturated teal roof` | длинный по X, повёрнут вдоль Z |
-| `boss_body` | 7944 | сначала картинка целого босса (`Giant walking alien fortress boss ... four thick mechanical legs`), по ней `Only the body of the same boss robot ... NO legs at all` | ядро на +Z; низ туловища на высоте низа прежнего куба |
-| `boss_leg` | 1572 | по картинке босса: `ONE single mechanical leg ... only one leg, not a pair` | стоит по Y, центр в начале координат |
 | `weapon_mg` / `weapon_mortar` / `weapon_rockets` / `weapon_laser` | ~1500 | `Weapon attachment for the turret of a cute cartoon moon rover: twin machine gun` / `short fat mortar tube` / `rocket launcher box` / `sci-fi laser emitter` + `turquoise and white housing ... flat round mounting plate` | ствол на −X, у ракет на +X; мортира смотрит вверх |
 
 `service_car` не делали: машины Службы защиты в коде пока нет.
@@ -132,6 +123,29 @@ full body, A-pose, plain light grey background`. Image to 3D: Smart Topology 600
   колеса задаёт `enemy_look`.
 - Робот: Image с Pose = A-Pose → Image to 3D (Smart Topology 6000, Pose A-Pose) → Rig → Humanoid, рост 2 м → клипы
   `Idle_02`, `Walking`, `Running`, как у жителей. Перёд +Z, ступни на y = 0, в игре 2,2 м.
+
+Тяжёлый танк по частям (башня поворачивается, ленты бегут — `src/tank_look.rs`). Образец целого:
+`A heavy armored battle tank with a big laser cannon, enemy vehicle for a top-down action game, semi-realistic hard-surface 3D game asset: wide low dark graphite armored hull, a large angular turret with one long thick energy laser cannon pointing straight forward and aligned with the hull, a glowing amber lens at the muzzle, two wide tracks with dark steel treads, amber-yellow warning markings and small amber sensor lights, rugged military look, single vehicle, centered, 3/4 view from above, plain light grey background, no text, no logos, no red`.
+
+| id | треуг. | промпт (с образцом в Image References, кроме гусеницы) |
+|---|---|---|
+| `enemy_tank_hull` | 3215 | `Only the hull of the same heavy tank as in the reference image, as a separate game part: NO turret and NO tracks at all, flat empty turret ring on top, the hull hovers with nothing under it and no wheels, same dark graphite armor and amber-yellow markings, ...` |
+| `enemy_tank_turret` | 2332 | `Only the turret of the same heavy tank as in the reference image, as a separate game part: NO hull and NO tracks, the turret alone with its one long thick laser cannon pointing straight forward, the cannon is centered and aligned with the turret, glowing amber lens at the muzzle, ...` |
+| `enemy_tank_track` | 1674 | без образца: `ONE single tank track unit of a heavy military tank, as a separate game part: a long low loop of dark steel track links with grousers wrapped around five road wheels, a drive sprocket and an idler, a dark graphite armored side skirt over the top with small amber-yellow markings, only one track, no tank hull, no turret, side 3/4 view from above, ...` |
+
+Босс — шагающая крепость на четырёх ногах. Образец: `A giant four-legged armored assault walker, boss enemy for a top-down action game, semi-realistic sci-fi hard-surface 3D game asset: a massive wide box-shaped dark graphite armored body like a mobile fortress, four thick heavy mechanical legs with knee joints and big flat feet, a battery of short mortar tubes and two rocket launcher pods on its back, one large glowing amber sensor eye at the front, amber-yellow hazard stripes and small amber lights, rugged military look, ...`.
+
+| id | треуг. | промпт (с образцом) |
+|---|---|---|
+| `boss_body` | 5909 | `Only the body of the same giant walker as in the reference image, as a separate game part: NO legs at all, just round hip joint sockets at the four lower corners, the body hovers with nothing under it, keep the amber sensor eye at the front and the rocket launcher pods on its back, ...` |
+| `boss_leg` | 1158 | `ONE single leg of the same giant walker as in the reference image, as a separate game part: one heavy mechanical leg standing straight up vertically, a round hip joint at the top, a knee joint, a thick lower leg and a big flat foot at the bottom, only one leg, no body, ..., side view` |
+
+- Все части смотрят носом на −X (`rotation_y` = −π/2), гусеница лежит вдоль X (`rotation_y` = π/2).
+- Башня и нога доработаны скриптом Blender: у башни начало координат перенесено в середину низа башни без
+  ствола (вокруг него она поворачивается), дульный срез — 0,631 вперёд и 0,116 вверх в единицах модели
+  (`tank_look`). Нога в Meshy вышла парой, вторая отрезана; начало ноги — бедро, нога висит вниз.
+- Шарниры бёдер босса в модели — ±0,2 по обеим осям на 0,385 ниже центра, глаз — на переднем торце на высоте 0,06:
+  отсюда `MODEL_HIPS` и `MODEL_CORE` в `src/boss.rs` при масштабе 8,5.
 
 ## Первая планета (по гиту)
 В гите нет отдельной «планеты с названием». Первая (и пока единственная) планета описана так:
