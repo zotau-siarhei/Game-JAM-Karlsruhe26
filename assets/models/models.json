@@ -147,9 +147,9 @@
     {
       "id": "house_two_story",
       "file": "house_two_story.glb",
-      "scale": 7.0,
+      "scale": 7.3,
       "rotation_y": 0.0,
-      "offset_y": 3.34,
+      "offset_y": 3.48,
       "budget": 4000
     },
     {
@@ -163,9 +163,9 @@
     {
       "id": "boss_body",
       "file": "boss_body.glb",
-      "scale": 7.3,
+      "scale": 7.0,
       "rotation_y": 3.14159,
-      "offset_y": 0.0,
+      "offset_y": 1.2,
       "budget": 8000
     },
     {
@@ -179,33 +179,33 @@
     {
       "id": "weapon_mg",
       "file": "weapon_mg.glb",
-      "scale": 1.2,
+      "scale": 0.6,
       "rotation_y": -1.5708,
-      "offset_y": 0.33,
+      "offset_y": 0.165,
       "budget": 1500
     },
     {
       "id": "weapon_mortar",
       "file": "weapon_mortar.glb",
-      "scale": 1.2,
+      "scale": 0.6,
       "rotation_y": -1.5708,
-      "offset_y": 0.56,
+      "offset_y": 0.28,
       "budget": 1500
     },
     {
       "id": "weapon_rockets",
       "file": "weapon_rockets.glb",
-      "scale": 1.2,
+      "scale": 0.6,
       "rotation_y": 1.5708,
-      "offset_y": 0.46,
+      "offset_y": 0.231,
       "budget": 1500
     },
     {
       "id": "weapon_laser",
       "file": "weapon_laser.glb",
-      "scale": 1.2,
+      "scale": 0.6,
       "rotation_y": -1.5708,
-      "offset_y": 0.33,
+      "offset_y": 0.163,
       "budget": 1500
     }
   ]

@@ -8,6 +8,7 @@ use bevy::prelude::*;
 use crate::aim::AimPoint;
 use crate::bullet::FireBullet;
 use crate::combat::{Health, Team};
+use crate::models::Models;
 use crate::rover::{self, Rover};
 use crate::run::GameState;
 use crate::sound_list::Dice;
@@ -46,6 +47,9 @@ const TURRET_COLOR: Color = Color::srgb(0.88, 0.9, 0.92);
 /// Цвет ствола.
 const BARREL_COLOR: Color = Color::srgb(0.25, 0.27, 0.3);
 
+/// Модель оружия стоит на крышке башни и вынесена вперёд от её оси, м: (высота, вынос).
+const WEAPON_MOUNT: (f32, f32) = (0.11, 0.1);
+
 /// Подключает выбор оружия, башню и пулемёт.
 pub struct WeaponsPlugin;
 
@@ -57,6 +61,7 @@ impl Plugin for WeaponsPlugin {
                 Update,
                 (
                     attach_turret,
+                    show_weapon,
                     (aim_turret, fire_machine_gun)
                         .chain()
                         .run_if(in_state(GameState::Playing)),
@@ -80,6 +85,17 @@ pub enum CurrentWeapon {
 }
 
 impl CurrentWeapon {
+    /// Модель насадки на башне из `models.json`. У авиаудара насадки нет.
+    fn model(self) -> Option<&'static str> {
+        match self {
+            CurrentWeapon::MachineGun => Some("weapon_mg"),
+            CurrentWeapon::Mortar => Some("weapon_mortar"),
+            CurrentWeapon::Rockets | CurrentWeapon::HomingRockets => Some("weapon_rockets"),
+            CurrentWeapon::Laser => Some("weapon_laser"),
+            CurrentWeapon::Airstrike => None,
+        }
+    }
+
     /// Все виды оружия по порядку клавиш 1–6. Боезапас и параметры — в модуле `arsenal`.
     pub const ALL: [CurrentWeapon; 6] = [
         CurrentWeapon::MachineGun,
@@ -108,6 +124,13 @@ impl CurrentWeapon {
 struct Turret {
     /// Поворот башни относительно корпуса вокруг его оси «вверх», рад. Ноль — вперёд.
     yaw: f32,
+}
+
+/// Место насадки оружия на башне. Без моделей насадка — простой ствол.
+#[derive(Component)]
+struct WeaponMount {
+    barrel: Handle<Mesh>,
+    material: Handle<StandardMaterial>,
 }
 
 /// Время до следующего выстрела пулемёта, с.
@@ -154,15 +177,47 @@ fn attach_turret(
                     Transform::from_translation(TURRET_OFFSET + Vec3::Y * TURRET_HEIGHT),
                 ))
                 .with_children(|turret| {
-                    // Цилиндр стоит вдоль Y: кладём его стволом вперёд, на -Z.
                     turret.spawn((
-                        Mesh3d(barrel),
-                        MeshMaterial3d(barrel_material.clone()),
-                        Transform::from_xyz(0.0, MUZZLE_HEIGHT - TURRET_HEIGHT, -MUZZLE_FORWARD * 0.5)
-                            .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
+                        WeaponMount {
+                            barrel,
+                            material: barrel_material,
+                        },
+                        Transform::default(),
+                        Visibility::default(),
                     ));
                 });
         });
+    }
+}
+
+/// Ставит на башню насадку выбранного оружия: модель из списка, без неё — ствол.
+fn show_weapon(
+    mut commands: Commands,
+    current: Res<CurrentWeapon>,
+    models: Res<Models>,
+    mounts: Query<(Entity, &WeaponMount, Ref<WeaponMount>)>,
+) {
+    for (entity, mount, added) in &mounts {
+        if !current.is_changed() && !added.is_added() {
+            continue;
+        }
+        let mut mount_commands = commands.entity(entity);
+        mount_commands.despawn_related::<Children>();
+        let Some(id) = current.model() else {
+            continue;
+        };
+        let at = Transform::from_xyz(0.0, WEAPON_MOUNT.0, -WEAPON_MOUNT.1);
+        if let Some(look) = models.look(id, at) {
+            mount_commands.with_child(look);
+        } else {
+            // Цилиндр стоит вдоль Y: кладём его стволом вперёд, на -Z.
+            mount_commands.with_child((
+                Mesh3d(mount.barrel.clone()),
+                MeshMaterial3d(mount.material.clone()),
+                Transform::from_xyz(0.0, MUZZLE_HEIGHT - TURRET_HEIGHT, -MUZZLE_FORWARD * 0.5)
+                    .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
+            ));
+        }
     }
 }
 

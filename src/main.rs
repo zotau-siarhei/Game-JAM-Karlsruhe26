@@ -44,6 +44,7 @@ mod run;
 mod settlements;
 mod sound;
 mod subsidence;
+mod models;
 mod tank_look;
 mod sound_list;
 mod steering;
@@ -95,6 +96,7 @@ fn main() {
             TerrainPlugin,
             RoverPlugin,
             rover_look::RoverLookPlugin,
+            models::ModelsPlugin,
             tank_look::TankLookPlugin,
             CameraPlugin,
             quality::QualityPlugin,

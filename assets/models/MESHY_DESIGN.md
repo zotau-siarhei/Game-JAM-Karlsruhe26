@@ -67,8 +67,10 @@ Negative prompt (если поле есть): `realistic, gritty, dark, rusty, b
 
 ### Сделано 2026-11-15: поезда, дома, босс, оружие
 Все через Image (2 варианта, взят первый) → Image to 3D, Smart Topology с бюджетом из таблицы. Бюджеты
-соблюдены, упрощать не пришлось. В коде пока не подключены. `scale` и `offset_y` в `models.json` подобраны
-под размеры из кода (`trains.rs`, `settlements.rs`, `boss.rs`); у оружия масштаб пробный, уточнить при подключении.
+соблюдены, упрощать не пришлось. Подключены через `src/models.rs`: `scale` и `offset_y` в `models.json`
+подобраны под размеры из кода (`trains.rs`, `settlements.rs`, `boss.rs`) и проверены на снимках из игры.
+У оружия масштаб 0,6, потому что корень лунохода сам увеличен вдвое. У вагонов перёд — +Z (как в `trains.rs`),
+поэтому `rotation_y` у них +π/2, а не −π/2.
 
 | id | треуг. | как сделана | куда смотрит в файле |
 |---|---|---|---|
@@ -76,7 +78,7 @@ Negative prompt (если поле есть): `realistic, gritty, dark, rusty, b
 | `train_wagon_passenger` / `_freight` / `_tank` | ~3980 | картинка локомотива в Image References: `A passenger railway car` / `A freight boxcar railway wagon` / `A tank car railway wagon matching the locomotive in the reference image` | вдоль X, симметричны |
 | `house_two_story` | 3711 | `Two-story cozy alien house: pastel mint walls, saturated violet rounded roof, ... small balcony` | дверь на +Z |
 | `house_barrack` | 3823 | `Long low one-story alien barrack: ... three times longer than wide, pastel peach walls, flat saturated teal roof` | длинный по X, повёрнут вдоль Z |
-| `boss_body` | 7944 | сначала картинка целого босса (`Giant walking alien fortress boss ... four thick mechanical legs`), по ней `Only the body of the same boss robot ... NO legs at all` | ядро на +Z, центр в начале координат |
+| `boss_body` | 7944 | сначала картинка целого босса (`Giant walking alien fortress boss ... four thick mechanical legs`), по ней `Only the body of the same boss robot ... NO legs at all` | ядро на +Z; низ туловища на высоте низа прежнего куба |
 | `boss_leg` | 1572 | по картинке босса: `ONE single mechanical leg ... only one leg, not a pair` | стоит по Y, центр в начале координат |
 | `weapon_mg` / `weapon_mortar` / `weapon_rockets` / `weapon_laser` | ~1500 | `Weapon attachment for the turret of a cute cartoon moon rover: twin machine gun` / `short fat mortar tube` / `rocket launcher box` / `sci-fi laser emitter` + `turquoise and white housing ... flat round mounting plate` | ствол на −X, у ракет на +X; мортира смотрит вверх |
 

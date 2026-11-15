@@ -18,7 +18,7 @@ use crate::boss::Boss;
 use crate::buildings::{BreakDoor, House};
 use crate::settlements::Settlements;
 use crate::bullet::FireBullet;
-use crate::combat::{Collider, Damage, Died, Health, Team};
+use crate::combat::{Collider, Damage, Died, FlashWhole, Health, Team};
 use crate::explosion::Explosion;
 use crate::laser::FireLaser;
 use crate::mortar::{self, FireShell};
@@ -422,7 +422,7 @@ fn spawn_enemy(
     ));
     // Танк собран из моделей Meshy в `tank_look`, остальные враги пока из примитивов.
     if kind == EnemyKind::HeavyTank {
-        enemy.insert((Visibility::default(), TankGun::default()));
+        enemy.insert((Visibility::default(), TankGun::default(), FlashWhole));
     } else {
         enemy.insert((Mesh3d(assets.hull.clone()), MeshMaterial3d(material)));
     }

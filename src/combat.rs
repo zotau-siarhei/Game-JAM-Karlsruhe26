@@ -141,11 +141,17 @@ struct FlashMaterial(Handle<StandardMaterial>);
 
 /// Корпус светится после попадания.
 #[derive(Component)]
-struct HitFlash {
+pub(crate) struct HitFlash {
     remaining: f32,
     /// Материал, который вернётся после вспышки.
     original: Handle<StandardMaterial>,
 }
+
+/// Цель из модели: при попадании вспыхивают все меши под ней, а не только её собственный.
+///
+/// У модели материалы лежат на дочерних сущностях сцены, у самой цели меша нет.
+#[derive(Component, Default)]
+pub struct FlashWhole;
 
 fn create_flash_material(mut commands: Commands, mut materials: ResMut<Assets<StandardMaterial>>) {
     let material = materials.add(StandardMaterial {
@@ -220,10 +226,13 @@ fn apply_damage(
         &mut Health,
         Option<&mut MeshMaterial3d<StandardMaterial>>,
         Option<&mut HitFlash>,
+        Has<FlashWhole>,
     )>,
+    children: Query<&Children>,
+    mut parts: Query<(&mut MeshMaterial3d<StandardMaterial>, Option<&mut HitFlash>), Without<Health>>,
 ) {
     for damage in damages.read() {
-        let Ok((mut health, material, flashing)) = targets.get_mut(damage.target) else {
+        let Ok((mut health, material, flashing, whole)) = targets.get_mut(damage.target) else {
             continue;
         };
         if health.is_dead() || damage.amount <= 0.0 {
@@ -236,10 +245,31 @@ fn apply_damage(
             });
         }
 
+        let Some(flash) = flash.as_ref() else {
+            continue;
+        };
+        // Модель: вспыхивает каждый меш под целью и потом получает свой материал с текстурой.
+        if whole {
+            for part in children.iter_descendants(damage.target) {
+                let Ok((mut material, flashing)) = parts.get_mut(part) else {
+                    continue;
+                };
+                if let Some(mut flashing) = flashing {
+                    flashing.remaining = FLASH_SECONDS;
+                } else {
+                    let original = std::mem::replace(&mut material.0, flash.0.clone());
+                    commands.entity(part).try_insert(HitFlash {
+                        remaining: FLASH_SECONDS,
+                        original,
+                    });
+                }
+            }
+            continue;
+        }
         // Вспышка: корпус на мгновение получает светящийся материал.
         if let Some(mut flashing) = flashing {
             flashing.remaining = FLASH_SECONDS;
-        } else if let (Some(mut material), Some(flash)) = (material, flash.as_ref()) {
+        } else if let Some(mut material) = material {
             let original = std::mem::replace(&mut material.0, flash.0.clone());
             commands.entity(damage.target).try_insert(HitFlash {
                 remaining: FLASH_SECONDS,
@@ -429,6 +459,29 @@ mod tests {
         app.update();
         assert_eq!(material(&app), hull);
         assert!(app.world().get::<HitFlash>(target).is_none());
+    }
+
+    #[test]
+    fn model_flashes_all_its_meshes_and_gets_textures_back() {
+        let mut app = app_with_damage();
+        app.init_resource::<Time>().add_systems(Update, update_flash.after(apply_damage));
+        let mut materials = Assets::<StandardMaterial>::default();
+        let texture = materials.add(StandardMaterial::default());
+        let flash = materials.add(StandardMaterial::default());
+        app.insert_resource(FlashMaterial(flash.clone()));
+        let target = app.world_mut().spawn((Health::new(100.0), FlashWhole)).id();
+        let scene = app.world_mut().spawn(ChildOf(target)).id();
+        let part = app.world_mut().spawn((MeshMaterial3d(texture.clone()), ChildOf(scene))).id();
+
+        hit(&mut app, target, 10.0);
+        let material = |app: &App| app.world().get::<MeshMaterial3d<StandardMaterial>>(part).unwrap().0.clone();
+        assert_eq!(material(&app), flash);
+
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(std::time::Duration::from_secs_f32(FLASH_SECONDS * 2.0));
+        app.update();
+        assert_eq!(material(&app), texture);
     }
 
     #[test]

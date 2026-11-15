@@ -18,6 +18,7 @@ use crate::buildings::{BuildingDestroyed, DestroyCause};
 use crate::camera::GameCamera;
 use crate::combat::{Collider, Damage, Died, Health, Team, blast_damage};
 use crate::explosion::Explosion;
+use crate::models::{ModelShade, Models};
 use crate::obstacles::{Obstacle, Shape};
 use crate::pickups::{SpawnLoot, crate_weapons};
 use crate::rails::TrackDamage;
@@ -70,6 +71,10 @@ const TANK_DELAY: f32 = 1.2;
 const BURN_TIME: f32 = 6.0;
 /// Вес крушения в угрозе.
 const WRECK_THREAT: f32 = 6.0;
+/// Яркость обугленного остова из модели: текстура почти чёрная.
+const CHARRED_SHADE: f32 = 0.1;
+/// Модель вагона опущена на столько: колёса на рельсах, а начало вагона — над ними, м.
+const MODEL_DROP: f32 = 0.3;
 
 /// Плагин поездов.
 pub struct TrainsPlugin;
@@ -132,6 +137,16 @@ impl CarKind {
 
     fn index(self) -> usize {
         self as usize
+    }
+
+    /// Id модели в `models.json`.
+    fn model(self) -> &'static str {
+        match self {
+            CarKind::Locomotive => "train_loco",
+            CarKind::Passenger => "train_wagon_passenger",
+            CarKind::Freight => "train_wagon_freight",
+            CarKind::Tank => "train_wagon_tank",
+        }
     }
 }
 
@@ -288,6 +303,7 @@ fn run_schedule(
     mut schedule: ResMut<Schedule>,
     terrain: Res<Terrain>,
     assets: Res<TrainAssets>,
+    models: Res<Models>,
     trains: Query<(), With<Train>>,
     rover: Single<&Transform, With<Rover>>,
     camera: Single<(&Camera, &GlobalTransform), With<GameCamera>>,
@@ -339,7 +355,7 @@ fn run_schedule(
         for (entity, ..) in &warnings {
             commands.entity(entity).despawn();
         }
-        spawn_train(&mut commands, &assets, &mut dice, line, s, dir);
+        spawn_train(&mut commands, &assets, &models, &mut dice, line, s, dir);
         return;
     }
     let near = terrain.lines().nearest(p);
@@ -358,7 +374,15 @@ fn run_schedule(
 }
 
 /// Создаёт состав: локомотив и вагоны со случайными долями видов.
-fn spawn_train(commands: &mut Commands, assets: &TrainAssets, dice: &mut Dice, line: LineId, head: f32, dir: f32) {
+fn spawn_train(
+    commands: &mut Commands,
+    assets: &TrainAssets,
+    models: &Models,
+    dice: &mut Dice,
+    line: LineId,
+    head: f32,
+    dir: f32,
+) {
     let wagons = WAGONS.0 + dice.below(WAGONS.1 - WAGONS.0 + 1);
     let weights = [dice.range(0.2, 1.0), dice.range(0.2, 1.0), dice.range(0.2, 1.0)];
     let total: f32 = weights.iter().sum();
@@ -378,7 +402,7 @@ fn spawn_train(commands: &mut Commands, assets: &TrainAssets, dice: &mut Dice, l
                 CarKind::Tank
             }
         };
-        let car = spawn_car(commands, assets, kind, Transform::default());
+        let car = spawn_car(commands, assets, models, kind, Transform::default());
         commands.entity(car).insert((OnTrack { train, offset }, Health::new(kind.health())));
         cars.push(car);
         offset += kind.size().0 + COUPLING;
@@ -386,8 +410,8 @@ fn spawn_train(commands: &mut Commands, assets: &TrainAssets, dice: &mut Dice, l
     commands.entity(train).insert(Train { line, head, dir, cars });
 }
 
-/// Кузов вагона с деталями. Колёсные тележки и окна — дочерние кубы.
-fn spawn_car(commands: &mut Commands, assets: &TrainAssets, kind: CarKind, transform: Transform) -> Entity {
+/// Вагон: модель из `models.json`, а без неё — кузов с деталями из кубов. Перёд вагона — +Z.
+fn spawn_car(commands: &mut Commands, assets: &TrainAssets, models: &Models, kind: CarKind, transform: Transform) -> Entity {
     let (length, height) = kind.size();
     let body_h = height - FLOOR;
     let mut entity = commands.spawn((
@@ -396,6 +420,10 @@ fn spawn_car(commands: &mut Commands, assets: &TrainAssets, kind: CarKind, trans
         transform,
         Visibility::default(),
     ));
+    if let Some(look) = models.look(kind.model(), Transform::from_xyz(0.0, -MODEL_DROP, 0.0)) {
+        entity.with_child(look);
+        return entity.id();
+    }
     entity.with_children(|car| {
         let body = match kind {
             // Цистерна — горизонтальный цилиндр на раме.
@@ -864,6 +892,7 @@ fn settle_wrecks(
         commands
             .entity(entity)
             .remove::<(Wreck, Health)>()
+            .insert(ModelShade(CHARRED_SHADE))
             .insert(Obstacle {
                 shape: Shape::Rect(car_footprint(transform, car.kind)),
                 top,
@@ -876,6 +905,7 @@ fn stream_wrecks(
     mut commands: Commands,
     visible: Res<VisibleChunks>,
     assets: Res<TrainAssets>,
+    models: Res<Models>,
     mut store: ResMut<WreckStore>,
 ) {
     if !visible.is_changed() || store.is_empty() {
@@ -897,9 +927,9 @@ fn stream_wrecks(
         }
         let mut entities = Vec::new();
         for record in records {
-            let e = spawn_car(&mut commands, &assets, record.kind, record.transform);
+            let e = spawn_car(&mut commands, &assets, &models, record.kind, record.transform);
             let top = corners(&record.transform, record.kind).iter().map(|c| c.y).fold(f32::MIN, f32::max);
-            commands.entity(e).insert(Obstacle {
+            commands.entity(e).insert(ModelShade(CHARRED_SHADE)).insert(Obstacle {
                 shape: Shape::Rect(car_footprint(&record.transform, record.kind)),
                 top,
             });

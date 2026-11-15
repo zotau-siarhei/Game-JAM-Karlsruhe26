@@ -12,9 +12,10 @@ use std::f32::consts::TAU;
 use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 
-use crate::combat::{Collider, Damage, Died, Health, Team};
+use crate::combat::{Collider, Damage, Died, FlashWhole, Health, Team};
 use crate::enemy::Enemy;
 use crate::explosion::Explosion;
+use crate::models::Models;
 use crate::mortar::FireShell;
 use crate::obstacles::Obstacle;
 use crate::pickups::SpawnLoot;
@@ -42,6 +43,8 @@ const LANDING_BLAST: (f32, f32) = (6.0, 1.6);
 const BODY: Vec3 = Vec3::new(5.0, 3.0, 7.0);
 /// Высота центра корпуса над землёй, м: под корпусом ноги.
 const RIDE_HEIGHT: f32 = 3.4;
+/// Ядро у модели туловища: высота над центром и вынос вперёд, м.
+const MODEL_CORE: (f32, f32) = (0.4, 3.4);
 /// Радиус коллайдера, м.
 const RADIUS: f32 = 4.2;
 /// Здоровье при нулевой угрозе; растёт на 40 % за единицу угрозы.
@@ -232,6 +235,7 @@ fn run_warning(
     mut commands: Commands,
     time: Res<Time>,
     assets: Res<BossAssets>,
+    models: Res<Models>,
     threat: Res<Threat>,
     terrain: Res<Terrain>,
     mut warnings: Query<(Entity, &mut BossWarning, &mut Visibility)>,
@@ -249,45 +253,57 @@ fn run_warning(
         commands.entity(entity).despawn();
         let mut landing = warning.landing;
         landing.y = terrain.height_at(landing.x, landing.z) + RIDE_HEIGHT + FALL_HEIGHT;
-        spawn_boss(&mut commands, &assets, landing, boss_health(threat.value()));
+        spawn_boss(&mut commands, &assets, &models, landing, boss_health(threat.value()));
         spawn_health_bar(&mut commands);
     }
 }
 
-fn spawn_boss(commands: &mut Commands, assets: &BossAssets, position: Vec3, health: f32) {
-    commands
-        .spawn((
-            Boss {
-                phase: BossPhase::Falling(0.0),
-                next_attack: 0,
-                ram_heading: 0.0,
-                ram_hit: false,
-            },
-            Enemy,
-            RunScoped,
-            Health::new(health),
-            Team::Enemy,
-            Collider { radius: RADIUS },
-            Mesh3d(assets.body.clone()),
-            MeshMaterial3d(assets.body_material.clone()),
-            Transform::from_translation(position),
-        ))
-        .with_children(|parent| {
-            for (x, z) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
-                parent.spawn((
-                    Mesh3d(assets.leg.clone()),
-                    MeshMaterial3d(assets.leg_material.clone()),
-                    Transform::from_xyz(x * BODY.x * 0.45, -RIDE_HEIGHT * 0.5, z * BODY.z * 0.4),
-                ));
+/// Ставит босса. Туловище и ноги — модели из `models.json`, без них — кубы.
+fn spawn_boss(commands: &mut Commands, assets: &BossAssets, models: &Models, position: Vec3, health: f32) {
+    let legs = [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)]
+        .map(|(x, z)| Transform::from_xyz(x * BODY.x * 0.45, -RIDE_HEIGHT * 0.5, z * BODY.z * 0.4));
+    let body = models.look("boss_body", Transform::IDENTITY);
+    let mut boss = commands.spawn((
+        Boss {
+            phase: BossPhase::Falling(0.0),
+            next_attack: 0,
+            ram_heading: 0.0,
+            ram_hit: false,
+        },
+        Enemy,
+        RunScoped,
+        Health::new(health),
+        Team::Enemy,
+        Collider { radius: RADIUS },
+        Transform::from_translation(position),
+    ));
+    // Ядро: у модели — на переднем торце, у кубов — сверху спереди.
+    let core = if let Some(body) = body {
+        boss.insert((Visibility::default(), FlashWhole)).with_child(body);
+        Transform::from_xyz(0.0, MODEL_CORE.0, -MODEL_CORE.1)
+    } else {
+        boss.insert((Mesh3d(assets.body.clone()), MeshMaterial3d(assets.body_material.clone())));
+        Transform::from_xyz(0.0, BODY.y * 0.5 + 0.3, -BODY.z * 0.3)
+    };
+    boss.with_children(|parent| {
+        for leg in legs {
+            match models.look("boss_leg", leg) {
+                Some(look) => {
+                    parent.spawn(look);
+                }
+                None => {
+                    parent.spawn((Mesh3d(assets.leg.clone()), MeshMaterial3d(assets.leg_material.clone()), leg));
+                }
             }
-            parent.spawn((
-                BossCore,
-                NotShadowCaster,
-                Mesh3d(assets.core.clone()),
-                MeshMaterial3d(assets.core_material.clone()),
-                Transform::from_xyz(0.0, BODY.y * 0.5 + 0.3, -BODY.z * 0.3),
-            ));
-        });
+        }
+        parent.spawn((
+            BossCore,
+            NotShadowCaster,
+            Mesh3d(assets.core.clone()),
+            MeshMaterial3d(assets.core_material.clone()),
+            core,
+        ));
+    });
 }
 
 fn spawn_health_bar(commands: &mut Commands) {

@@ -9,6 +9,7 @@ use crate::combat::{Damage, Died, Health, Team, blast_damage};
 use crate::collapse::CollapseHouse;
 use crate::subsidence::Collapsing;
 use crate::explosion::Explosion;
+use crate::models::{ModelShade, Models};
 use crate::obstacles::{Obstacle, Shape};
 use crate::rover::Rover;
 use crate::run::{RunScoped, RunStarted};
@@ -49,6 +50,9 @@ const ROOF_PALETTE: [Color; ROOF_COLORS] = [
     Color::srgb(0.95, 0.55, 0.05),
     Color::srgb(0.20, 0.62, 0.18),
 ];
+
+/// Яркость модели дома после половины прочности: закопчённые стены.
+const DAMAGED_SHADE: f32 = 0.55;
 
 /// Цвет двери и трубы.
 const TRIM_COLOR: Color = Color::srgb(0.25, 0.18, 0.14);
@@ -278,6 +282,7 @@ fn stream_houses(
     terrain: Res<Terrain>,
     visible: Res<VisibleChunks>,
     assets: Res<HouseAssets>,
+    models: Res<Models>,
     rover: Single<&Transform, With<Rover>>,
 ) {
     if settlements.seed().is_none() || !visible.is_changed() {
@@ -319,7 +324,7 @@ fn stream_houses(
                 let entity = if house.status == HouseStatus::Destroyed {
                     spawn_ruin(&mut commands, &assets, &terrain, house)
                 } else {
-                    spawn_house(&mut commands, &assets, &terrain, id, house)
+                    spawn_house(&mut commands, &assets, &models, &terrain, id, house)
                 };
                 spawned.0.insert(id, entity);
             }
@@ -327,10 +332,27 @@ fn stream_houses(
     }
 }
 
+/// Модель дома в `models.json`.
+fn house_model(kind: HouseKind) -> &'static str {
+    match kind {
+        HouseKind::Hut => "house_small",
+        HouseKind::TwoStory => "house_two_story",
+        HouseKind::Barrack => "house_barrack",
+    }
+}
+
+/// Дом показан моделью: после половины прочности темнеет вся модель.
+#[derive(Component)]
+struct HouseModel;
+
 /// Создаёт сущность дома: стены, уходящие в землю, крыша, дверь.
+///
+/// Если у вида дома есть модель, над землёй стоит она, а из кубов остаётся только цоколь,
+/// который закрывает щель под моделью на склоне.
 fn spawn_house(
     commands: &mut Commands,
     assets: &HouseAssets,
+    models: &Models,
     terrain: &Terrain,
     id: HouseId,
     house: &HouseState,
@@ -356,14 +378,26 @@ fn spawn_house(
     let roof = assets.roofs[house.roof_color].clone();
     let cube = assets.cube.clone();
 
-    let mut parts: Vec<(Handle<Mesh>, Handle<StandardMaterial>, Transform)> = vec![(
-        cube.clone(),
-        wall,
-        Transform::from_xyz(0.0, (wall_h - depth) * 0.5, 0.0)
-            .with_scale(Vec3::new(size.x, wall_h + depth, size.y)),
-    )];
+    let look = models.look(house_model(house.kind), Transform::IDENTITY);
+    let mut parts: Vec<(Handle<Mesh>, Handle<StandardMaterial>, Transform)> = vec![if look.is_some() {
+        // Цоколь чуть уже дома: от самой низкой точки рельефа до низа модели.
+        (
+            cube.clone(),
+            wall,
+            Transform::from_xyz(0.0, -depth * 0.5, 0.0)
+                .with_scale(Vec3::new(size.x * 0.85, depth, size.y * 0.85)),
+        )
+    } else {
+        (
+            cube.clone(),
+            wall,
+            Transform::from_xyz(0.0, (wall_h - depth) * 0.5, 0.0)
+                .with_scale(Vec3::new(size.x, wall_h + depth, size.y)),
+        )
+    }];
     let roof_size = size + Vec2::splat(ROOF_OVERHANG * 2.0);
     match house.kind {
+        _ if look.is_some() => {}
         HouseKind::Hut | HouseKind::TwoStory => {
             let roof_h = if house.kind == HouseKind::Hut {
                 HUT_ROOF_HEIGHT
@@ -403,12 +437,14 @@ fn spawn_house(
             }
         }
     }
-    // Дверь на торце.
-    parts.push((
-        cube.clone(),
-        assets.trim.clone(),
-        Transform::from_xyz(0.0, 0.9, half.y + 0.03).with_scale(Vec3::new(1.0, 1.8, 0.1)),
-    ));
+    // Дверь на торце: у модели своя.
+    if look.is_none() {
+        parts.push((
+            cube.clone(),
+            assets.trim.clone(),
+            Transform::from_xyz(0.0, 0.9, half.y + 0.03).with_scale(Vec3::new(1.0, 1.8, 0.1)),
+        ));
+    }
 
     if let Some(side) = house.broken_door {
         parts.push((assets.cube.clone(), assets.hole.clone(), door_hole(half, side)));
@@ -430,6 +466,9 @@ fn spawn_house(
         },
     ));
     let mut walls = None;
+    if let Some(look) = look {
+        entity.insert(HouseModel).with_child(look);
+    }
     entity.with_children(|parent| {
         for (i, (mesh, material, t)) in parts.into_iter().enumerate() {
             let child = parent.spawn((Mesh3d(mesh), MeshMaterial3d(material), t)).id();
@@ -628,12 +667,19 @@ fn wobble_houses(
 
 /// После половины прочности стены дома темнеют, как закопчённые.
 fn darken_damaged_houses(
+    mut commands: Commands,
     assets: Res<HouseAssets>,
-    mut houses: Query<(&Health, &mut HouseWalls), Changed<Health>>,
+    mut houses: Query<(Entity, &Health, &mut HouseWalls, Has<HouseModel>), Changed<Health>>,
     mut materials: Query<&mut MeshMaterial3d<StandardMaterial>>,
 ) {
-    for (health, mut walls) in &mut houses {
+    for (house, health, mut walls, model) in &mut houses {
         if walls.darkened || health.fraction() > 0.5 {
+            continue;
+        }
+        if model {
+            // Затемнение модели доходит и до цоколя.
+            commands.entity(house).insert(ModelShade(DAMAGED_SHADE));
+            walls.darkened = true;
             continue;
         }
         if let Ok(mut material) = materials.get_mut(walls.entity) {
