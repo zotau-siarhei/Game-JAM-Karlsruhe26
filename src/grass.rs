@@ -20,6 +20,7 @@ use crate::explosion::Explosion;
 use crate::frame::GameSet;
 use crate::lava::LavaPools;
 use crate::obstacles::NearObstacles;
+use crate::puddles::Puddles;
 use crate::quality::Quality;
 use crate::railway::TRACK_FLAT;
 use crate::rover::{ROVER_SCALE, Rover, RoverMotion};
@@ -264,6 +265,7 @@ fn stream_grass(
     terrain: Res<Terrain>,
     visible: Res<VisibleChunks>,
     obstacles: NearObstacles,
+    puddles: Res<Puddles>,
     quality: Res<Quality>,
     material: Res<GrassMaterial>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -296,7 +298,8 @@ fn stream_grass(
             }
         }
     }
-    // Новые участки: пучки по сиду минус дома и объекты.
+    // Новые участки: пучки по сиду минус дома, объекты и лужи. Лужа ставится при появлении
+    // участка, трава — через несколько кадров, так что лужа уже есть.
     let mut ready = Vec::new();
     for (coord, frames) in grass.settling.iter_mut() {
         *frames = frames.saturating_sub(1);
@@ -311,7 +314,8 @@ fn stream_grass(
             let mut cells = generate(&terrain, &mask, coord);
             for cell in cells.iter_mut() {
                 let blocked = cell.is_some_and(|tuft| {
-                    obstacles
+                    puddles.at(tuft.position)
+                        || obstacles
                         .near(tuft.position, OBSTACLE_CLEAR + 1.0)
                         .any(|(_, o)| o.shape.push_out(tuft.position, OBSTACLE_CLEAR).is_some())
                 });
