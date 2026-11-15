@@ -21,6 +21,7 @@ mod debris;
 mod craters;
 mod enemy;
 mod enemy_look;
+mod interceptor;
 mod explosion;
 mod explosion_fx;
 mod frame;
@@ -147,6 +148,7 @@ fn game_plugins(app: &mut App) {
             minimap::MinimapPlugin,
             bullet::BulletPlugin,
             enemy::EnemyPlugin,
+            interceptor::InterceptorPlugin,
             boss::BossPlugin,
             waves::WavesPlugin,
             alarm::AlarmPlugin,

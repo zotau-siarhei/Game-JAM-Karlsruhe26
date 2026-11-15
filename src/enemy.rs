@@ -7,6 +7,9 @@
 //! ракетой и прячется снова. Четвёртый — тяжёлый танк: заходит с фланга, секунду показывает
 //! линию прицела и бьёт импульсом лазера, который режет рельеф.
 //!
+//! Пятый — перехватчик: быстрая длинная машина без оружия, приходит, только когда игрок
+//! уезжает от волны (`src/interceptor.rs`).
+//!
 //! Когда и сколько врагов появляется, решает директор волн в `src/waves.rs`: он просит
 //! поставить врага сообщением [`SpawnEnemy`].
 
@@ -20,6 +23,7 @@ use crate::combat::{Collider, Damage, Died, Health, Team};
 use crate::enemy_look;
 use crate::explosion::Explosion;
 use crate::frame::{GameSet, RunMessages};
+use crate::interceptor::{self, Interceptor};
 use crate::laser::FireLaser;
 use crate::models::Models;
 use crate::mortar::{self, FireShell};
@@ -165,6 +169,19 @@ const TANK_RELOAD: f32 = 4.0;
 /// Скорость поворота башни танка, рад/с.
 const TANK_TURRET_TURN_SPEED: f32 = 1.5;
 
+/// Здоровье перехватчика: три пули пулемёта.
+pub const INTERCEPTOR_HEALTH: f32 = 15.0;
+/// Скорость перехватчика, м/с: быстрее лунохода.
+pub const INTERCEPTOR_SPEED: f32 = 20.0;
+/// Поворот перехватчика, рад/с: радиус разворота 12,5 м, вдвое больше, чем у лунохода.
+const INTERCEPTOR_TURN_SPEED: f32 = 1.6;
+/// Корпус перехватчика: ширина, высота, длина, м.
+const INTERCEPTOR_HULL: Vec3 = Vec3::new(1.0, 0.45, 4.4);
+/// Круговой коллайдер перехватчика для пуль и взрывов, м: покрывает середину корпуса.
+const INTERCEPTOR_RADIUS: f32 = 1.3;
+/// Цвет полос на корпусе перехватчика.
+const STRIPE_COLOR: Color = Color::srgb(0.95, 0.78, 0.15);
+
 /// Подключает врагов.
 pub struct EnemyPlugin;
 
@@ -181,9 +198,12 @@ impl Plugin for EnemyPlugin {
                         drive_mortarmen,
                         drive_rocketeers,
                         drive_tanks,
+                        interceptor::drive_interceptors,
                         avoid_lava,
                         steering::steer_vehicles,
                         vehicle::move_ground_vehicles,
+                        // До расталкивания: оно держит круг, а удар считается по длинному корпусу.
+                        interceptor::ram_by_interceptors,
                         separate_enemies,
                         ram_rover,
                         shoot_rover,
@@ -213,6 +233,8 @@ pub enum EnemyKind {
     Rocketeer,
     /// Медленный прочный танк с импульсным лазером, заходит с фланга.
     HeavyTank,
+    /// Быстрая машина без оружия: таранит убегающий луноход и замедляет его.
+    Interceptor,
 }
 
 /// Что делает ракетчик.
@@ -330,6 +352,11 @@ struct EnemyAssets {
     ram: Handle<Mesh>,
     barrel: Handle<Mesh>,
     launcher: Handle<Mesh>,
+    interceptor_hull: Handle<Mesh>,
+    interceptor_nose: Handle<Mesh>,
+    nozzle: Handle<Mesh>,
+    stripe: Handle<Mesh>,
+    stripe_material: Handle<StandardMaterial>,
     rocketeer_material: Handle<StandardMaterial>,
     hull_material: Handle<StandardMaterial>,
     mortar_material: Handle<StandardMaterial>,
@@ -348,6 +375,11 @@ fn create_enemy_assets(
         ram: meshes.add(Cuboid::new(HULL_SIZE.x + 0.5, 0.35, 0.35)),
         barrel: meshes.add(Cylinder::new(0.28, 1.5)),
         launcher: meshes.add(Cuboid::new(1.0, 0.5, 1.2)),
+        interceptor_hull: meshes.add(Cuboid::from_size(INTERCEPTOR_HULL)),
+        interceptor_nose: meshes.add(Cone::new(0.5, 1.2)),
+        nozzle: meshes.add(Cylinder::new(0.18, 0.4)),
+        stripe: meshes.add(Cuboid::new(0.12, 0.02, INTERCEPTOR_HULL.z * 0.9)),
+        stripe_material: materials.add(STRIPE_COLOR),
         rocketeer_material: materials.add(ROCKETEER_COLOR),
         hull_material: materials.add(HULL_COLOR),
         mortar_material: materials.add(MORTAR_COLOR),
@@ -401,13 +433,14 @@ fn spawn_enemies(
     }
 }
 
-/// Оружие, которое носит враг типа `kind`: им он стреляет, его и роняет.
-fn carried_weapon(kind: EnemyKind) -> CurrentWeapon {
+/// Оружие, которое носит враг типа `kind`: им он стреляет, его и роняет. Перехватчик без оружия.
+fn carried_weapon(kind: EnemyKind) -> Option<CurrentWeapon> {
     match kind {
-        EnemyKind::RamShooter => CurrentWeapon::MachineGun,
-        EnemyKind::Mortar => CurrentWeapon::Mortar,
-        EnemyKind::Rocketeer => CurrentWeapon::Rockets,
-        EnemyKind::HeavyTank => CurrentWeapon::Laser,
+        EnemyKind::RamShooter => Some(CurrentWeapon::MachineGun),
+        EnemyKind::Mortar => Some(CurrentWeapon::Mortar),
+        EnemyKind::Rocketeer => Some(CurrentWeapon::Rockets),
+        EnemyKind::HeavyTank => Some(CurrentWeapon::Laser),
+        EnemyKind::Interceptor => None,
     }
 }
 
@@ -418,6 +451,8 @@ fn enemy_model(kind: EnemyKind) -> Option<&'static str> {
         EnemyKind::Mortar => Some("enemy_mortar"),
         EnemyKind::Rocketeer => Some("enemy_rocket_robot"),
         EnemyKind::HeavyTank => None,
+        // Модели пока нет: облик из примитивов.
+        EnemyKind::Interceptor => Some("enemy_interceptor"),
     }
 }
 
@@ -441,27 +476,30 @@ fn spawn_enemy(
         EnemyKind::Mortar => (MORTAR_HEALTH, assets.mortar_material.clone(), MORTAR_SCALE, ENEMY_TURN_SPEED),
         EnemyKind::Rocketeer => (ROCKETEER_HEALTH, assets.rocketeer_material.clone(), ROBOT_SCALE, ENEMY_TURN_SPEED),
         EnemyKind::HeavyTank => (TANK_HEALTH, assets.dark_material.clone(), TANK_SCALE, TANK_TURN_SPEED),
+        EnemyKind::Interceptor => (INTERCEPTOR_HEALTH, assets.hull_material.clone(), 1.0, INTERCEPTOR_TURN_SPEED),
+    };
+    let (radius, half_base) = match kind {
+        EnemyKind::Interceptor => (INTERCEPTOR_RADIUS, Vec2::new(0.5, 2.2)),
+        _ => (ENEMY_RADIUS * scale, Vec2::new(HULL_SIZE.x, HULL_SIZE.z) * 0.5 * scale),
     };
     position.y += RIDE_HEIGHT * (scale - 1.0);
     let mut enemy = commands.spawn((
         Enemy,
-        // Враг носит своё оружие и роняет его при гибели (`pickups::drop_loot`).
-        CarriedWeapon {
-            weapon: carried_weapon(kind),
-        },
         RunScoped,
         Health::new(health),
         Team::Enemy,
-        Collider {
-            radius: ENEMY_RADIUS * scale,
-        },
-        GroundVehicle::new(heading, RIDE_HEIGHT * scale, Vec2::new(HULL_SIZE.x, HULL_SIZE.z) * 0.5 * scale),
+        Collider { radius },
+        GroundVehicle::new(heading, RIDE_HEIGHT * scale, half_base),
         Steering::new(heading, turn),
         Transform::from_translation(position)
             .with_rotation(Quat::from_rotation_y(heading))
             .with_scale(Vec3::splat(scale)),
         Visibility::default(),
     ));
+    // Враг носит своё оружие и роняет его при гибели (`pickups::drop_loot`).
+    if let Some(weapon) = carried_weapon(kind) {
+        enemy.insert(CarriedWeapon { weapon });
+    }
     // Корпус, башню и гусеницы танка ставит `tank_look`.
     if kind == EnemyKind::HeavyTank {
         enemy.insert(TankGun::default());
@@ -488,6 +526,7 @@ fn spawn_enemy(
             side: if dice.range(0.0, 1.0) < 0.5 { 1.0 } else { -1.0 },
             flank: None,
         }),
+        EnemyKind::Interceptor => enemy.insert(Interceptor::default()),
     };
     // Робота анимирует скелет: шаг и бег по скорости.
     if kind == EnemyKind::Rocketeer {
@@ -500,6 +539,10 @@ fn spawn_enemy(
     // Колёса машин — отдельные сущности, они крутятся и поворачивают.
     enemy.with_children(|parent| {
         models.spawn_visual(parent, model, Transform::from_xyz(0.0, -RIDE_HEIGHT, 0.0), |spare| {
+            if kind == EnemyKind::Interceptor {
+                spawn_interceptor_spare(spare, assets);
+                return;
+            }
             spare.spawn((Mesh3d(assets.hull.clone()), MeshMaterial3d(material)));
             match kind {
                 // Таран на носу: видно, куда враг едет.
@@ -516,7 +559,7 @@ fn spawn_enemy(
                         .with_rotation(Quat::from_rotation_x(-0.5)),
                 )),
                 // Пусковой контейнер на спине.
-                EnemyKind::Rocketeer | EnemyKind::HeavyTank => spare.spawn((
+                EnemyKind::Rocketeer | EnemyKind::HeavyTank | EnemyKind::Interceptor => spare.spawn((
                     Mesh3d(assets.launcher.clone()),
                     MeshMaterial3d(assets.dark_material.clone()),
                     Transform::from_xyz(0.0, HULL_SIZE.y * 0.5 + 0.25, 0.2),
@@ -526,13 +569,54 @@ fn spawn_enemy(
         let wheels = match kind {
             EnemyKind::RamShooter => Some(&enemy_look::RAMMER_WHEELS),
             EnemyKind::Mortar => Some(&enemy_look::MORTAR_WHEELS),
-            EnemyKind::Rocketeer | EnemyKind::HeavyTank => None,
+            EnemyKind::Rocketeer | EnemyKind::HeavyTank | EnemyKind::Interceptor => None,
         };
         if let Some(layout) = wheels {
             let fallback = (assets.wheel.clone(), assets.dark_material.clone());
             enemy_look::spawn_wheels(parent, models, layout, -RIDE_HEIGHT, fallback);
         }
     });
+}
+
+/// Запасной облик перехватчика: длинный низкий корпус с жёлтыми полосами, клин на носу,
+/// два сопла сзади и четыре маленьких колеса, разнесённых по длине. Центр корпуса — в начале
+/// координат родителя, низ колёс — на земле.
+fn spawn_interceptor_spare(spare: &mut crate::models::FallbackSpawner, assets: &EnemyAssets) {
+    let hull = INTERCEPTOR_HULL;
+    let dark = || MeshMaterial3d(assets.dark_material.clone());
+    spare.spawn((Mesh3d(assets.interceptor_hull.clone()), MeshMaterial3d(assets.hull_material.clone())));
+    for x in [-0.25, 0.25] {
+        spare.spawn((
+            Mesh3d(assets.stripe.clone()),
+            MeshMaterial3d(assets.stripe_material.clone()),
+            Transform::from_xyz(x, hull.y * 0.5 + 0.01, 0.0),
+        ));
+    }
+    // Конус носом вперёд (-Z), сплющен до высоты корпуса.
+    spare.spawn((
+        Mesh3d(assets.interceptor_nose.clone()),
+        MeshMaterial3d(assets.hull_material.clone()),
+        Transform::from_xyz(0.0, 0.0, -hull.z * 0.5 - 0.55)
+            .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
+            .with_scale(Vec3::new(1.0, 1.0, hull.y / hull.x)),
+    ));
+    for x in [-0.25, 0.25] {
+        spare.spawn((
+            Mesh3d(assets.nozzle.clone()),
+            dark(),
+            Transform::from_xyz(x, 0.05, hull.z * 0.5 + 0.15).with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
+        ));
+    }
+    let wheel_y = -RIDE_HEIGHT + 0.25;
+    for (x, z) in [(-0.55, -1.6), (0.55, -1.6), (-0.55, 1.6), (0.55, 1.6)] {
+        spare.spawn((
+            Mesh3d(assets.wheel.clone()),
+            dark(),
+            Transform::from_xyz(x, wheel_y, z)
+                .with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2))
+                .with_scale(Vec3::new(0.5, 0.45, 0.5)),
+        ));
+    }
 }
 
 /// Направляет врагов на луноход; объезд препятствий — в `steering`. Когда луноход погиб, враги встают.
@@ -543,7 +627,7 @@ fn chase_rover(
     rover: Query<(&Transform, &Collider, &Health), With<Rover>>,
     mut enemies: Query<
         (&Transform, &Collider, &mut Steering),
-        (With<Enemy>, Without<Mortarman>, Without<Rocketeer>, Without<HeavyTank>),
+        (With<Enemy>, Without<Mortarman>, Without<Rocketeer>, Without<HeavyTank>, Without<Interceptor>),
     >,
 ) {
     let target = rover
@@ -901,10 +985,10 @@ fn overlap_push(first: Vec3, second: Vec3, radius_sum: f32) -> Option<Vec3> {
 /// Расталкивает врагов между собой и не даёт им въехать в луноход.
 fn separate_enemies(
     rover: Query<(&Transform, &Collider), (With<Rover>, Without<Enemy>)>,
-    mut enemies: Query<(&mut Transform, &Collider), With<Enemy>>,
+    mut enemies: Query<(&mut Transform, &Collider, Has<Interceptor>), With<Enemy>>,
 ) {
     let mut pairs = enemies.iter_combinations_mut();
-    while let Some([(mut first, first_collider), (mut second, second_collider)]) = pairs.fetch_next() {
+    while let Some([(mut first, first_collider, _), (mut second, second_collider, _)]) = pairs.fetch_next() {
         let radius_sum = first_collider.radius + second_collider.radius;
         if let Some(push) = overlap_push(first.translation, second.translation, radius_sum) {
             first.translation += push * 0.5;
@@ -914,7 +998,8 @@ fn separate_enemies(
     let Some((rover, rover_collider)) = rover.iter().next() else {
         return;
     };
-    for (mut enemy, collider) in &mut enemies {
+    // Перехватчик выталкивается из лунохода по своему длинному корпусу в `interceptor`.
+    for (mut enemy, collider, _) in enemies.iter_mut().filter(|(_, _, interceptor)| !interceptor) {
         let radius_sum = collider.radius + rover_collider.radius;
         if let Some(push) = overlap_push(enemy.translation, rover.translation, radius_sum) {
             enemy.translation += push;
@@ -1143,10 +1228,22 @@ mod tests {
 
     #[test]
     fn enemy_drops_the_weapon_it_fights_with() {
-        assert_eq!(carried_weapon(EnemyKind::Mortar), CurrentWeapon::Mortar);
-        assert_eq!(carried_weapon(EnemyKind::Rocketeer), CurrentWeapon::Rockets);
-        assert_eq!(carried_weapon(EnemyKind::HeavyTank), CurrentWeapon::Laser);
-        assert_eq!(carried_weapon(EnemyKind::RamShooter), CurrentWeapon::MachineGun);
+        assert_eq!(carried_weapon(EnemyKind::Mortar), Some(CurrentWeapon::Mortar));
+        assert_eq!(carried_weapon(EnemyKind::Rocketeer), Some(CurrentWeapon::Rockets));
+        assert_eq!(carried_weapon(EnemyKind::HeavyTank), Some(CurrentWeapon::Laser));
+        assert_eq!(carried_weapon(EnemyKind::RamShooter), Some(CurrentWeapon::MachineGun));
+    }
+
+    #[test]
+    fn перехватчик_ничего_не_роняет() {
+        assert_eq!(carried_weapon(EnemyKind::Interceptor), None);
+    }
+
+    #[test]
+    fn interceptor_is_faster_than_rover() {
+        assert!(INTERCEPTOR_SPEED > crate::rover::MAX_FORWARD_SPEED);
+        // И сбивается быстрее таран-стрелка.
+        assert!(INTERCEPTOR_HEALTH < ENEMY_HEALTH);
     }
 
     #[test]

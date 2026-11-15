@@ -11,6 +11,7 @@ use bevy::image::Image;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
+use crate::interceptor::Interceptor;
 use crate::airstrike::Strike;
 use crate::boss::Boss;
 use crate::buildings::House;
@@ -74,6 +75,8 @@ enum Mark {
     Enemy,
     Service,
     Boss,
+    /// Перехватчик: вытянутая узкая метка цвета врагов.
+    Interceptor,
     Train,
     Crate,
     /// Золотой ящик улучшения.
@@ -89,7 +92,7 @@ enum Mark {
 impl Mark {
     fn color(self) -> Color {
         match self {
-            Mark::Enemy => ENEMY_COLOR,
+            Mark::Enemy | Mark::Interceptor => ENEMY_COLOR,
             Mark::Service => SERVICE_COLOR,
             Mark::Boss => BOSS_COLOR,
             Mark::Train => TRAIN_COLOR,
@@ -116,6 +119,7 @@ impl Mark {
         match self {
             Mark::Enemy | Mark::Service => (MARKER, MARKER, true),
             Mark::Boss => (15.0, 15.0, true),
+            Mark::Interceptor => (3.0, 11.0, false),
             Mark::Train => (10.0, 4.0, false),
             Mark::Crate => (6.0, 6.0, false),
             Mark::Upgrade => (9.0, 9.0, false),
@@ -270,7 +274,7 @@ fn collect_dangers(
 fn update_markers(
     time: Res<Time>,
     rover: Query<&Transform, With<Rover>>,
-    enemies: Query<(&Transform, Has<Boss>), With<Enemy>>,
+    enemies: Query<(&Transform, Has<Boss>, Has<Interceptor>), With<Enemy>>,
     service: Query<&Transform, With<crate::service::ServiceVehicle>>,
     capsules: Query<&Transform, With<Capsule>>,
     strikes: Query<&Strike>,
@@ -288,13 +292,14 @@ fn update_markers(
     let blink = (time.elapsed_secs() * 5.0).fract() < 0.6;
     // Важные метки первыми: набор ограничен.
     let mut targets: Vec<(Vec2, Mark)> = Vec::new();
-    targets.extend(enemies.iter().filter(|(_, b)| *b).map(|(t, _)| (flat(t), Mark::Boss)));
+    targets.extend(enemies.iter().filter(|(_, b, _)| *b).map(|(t, ..)| (flat(t), Mark::Boss)));
+    targets.extend(enemies.iter().filter(|(.., i)| *i).map(|(t, ..)| (flat(t), Mark::Interceptor)));
     if blink {
         targets.extend(dangers.0.iter().map(|(p, _)| (*p, Mark::Danger)));
         targets.extend(capsules.iter().map(|t| (flat(t), Mark::Capsule)));
     }
     targets.extend(strikes.iter().map(|s| (Vec2::new(s.center.x, s.center.z), Mark::Strike)));
-    targets.extend(enemies.iter().filter(|(_, b)| !*b).map(|(t, _)| (flat(t), Mark::Enemy)));
+    targets.extend(enemies.iter().filter(|(_, b, i)| !*b && !*i).map(|(t, ..)| (flat(t), Mark::Enemy)));
     targets.extend(service.iter().map(|t| (flat(t), Mark::Service)));
     targets.extend(cars.iter().filter(|(_, v)| **v != Visibility::Hidden).map(|(t, _)| (flat(t), Mark::Train)));
     targets.extend(

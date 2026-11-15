@@ -78,6 +78,7 @@
     { "id": "rover_hit_2", "event": "Урон по луноходу", "text": "Heavy metallic impact on a vehicle hull with electric crackle, short", "file": "rover_hit_2.mp3", "kind": "sfx" },
     { "id": "rover_hit_3", "event": "Урон по луноходу", "text": "Heavy metallic impact on a vehicle hull with electric crackle, short", "file": "rover_hit_3.mp3", "kind": "sfx" },
     { "id": "rover_hit_4", "event": "Урон по луноходу", "text": "Heavy metallic impact on a vehicle hull with electric crackle, short", "file": "rover_hit_4.mp3", "kind": "sfx" },
+    { "id": "interceptor_hit", "event": "Удар перехватчика", "text": "Fast car slamming into an armored vehicle side, hard metal crunch with screech of tires, short", "file": "interceptor_hit.mp3", "kind": "sfx" },
     { "id": "enemy_death", "event": "Гибель врага", "text": "Robot vehicle destroyed, metal crunch and small explosion, one second", "file": "enemy_death.mp3", "kind": "sfx" },
     { "id": "enemy_death_2", "event": "Гибель врага", "text": "Robot vehicle destroyed, metal crunch and small explosion, one second", "file": "enemy_death_2.mp3", "kind": "sfx" },
     { "id": "enemy_death_3", "event": "Гибель врага", "text": "Robot vehicle destroyed, metal crunch and small explosion, one second", "file": "enemy_death_3.mp3", "kind": "sfx" },

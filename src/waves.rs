@@ -12,6 +12,7 @@ use crate::buildings::House;
 use crate::capsule::{Capsule, DropCapsule};
 use crate::settlements::{HouseStatus, Settlements};
 use crate::enemy::{Enemy, EnemyKind, SpawnEnemy, SpawnPlace};
+use crate::interceptor::Interceptor;
 use crate::explosion::Explosion;
 use crate::frame::{GameSet, RunMessages};
 use crate::laser::FireLaser;
@@ -107,6 +108,66 @@ pub mod balance {
     pub fn kind_weight(cost: u32, threat: f32) -> f32 {
         1.0 + WEIGHT_GROWTH * cost.saturating_sub(1) as f32 * (threat - TANK_THREAT).max(0.0)
     }
+
+    // Перехват (`src/interceptor.rs`): перехватчики приходят, когда игрок уезжает от волны.
+
+    /// За какое окно считается смещение лунохода, с. Круг диаметром меньше
+    /// [`FLIGHT_DISTANCE`] за любое окно бегством не считается.
+    pub const FLIGHT_WINDOW: f32 = 6.0;
+
+    /// Как часто запоминается позиция лунохода в окне, с.
+    pub const FLIGHT_SAMPLE: f32 = 0.25;
+
+    /// Смещение за окно, с которого игрок отрывается от погони, м: 9 м/с таран-стрелка × окно.
+    pub const FLIGHT_DISTANCE: f32 = 54.0;
+
+    /// Смещение за окно, ниже которого луноход стоит или кружит и перехват кончается, м.
+    pub const CALM_DISTANCE: f32 = 18.0;
+
+    /// Обычный враг ближе этого — бой, а не бегство, м: край кадра.
+    pub const CONTACT_RADIUS: f32 = 30.0;
+
+    /// Сколько секунд бегства подряд нужно, чтобы начался перехват.
+    pub const ESCAPE_TRIGGER: f32 = 3.0;
+
+    /// Пауза между подкреплениями звена во время перехвата, с.
+    pub const REINFORCE_GAP: f32 = 6.0;
+
+    /// Сколько перехватчики держатся рядом после конца перехвата, прежде чем уехать, с.
+    pub const LINGER_TIME: f32 = 15.0;
+
+    /// На каком расстоянии сбоку от лунохода держится перехватчик вне перехвата, м.
+    pub const SHADOW_DISTANCE: f32 = 20.0;
+
+    /// Уехавший перехватчик дальше этого от лунохода удаляется, м.
+    pub const LEAVE_DISTANCE: f32 = 70.0;
+
+    /// Сколько перехватчик после удара едет мимо, прежде чем зайти снова, с.
+    pub const RAM_COOLDOWN: f32 = 1.5;
+
+    /// Наибольшее упреждение курса перехвата, с.
+    pub const LEAD_MAX: f32 = 1.5;
+
+    /// Угол появления звена от направления движения лунохода, рад: от и до, сторона случайная.
+    pub const FLANK_ANGLE: (f32, f32) = (50.0 * std::f32::consts::PI / 180.0, 100.0 * std::f32::consts::PI / 180.0);
+
+    /// Потолок скорости лунохода после удара — доля полной скорости.
+    pub const IMPACT_FACTOR: f32 = 0.55;
+
+    /// Какая доля скорости лунохода остаётся сразу после удара.
+    pub const HIT_SPEED_KEEP: f32 = 0.3;
+
+    /// На сколько удар продлевает ограничение скорости, с, и дольше какого оно не копится.
+    pub const IMPACT_TIME: f32 = 1.5;
+    pub const IMPACT_MAX: f32 = 3.0;
+
+    /// Реплика штаба о перехватчиках не чаще раза в столько секунд.
+    pub const VOICE_GAP: f32 = 30.0;
+
+    /// Размер звена перехвата при угрозе `threat`: 2 в начале, не больше 4.
+    pub fn pack_size(threat: f32) -> usize {
+        (2 + (threat.max(0.0) / 2.0).floor() as usize).min(4)
+    }
 }
 
 /// Урон врагов: все удары по луноходу в одном месте, долями его здоровья.
@@ -128,6 +189,9 @@ pub mod enemy_damage {
 
     /// Таран босса, один удар за атаку: 90 из 1500.
     pub const BOSS_RAM: f32 = ROVER_MAX_HEALTH * (90.0 / 1500.0);
+
+    /// Удар перехватчика: 1,5 % здоровья, меньше тарана таран-стрелка. Главное в ударе — замедление.
+    pub const INTERCEPTOR_RAM: f32 = ROVER_MAX_HEALTH * 0.015;
 
     /// Мощность снаряда мортирщика. Прямое попадание отнимает `combat::EXPLOSION_DAMAGE` × мощность
     /// (35), но мощность задаёт и размер кратера, поэтому долей здоровья её не поднять: для этого
@@ -336,7 +400,8 @@ fn direct_waves(
     mut dice: ResMut<GameRng>,
     rover: Query<&Health, With<Rover>>,
     // Капсула в полёте — враг, который вот-вот появится: тоже в пределе одновременных.
-    enemies: Query<(), Or<(With<Enemy>, With<Capsule>)>>,
+    // Перехватчики не входят в предел: у них свой — размер звена.
+    enemies: Query<(), (Or<(With<Enemy>, With<Capsule>)>, Without<Interceptor>)>,
     mut started: MessageWriter<WaveStarted>,
     mut spawn: MessageWriter<SpawnEnemy>,
     mut capsules: MessageWriter<DropCapsule>,
@@ -570,5 +635,25 @@ mod tests {
         // Траншея уже прорезана на 0,4 м ниже луча: тот же выстрел всё ещё считается.
         let cut = |x: f32, _z: f32| if x > 10.0 { 1.1 } else { 0.0 };
         assert!(beam_cuts(cut, origin, Vec3::X));
+    }
+
+    #[test]
+    fn волна_не_содержит_перехватчиков() {
+        let mut n = 0u32;
+        let mut even = || {
+            n += 1;
+            (n as f32 * 0.618).fract()
+        };
+        for threat in [0.0, 1.0, 2.0, 3.0, 5.0, 8.0] {
+            assert!(!buy_wave(threat, &mut even).contains(&EnemyKind::Interceptor), "{threat}");
+        }
+    }
+
+    #[test]
+    fn pack_size_starts_at_two_and_stops_at_four() {
+        assert_eq!(balance::pack_size(0.0), 2);
+        assert_eq!(balance::pack_size(2.0), 3);
+        assert_eq!(balance::pack_size(4.5), 4);
+        assert_eq!(balance::pack_size(20.0), 4);
     }
 }

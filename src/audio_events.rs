@@ -142,6 +142,8 @@ impl Plugin for AudioEventsPlugin {
             Update,
             (
                 voice_service,
+                voice_interceptors,
+                sound_interceptor_hits,
                 voice_boss,
                 voice_alarm,
                 voice_residents,
@@ -576,6 +578,35 @@ fn voice_service(mut arrived: MessageReader<crate::service::ServiceArrived>, mut
     }
 }
 
+/// Начался перехват — штаб предупреждает о перехватчиках, не чаще раза в
+/// [`balance::VOICE_GAP`](crate::waves::balance::VOICE_GAP).
+fn voice_interceptors(
+    time: Res<Time>,
+    mut started: MessageReader<crate::interceptor::InterceptStarted>,
+    mut last: Local<Option<f32>>,
+    mut cues: MessageWriter<VoiceCue>,
+) {
+    if started.read().count() == 0 {
+        return;
+    }
+    let now = time.elapsed_secs();
+    if last.is_some_and(|at| now - at < crate::waves::balance::VOICE_GAP) {
+        return;
+    }
+    *last = Some(now);
+    cues.write(VoiceCue::new("interceptors"));
+}
+
+/// Удар перехватчика по луноходу.
+fn sound_interceptor_hits(
+    mut hits: MessageReader<crate::interceptor::InterceptorHit>,
+    mut sounds: MessageWriter<PlaySound>,
+) {
+    for hit in hits.read() {
+        sounds.write(PlaySound::at("interceptor_hit", hit.position));
+    }
+}
+
 /// Боезапас кончился на последнем выстреле — штаб замечает, что стрелять нечем.
 fn voice_weapon_denied(mut denied: MessageReader<AmmoRanOut>, mut cues: MessageWriter<VoiceCue>) {
     if denied.read().count() > 0 {
@@ -688,12 +719,13 @@ mod tests {
             "airstrike_call", "weapon_pickup", "big_explosion", "house_destroyed", "ammo_empty",
             "repair_start", "repair_done", "medkit", "resident_died", "alarm_rising", "record",
             "tut_shoot", "tut_mortar", "first_crater", "tut_repair", "tut_pickup", "tut_alarm",
+            "interceptors",
         ];
         let sounds = [
             "rover_hit", "enemy_death", "mg_fire", "mortar_fire", "mortar_whistle", "tree_fall",
             "rock_break", "capsule_fall", "rocket_fire", "laser_fire", "airstrike_flyby", "pickup",
             "hit", "explosion_small", "explosion", "explosion_big", "building_collapse", "ui_click",
-            "ui_pause", "repair",
+            "ui_pause", "repair", "interceptor_hit",
         ];
         let lists = [
             (&cues[..], include_str!("../assets/voice/lines.json")),
