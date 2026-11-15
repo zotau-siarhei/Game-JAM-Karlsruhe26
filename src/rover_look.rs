@@ -329,7 +329,7 @@ fn emitter(effect: &Handle<EffectAsset>) -> impl Bundle {
 }
 
 /// Пыль из-под гусениц: светлые клубы, поднимаются и расходятся.
-fn dust_effect() -> EffectAsset {
+pub(crate) fn dust_effect() -> EffectAsset {
     let writer = ExprWriter::new();
     let init_pos = SetPositionSphereModifier {
         center: writer.lit(Vec3::ZERO).expr(),
@@ -479,17 +479,20 @@ fn fit_suspension(
     }
 }
 
-/// Густота пыли по скорости и дыма по здоровью с долей частиц ступени качества.
+/// Густота пыли по скорости и дыма по здоровью с долей частиц ступени качества. На лаве
+/// и на ступени «Низкая» пыли нет.
 fn emit_dust_and_smoke(
     quality: Res<Quality>,
-    rover: Query<(&RoverMotion, &Health), With<Rover>>,
+    pools: Res<crate::lava::LavaPools>,
+    rover: Query<(&RoverMotion, &Health, &Transform), With<Rover>>,
     mut dust: Query<&mut EffectSpawner, (With<DustEmitter>, Without<SmokeEmitter>)>,
     mut smoke: Query<&mut EffectSpawner, (With<SmokeEmitter>, Without<DustEmitter>)>,
 ) {
-    let Some((motion, health)) = rover.iter().next() else {
+    let Some((motion, health, transform)) = rover.iter().next() else {
         return;
     };
     let share = quality.particle_share();
+    let dusty = *quality != Quality::Low && !crate::lava::is_lava(&pools, transform.translation);
     let set = |spawner: &mut EffectSpawner, rate: f32| {
         let count = rate * share * EMIT_PERIOD;
         if spawner.settings.count() != count.into() {
@@ -497,7 +500,7 @@ fn emit_dust_and_smoke(
         }
     };
     for mut spawner in &mut dust {
-        set(&mut spawner, dust_rate(motion.speed));
+        set(&mut spawner, if dusty { dust_rate(motion.speed) } else { 0.0 });
     }
     for mut spawner in &mut smoke {
         set(&mut spawner, smoke_rate(health.fraction()));

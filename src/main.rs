@@ -58,6 +58,7 @@ mod subsidence;
 mod sound_list;
 mod steering;
 mod terrain;
+mod tracks;
 mod trains;
 mod upgrades;
 mod vehicle;
@@ -125,6 +126,7 @@ fn game_plugins(app: &mut App) {
             pickups::PickupsPlugin,
             rails::RailsPlugin,
             trains::TrainsPlugin,
+            tracks::TracksPlugin,
         ))
         .add_plugins((
             TerrainPlugin,
