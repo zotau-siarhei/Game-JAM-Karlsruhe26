@@ -1,5 +1,8 @@
 //! Авиаудар: отметка на земле по направлению от лунохода к прицелу, через две секунды над ней
 //! пролетает самолёт и кладёт серию бомб с мощными взрывами и большими кратерами.
+//!
+//! Длина серии и число самолётов — по уровню (`upgrades::airstrike`): на третьем уровне второй
+//! самолёт бомбит поперёк первого, линии кратеров пересекаются в точке прицела.
 
 use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
@@ -13,11 +16,14 @@ use crate::rover::{self, Rover};
 use crate::run::RunScoped;
 use crate::settlements::Footprint;
 use crate::terrain::Terrain;
+use crate::upgrades::{self, WeaponLevels};
 use crate::weapons::CurrentWeapon;
 
-/// Размер отметки: длина вдоль пролёта и ширина, м.
-const MARK_LENGTH: f32 = 30.0;
+/// Ширина отметки, м. Длина — по числу бомб: [`mark_length`].
 const MARK_WIDTH: f32 = 6.0;
+
+/// Второй самолёт заходит позже первого, с.
+const SECOND_PLANE_DELAY: f32 = 0.4;
 
 /// Через сколько после вызова появляется самолёт, с.
 const DELAY: f32 = 2.0;
@@ -29,8 +35,8 @@ const PLANE_SPEED: f32 = 60.0;
 /// Запас захода сверх упреждения первой бомбы, м: самолёт появляется до точки её сброса.
 const APPROACH_MARGIN: f32 = 15.0;
 
-/// Бомбы: число, шаг, мощность и радиус взрыва.
-const BOMBS: usize = 6;
+/// Бомбы: число на первом уровне, шаг, мощность и радиус взрыва.
+pub const BOMBS: usize = 6;
 const BOMB_STEP: f32 = 5.0;
 const BOMB_POWER: f32 = 1.6;
 const BOMB_RADIUS: f32 = 7.0;
@@ -46,17 +52,22 @@ fn fall_time() -> f32 {
     (2.0 * PLANE_HEIGHT / GRAVITY).sqrt()
 }
 
-/// Смещение точки падения бомбы `index` от центра отметки вдоль пролёта, м.
-fn bomb_offset(index: usize) -> f32 {
-    -(BOMBS as f32 - 1.0) * BOMB_STEP * 0.5 + index as f32 * BOMB_STEP
+/// Смещение точки падения бомбы `index` из `bombs` от центра отметки вдоль пролёта, м.
+fn bomb_offset(index: usize, bombs: usize) -> f32 {
+    -(bombs as f32 - 1.0) * BOMB_STEP * 0.5 + index as f32 * BOMB_STEP
+}
+
+/// Длина отметки вдоль пролёта при `bombs` бомбах, м: шесть бомб — 30 м.
+fn mark_length(bombs: usize) -> f32 {
+    bombs as f32 * BOMB_STEP
 }
 
 /// С какого расстояния до центра самолёт заходит и где исчезает, м.
 ///
 /// Бомба сбрасывается за `PLANE_SPEED · fall_time` до своей точки, поэтому заход дальше
 /// упреждения первой бомбы: иначе в первом же кадре падают сразу несколько бомб в одну точку.
-fn approach() -> f32 {
-    PLANE_SPEED * fall_time() - bomb_offset(0) + APPROACH_MARGIN
+fn approach(bombs: usize) -> f32 {
+    PLANE_SPEED * fall_time() - bomb_offset(0, bombs) + APPROACH_MARGIN
 }
 
 /// Подключает авиаудар.
@@ -81,6 +92,8 @@ pub struct Strike {
     pub center: Vec3,
     /// Направление пролёта в плане.
     pub dir: Vec3,
+    /// Бомб в серии.
+    bombs: usize,
     elapsed: f32,
     /// Самолёт уже появился.
     plane_spawned: bool,
@@ -150,12 +163,12 @@ fn create_airstrike_assets(
 }
 
 /// Прямоугольник отметки в плане.
-fn footprint(center: Vec3, dir: Vec3) -> Footprint {
+fn footprint(center: Vec3, dir: Vec3, bombs: usize) -> Footprint {
     Footprint {
         center: Vec2::new(center.x, center.z),
         // Локальная ось Z — вдоль пролёта.
         yaw: (dir.x).atan2(dir.z),
-        half: Vec2::new(MARK_WIDTH * 0.5, MARK_LENGTH * 0.5),
+        half: Vec2::new(MARK_WIDTH * 0.5, mark_length(bombs) * 0.5),
     }
 }
 
@@ -168,6 +181,7 @@ fn call_airstrike(
     aim: Res<AimPoint>,
     assets: Res<AirstrikeAssets>,
     terrain: Res<Terrain>,
+    levels: Res<WeaponLevels>,
     mut inventory: ResMut<Inventory>,
     rover: Single<(&Transform, &Health), With<Rover>>,
 ) {
@@ -180,10 +194,28 @@ fn call_airstrike(
         return;
     }
     inventory.spend(CurrentWeapon::Airstrike);
+    let level = upgrades::airstrike(levels.level(CurrentWeapon::Airstrike));
     let dir = (aim.position - rover.translation).with_y(0.0).normalize_or(Vec3::NEG_Z);
-    let center = aim.position;
+    for plane in 0..level.planes {
+        // Второй самолёт — поперёк первого и чуть позже.
+        let dir = Quat::from_rotation_y(plane as f32 * std::f32::consts::FRAC_PI_2) * dir;
+        let delay = plane as f32 * SECOND_PLANE_DELAY;
+        spawn_strike(&mut commands, &assets, &terrain, aim.position, dir, level.bombs, delay);
+    }
+}
+
+/// Удар: отметка на земле по контуру, сигнальный дым и сам [`Strike`].
+fn spawn_strike(
+    commands: &mut Commands,
+    assets: &AirstrikeAssets,
+    terrain: &Terrain,
+    center: Vec3,
+    dir: Vec3,
+    bombs: usize,
+    delay: f32,
+) {
     let strike = commands.spawn(RunScoped).id();
-    let rect = footprint(center, dir);
+    let rect = footprint(center, dir, bombs);
 
     // Отметка: сегменты по контуру прямоугольника, каждый на рельефе.
     let mut marks = Vec::new();
@@ -215,10 +247,11 @@ fn call_airstrike(
             );
         }
     };
-    edge(Vec2::new(-h.x, -h.y), Vec2::new(-h.x, h.y), MARK_SEGMENTS, &mut commands);
-    edge(Vec2::new(h.x, -h.y), Vec2::new(h.x, h.y), MARK_SEGMENTS, &mut commands);
-    edge(Vec2::new(-h.x, -h.y), Vec2::new(h.x, -h.y), 2, &mut commands);
-    edge(Vec2::new(-h.x, h.y), Vec2::new(h.x, h.y), 2, &mut commands);
+    let segments = MARK_SEGMENTS * bombs / BOMBS;
+    edge(Vec2::new(-h.x, -h.y), Vec2::new(-h.x, h.y), segments, commands);
+    edge(Vec2::new(h.x, -h.y), Vec2::new(h.x, h.y), segments, commands);
+    edge(Vec2::new(-h.x, -h.y), Vec2::new(h.x, -h.y), 2, commands);
+    edge(Vec2::new(-h.x, h.y), Vec2::new(h.x, h.y), 2, commands);
     // Сигнальный дым — светящийся столб в центре.
     marks.push(
         commands
@@ -238,7 +271,8 @@ fn call_airstrike(
     commands.entity(strike).insert(Strike {
         center,
         dir,
-        elapsed: 0.0,
+        bombs,
+        elapsed: -delay,
         plane_spawned: false,
         plane: None,
         shadow: None,
@@ -261,7 +295,7 @@ fn pulse_marks(
         let Ok(strike) = strikes.get(mark.strike) else {
             continue;
         };
-        let inside = footprint(strike.center, strike.dir).distance(Vec2::new(rover.translation.x, rover.translation.z)) < 1.5;
+        let inside = footprint(strike.center, strike.dir, strike.bombs).distance(Vec2::new(rover.translation.x, rover.translation.z)) < 1.5;
         let wanted = if inside { &assets.danger } else { &assets.safe };
         if material.0 != *wanted {
             material.0 = wanted.clone();
@@ -280,8 +314,8 @@ fn run_strikes(
     mut transforms: Query<&mut Transform>,
 ) {
     let dt = time.delta_secs();
-    let approach = approach();
     for (entity, mut strike) in &mut strikes {
+        let approach = approach(strike.bombs);
         strike.elapsed += dt;
         if strike.elapsed < DELAY {
             continue;
@@ -334,8 +368,8 @@ fn run_strikes(
         }
         // Бомба сбрасывается над своей точкой отметки с упреждением на падение.
         let lead = PLANE_SPEED * fall_time();
-        while strike.dropped < BOMBS {
-            if flown + lead < bomb_offset(strike.dropped) {
+        while strike.dropped < strike.bombs {
+            if flown + lead < bomb_offset(strike.dropped, strike.bombs) {
                 break;
             }
             strike.dropped += 1;
@@ -356,7 +390,7 @@ fn run_strikes(
             }
         }
         // Отметка и сам удар живут, пока не упала последняя бомба.
-        if strike.landed >= BOMBS {
+        if strike.landed >= strike.bombs {
             for mark in strike.marks.drain(..) {
                 commands.entity(mark).try_despawn();
             }
@@ -406,10 +440,15 @@ mod tests {
     #[test]
     fn plane_appears_before_the_first_drop_point() {
         let lead = PLANE_SPEED * fall_time();
-        let flown_at_start = -approach();
-        assert!(flown_at_start + lead < bomb_offset(0));
-        // Бомбы сбрасываются по очереди с шагом по пролёту, а не все сразу.
-        assert!(bomb_offset(1) - bomb_offset(0) > 0.0);
-        assert!(approach() >= 110.0, "{}", approach());
+        for bombs in [BOMBS, upgrades::airstrike(2).bombs, upgrades::airstrike(3).bombs] {
+            let flown_at_start = -approach(bombs);
+            assert!(flown_at_start + lead < bomb_offset(0, bombs));
+            // Бомбы сбрасываются по очереди с шагом по пролёту, а не все сразу.
+            assert!(bomb_offset(1, bombs) - bomb_offset(0, bombs) > 0.0);
+            // Серия симметрична относительно точки прицела: линии крест-накрест пересекаются в ней.
+            assert!((bomb_offset(0, bombs) + bomb_offset(bombs - 1, bombs)).abs() < 1e-4);
+        }
+        assert!(approach(BOMBS) >= 110.0, "{}", approach(BOMBS));
+        assert_eq!(mark_length(BOMBS), 30.0);
     }
 }

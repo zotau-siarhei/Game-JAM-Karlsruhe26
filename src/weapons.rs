@@ -12,13 +12,14 @@ use crate::frame::GameSet;
 use crate::models::Models;
 use crate::rng::GameRng;
 use crate::rover::{self, Rover};
+use crate::upgrades::{self, WeaponLevels};
 use crate::vehicle;
 
 /// Выстрелов пулемёта в секунду.
-const MG_RATE: f32 = 8.0;
+pub const MG_RATE: f32 = 8.0;
 
 /// Урон пули пулемёта.
-const MG_DAMAGE: f32 = 6.0;
+pub const MG_DAMAGE: f32 = 6.0;
 
 /// Разброс пуль пулемёта по горизонтали в каждую сторону, рад.
 const MG_SPREAD: f32 = 1.2 * std::f32::consts::PI / 180.0;
@@ -61,6 +62,7 @@ impl Plugin for WeaponsPlugin {
                 (
                     attach_turret.in_set(GameSet::Reset),
                     show_weapon.after(attach_turret).in_set(GameSet::Presentation),
+                    show_barrels.after(show_weapon).in_set(GameSet::Presentation),
                     (aim_turret, fire_machine_gun)
                         .chain()
                         .after(rover::drive_rover)
@@ -131,15 +133,23 @@ struct WeaponMount {
     material: Handle<StandardMaterial>,
 }
 
-/// Время до следующего выстрела пулемёта, с.
+/// Время до следующего выстрела пулемёта, с, и ствол следующего выстрела.
 #[derive(Component, Default)]
 struct MachineGun {
     cooldown: f32,
+    next_barrel: u8,
 }
 
+/// Ствол пулемёта на башне: `0` — основной, `1` — второй, виден со второго уровня.
+#[derive(Component)]
+struct Barrel(u8);
+
+/// Сдвиг стволов спаренного пулемёта вбок от оси башни, м в мерах модели.
+const BARREL_SPACING: f32 = 0.1;
+
 impl MachineGun {
-    /// Сколько пуль выпустить за кадр длиной `dt`, пока зажата кнопка.
-    fn shots(&mut self, dt: f32, trigger: bool) -> u32 {
+    /// Сколько пуль выпустить за кадр длиной `dt`, пока зажата кнопка, при темпе `rate` в секунду.
+    fn shots(&mut self, dt: f32, trigger: bool, rate: f32) -> u32 {
         self.cooldown -= dt;
         if !trigger {
             self.cooldown = self.cooldown.max(0.0);
@@ -147,7 +157,7 @@ impl MachineGun {
         }
         let mut shots = 0;
         while self.cooldown <= 0.0 {
-            self.cooldown += 1.0 / MG_RATE;
+            self.cooldown += 1.0 / rate;
             shots += 1;
         }
         shots
@@ -177,11 +187,20 @@ fn attach_turret(
                 .with_children(|turret| {
                     turret.spawn((
                         WeaponMount {
-                            barrel,
-                            material: barrel_material,
+                            barrel: barrel.clone(),
+                            material: barrel_material.clone(),
                         },
                         Transform::default(),
                         Visibility::default(),
+                    ));
+                    // Второй ствол спаренного пулемёта: виден со второго уровня (`show_barrels`).
+                    turret.spawn((
+                        Barrel(1),
+                        Mesh3d(barrel.clone()),
+                        MeshMaterial3d(barrel_material.clone()),
+                        Transform::from_xyz(0.0, MUZZLE_HEIGHT - TURRET_HEIGHT, -MUZZLE_FORWARD * 0.5)
+                            .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
+                        Visibility::Hidden,
                     ));
                 });
         });
@@ -209,6 +228,7 @@ fn show_weapon(
             models.spawn_visual(parent, id, at, |spare| {
                 // Цилиндр стоит вдоль Y: кладём его стволом вперёд, на -Z.
                 spare.spawn((
+                    Barrel(0),
                     Mesh3d(mount.barrel.clone()),
                     MeshMaterial3d(mount.material.clone()),
                     Transform::from_xyz(0.0, MUZZLE_HEIGHT - TURRET_HEIGHT, -MUZZLE_FORWARD * 0.5)
@@ -268,11 +288,46 @@ fn machine_gun_shot(rover: Vec3, aim: Vec3) -> (Vec3, Vec3) {
     (origin, direction)
 }
 
-/// Пулемётная очередь, пока зажата левая кнопка мыши и выбран пулемёт.
+/// Сдвиг ствола `index` вбок от оси башни при `barrels` стволах, м в мерах модели.
+fn barrel_offset(barrels: u8, index: u8) -> f32 {
+    if barrels < 2 {
+        0.0
+    } else if index == 0 {
+        -BARREL_SPACING
+    } else {
+        BARREL_SPACING
+    }
+}
+
+/// Стволы на башне по уровню пулемёта: со второго уровня их два, рядом.
+///
+/// Основной ствол — запасной облик насадки пулемёта (`show_weapon`), он есть, пока модели нет;
+/// второй ствол стоит на башне всегда и виден только у выбранного пулемёта.
+fn show_barrels(
+    levels: Res<WeaponLevels>,
+    current: Res<CurrentWeapon>,
+    mut barrels: Query<(&Barrel, &mut Transform, &mut Visibility)>,
+) {
+    let count = upgrades::machine_gun(levels.level(CurrentWeapon::MachineGun)).barrels;
+    let machine_gun = *current == CurrentWeapon::MachineGun;
+    for (barrel, mut transform, mut visibility) in &mut barrels {
+        transform.translation.x = barrel_offset(count, barrel.0);
+        let shown = barrel.0 == 0 || (machine_gun && barrel.0 < count);
+        let wanted = if shown { Visibility::Inherited } else { Visibility::Hidden };
+        if *visibility != wanted {
+            *visibility = wanted;
+        }
+    }
+}
+
+/// Пулемётная очередь, пока зажата левая кнопка мыши и выбран пулемёт. Число стволов, темп, урон
+/// и тяжесть пуль — по уровню (`upgrades::machine_gun`); выстрелы чередуют стволы.
+#[allow(clippy::too_many_arguments)]
 fn fire_machine_gun(
     time: Res<Time>,
     mouse: Res<ButtonInput<MouseButton>>,
     weapon: Res<CurrentWeapon>,
+    levels: Res<WeaponLevels>,
     aim: Res<AimPoint>,
     mut dice: ResMut<GameRng>,
     mut rover: Query<(&Transform, &Health, &mut MachineGun), With<Rover>>,
@@ -284,16 +339,22 @@ fn fire_machine_gun(
     let trigger = mouse.pressed(MouseButton::Left)
         && *weapon == CurrentWeapon::MachineGun
         && !health.is_dead();
-    for _ in 0..gun.shots(time.delta_secs(), trigger) {
+    let level = upgrades::machine_gun(levels.level(CurrentWeapon::MachineGun));
+    for _ in 0..gun.shots(time.delta_secs(), trigger, level.rate) {
         // Пуля вылетает из ствола: ось башни позади центра лунохода.
         let pivot = transform.translation + transform.rotation * TURRET_OFFSET;
         let (origin, direction) = machine_gun_shot(pivot, aim.position);
+        let barrel = gun.next_barrel % level.barrels.max(1);
+        gun.next_barrel = gun.next_barrel.wrapping_add(1);
+        let side = Vec3::Y.cross(direction.with_y(0.0)).normalize_or_zero();
+        let origin = origin - side * barrel_offset(level.barrels, barrel) * crate::rover::ROVER_SCALE;
         let spread = Quat::from_rotation_y(dice.range(-MG_SPREAD, MG_SPREAD));
         bullets.write(FireBullet {
             origin,
             direction: spread * direction,
             team: Team::Player,
-            damage: MG_DAMAGE,
+            damage: level.damage,
+            heavy: level.heavy,
         });
     }
 }
@@ -307,19 +368,29 @@ mod tests {
     #[test]
     fn machine_gun_fires_eight_shots_a_second_while_held() {
         let mut gun = MachineGun::default();
-        let shots: u32 = (0..60).map(|_| gun.shots(1.0 / 60.0, true)).sum();
+        let shots: u32 = (0..60).map(|_| gun.shots(1.0 / 60.0, true, MG_RATE)).sum();
         assert!((8..=9).contains(&shots), "{shots}");
         // Кнопка отпущена: выстрелов нет, запас времени не копится.
-        let idle: u32 = (0..120).map(|_| gun.shots(1.0 / 60.0, false)).sum();
+        let idle: u32 = (0..120).map(|_| gun.shots(1.0 / 60.0, false, MG_RATE)).sum();
         assert_eq!(idle, 0);
-        assert_eq!(gun.shots(1.0 / 60.0, true), 1);
+        assert_eq!(gun.shots(1.0 / 60.0, true, MG_RATE), 1);
     }
 
     #[test]
     fn slow_frame_does_not_lose_shots() {
         let mut gun = MachineGun::default();
         // Кадр в полсекунды: четыре выстрела с прошлого кадра плюс текущий.
-        assert_eq!(gun.shots(0.5, true), 5);
+        assert_eq!(gun.shots(0.5, true, MG_RATE), 5);
+    }
+
+    #[test]
+    fn twin_machine_gun_fires_twice_as_fast() {
+        let rate = upgrades::machine_gun(2).rate;
+        let mut gun = MachineGun::default();
+        let shots: u32 = (0..60).map(|_| gun.shots(1.0 / 60.0, true, rate)).sum();
+        assert!((16..=17).contains(&shots), "{shots}");
+        assert_eq!(barrel_offset(2, 0), -barrel_offset(2, 1));
+        assert_eq!(barrel_offset(1, 0), 0.0);
     }
 
     #[test]

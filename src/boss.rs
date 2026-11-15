@@ -19,7 +19,7 @@ use crate::frame::{GameSet, RunMessages};
 use crate::models::Models;
 use crate::mortar::FireShell;
 use crate::obstacles::Obstacle;
-use crate::pickups::SpawnLoot;
+use crate::pickups::{SpawnLoot, SpawnUpgrade};
 use crate::rng::GameRng;
 use crate::rockets::FireRocket;
 use crate::rover::Rover;
@@ -444,6 +444,8 @@ fn fight(
                                 target: rover.translation + Vec3::new(angle.cos(), 0.0, angle.sin()) * distance,
                                 team: Team::Enemy,
                                 power: enemy_damage::BOSS_SALVO_POWER,
+                                radius: crate::mortar::EXPLOSION_RADIUS,
+                                cluster: 0,
                             });
                         }
                     }
@@ -551,6 +553,7 @@ fn run_dying(
     mut bosses: Query<(Entity, &Transform, &mut Boss)>,
     mut explosions: MessageWriter<Explosion>,
     mut loot: MessageWriter<SpawnLoot>,
+    mut upgrade: MessageWriter<SpawnUpgrade>,
 ) {
     for (entity, transform, mut boss) in &mut bosses {
         let BossPhase::Dying(t, blasts) = boss.phase else {
@@ -592,6 +595,10 @@ fn run_dying(
                 weapon: weapons[i % weapons.len()],
             });
         }
+        // Золотой ящик улучшения — в центре, на месте гибели.
+        upgrade.write(SpawnUpgrade {
+            position: feet + Vec3::Y,
+        });
         commands.entity(entity).despawn();
     }
 }

@@ -20,13 +20,15 @@ use crate::rover::{self, Rover};
 use crate::run::{RunScoped, WorldRebuilt};
 use crate::subsidence::TerrainChanged;
 use crate::terrain::{ChunkDirty, Terrain, VisibleChunks};
+use crate::explosion::Explosion;
+use crate::upgrades::{self, WeaponLevels};
 use crate::weapons::CurrentWeapon;
 
 /// Перезарядка, с.
 const RELOAD: f32 = 0.6;
 
 /// Длина луча, м.
-const BEAM_LENGTH: f32 = 40.0;
+pub const BEAM_LENGTH: f32 = 40.0;
 
 /// Урон импульса.
 const BEAM_DAMAGE: f32 = 60.0;
@@ -38,7 +40,7 @@ const BEAM_HEIGHT: f32 = 0.9;
 const BEAM_SECONDS: f32 = 0.2;
 
 /// Полуширина траншеи, м.
-const TRENCH_HALF_WIDTH: f32 = 1.2;
+pub const TRENCH_HALF_WIDTH: f32 = 1.2;
 
 /// На сколько дно траншеи ниже луча, м.
 const TRENCH_BELOW_BEAM: f32 = 0.4;
@@ -199,9 +201,9 @@ pub struct TrenchCut {
 /// низко, выжигает узкой полосой.
 ///
 /// Высоты только опускаются: на ровном месте ниже луча рельеф не меняется, только темнеет.
-pub fn cut_trench(terrain: &mut Terrain, from: Vec2, to: Vec2, beam_y: f32) -> TrenchCut {
+pub fn cut_trench(terrain: &mut Terrain, from: Vec2, to: Vec2, beam_y: f32, half_width: f32) -> TrenchCut {
     let floor = beam_y - TRENCH_BELOW_BEAM;
-    let reach = TRENCH_HALF_WIDTH + 1.0;
+    let reach = half_width + 1.0;
     let (x0, x1) = (from.x.min(to.x) - reach, from.x.max(to.x) + reach);
     let (z0, z1) = (from.y.min(to.y) - reach, from.y.max(to.y) + reach);
     let mut result = TrenchCut::default();
@@ -226,7 +228,7 @@ pub fn cut_trench(terrain: &mut Terrain, from: Vec2, to: Vec2, beam_y: f32) -> T
                 continue;
             }
             // Внутри полуширины — дно, дальше плавный подъём к нетронутому.
-            let edge = ((d - TRENCH_HALF_WIDTH) / (reach - TRENCH_HALF_WIDTH)).clamp(0.0, 1.0);
+            let edge = ((d - half_width) / (reach - half_width)).clamp(0.0, 1.0);
             let limit = floor + edge * edge * 3.0;
             let current = terrain.vertex_height(vx, vz);
             if current > limit {
@@ -265,6 +267,24 @@ pub struct FireLaser {
     pub direction: Vec3,
     pub team: Team,
     pub damage: f32,
+    /// Длина луча и полуширина траншеи, м.
+    pub length: f32,
+    pub half_width: f32,
+    /// Взрыв на конце луча: радиус и мощность. Лазер третьего уровня.
+    pub end_blast: Option<(f32, f32)>,
+}
+
+impl FireLaser {
+    /// Обычный луч: длина и траншея первого уровня, без взрыва. Остальное задаёт стрелок.
+    pub const BASE: FireLaser = FireLaser {
+        origin: Vec3::ZERO,
+        direction: Vec3::NEG_Z,
+        team: Team::Enemy,
+        damage: BEAM_DAMAGE,
+        length: BEAM_LENGTH,
+        half_width: TRENCH_HALF_WIDTH,
+        end_blast: None,
+    };
 }
 
 /// Импульс лазера игрока по левой кнопке мыши.
@@ -272,6 +292,7 @@ fn fire_laser(
     time: Res<Time>,
     mouse: Res<ButtonInput<MouseButton>>,
     weapon: Res<CurrentWeapon>,
+    levels: Res<WeaponLevels>,
     aim: Res<AimPoint>,
     mut inventory: ResMut<Inventory>,
     mut reload: ResMut<LaserReload>,
@@ -291,11 +312,15 @@ fn fire_laser(
     *cooldown = RELOAD;
     inventory.spend(CurrentWeapon::Laser);
     let origin = rover.translation + Vec3::Y * BEAM_HEIGHT;
+    let level = upgrades::laser(levels.level(CurrentWeapon::Laser));
     shots.write(FireLaser {
         origin,
         direction: aim.position - origin,
         team: Team::Player,
         damage: BEAM_DAMAGE,
+        length: level.length,
+        half_width: level.trench_half_width,
+        end_blast: level.end_blast,
     });
 }
 
@@ -313,12 +338,14 @@ fn apply_laser_shots(
     fx: Query<(), With<LaserFx>>,
     mut damage: MessageWriter<Damage>,
     mut changed: MessageWriter<TerrainChanged>,
+    mut explosions: MessageWriter<Explosion>,
 ) {
     let mut fx_count = fx.iter().count();
     for shot in shots.read() {
         let start = shot.origin;
         let dir = shot.direction.with_y(0.0).normalize_or(Vec3::NEG_Z);
-        let end = start + dir * BEAM_LENGTH;
+        let length = shot.length;
+        let end = start + dir * length;
         let (a, b) = (Vec2::new(start.x, start.z), Vec2::new(end.x, end.z));
 
         // Урон всем на отрезке, кроме своих.
@@ -327,7 +354,7 @@ fn apply_laser_shots(
                 continue;
             }
             let p = transform.translation();
-            if flat_distance(Vec2::new(p.x, p.z), a, b) <= collider.radius {
+            if flat_distance(Vec2::new(p.x, p.z), a, b) <= collider.radius + (shot.half_width - TRENCH_HALF_WIDTH) {
                 damage.write(Damage {
                     target: entity,
                     amount: shot.damage,
@@ -335,7 +362,7 @@ fn apply_laser_shots(
                 });
             }
         }
-        let steps = (BEAM_LENGTH / 0.5) as usize;
+        let steps = (length / 0.5) as usize;
         for (entity, obstacle) in &obstacles {
             let hit = (0..=steps).any(|s| {
                 let p = start.lerp(end, s as f32 / steps as f32);
@@ -351,12 +378,21 @@ fn apply_laser_shots(
         }
 
         // Траншея и выжженная полоса.
-        let trench = cut_trench(&mut terrain, a, b, start.y);
+        let trench = cut_trench(&mut terrain, a, b, start.y, shot.half_width);
         if !trench.cut.is_empty() {
             let mid = (start + end) * 0.5;
             changed.write(TerrainChanged {
                 center: mid,
-                radius: BEAM_LENGTH * 0.5 + TRENCH_HALF_WIDTH,
+                radius: length * 0.5 + shot.half_width,
+            });
+        }
+        // Лазер третьего уровня взрывается на конце луча, у поверхности.
+        if let Some((radius, power)) = shot.end_blast {
+            explosions.write(Explosion {
+                position: end.with_y(terrain.height_at(end.x, end.z).min(end.y)),
+                radius,
+                power,
+                source_team: shot.team,
             });
         }
         mark_dirty(&mut commands, &visible, trench.chunks);
@@ -407,7 +443,7 @@ fn apply_laser_shots(
         commands.spawn((
             Beam {
                 remaining: BEAM_SECONDS,
-                thickness: 0.18,
+                thickness: 0.18 * shot.half_width / TRENCH_HALF_WIDTH,
             },
             RunScoped,
             NotShadowCaster,
@@ -415,7 +451,7 @@ fn apply_laser_shots(
             MeshMaterial3d(material),
             Transform::from_translation((start + end) * 0.5)
                 .with_rotation(Quat::from_rotation_arc(Vec3::Y, dir))
-                .with_scale(Vec3::new(0.18, BEAM_LENGTH, 0.18)),
+                .with_scale(Vec3::new(0.18, length, 0.18)),
             PointLight {
                 color,
                 intensity: 2_000_000.0,
@@ -521,11 +557,11 @@ mod tests {
         let before: Vec<f32> = (-4..=34).flat_map(|x| (-4..=4).map(move |z| (x, z))).map(|(x, z)| terrain.vertex_height(x, z)).collect();
         let lowest = before.iter().copied().fold(f32::MAX, f32::min);
         // Луч выше всего рельефа: ничего не меняется.
-        let high = cut_trench(&mut terrain, from, to, lowest + 100.0);
+        let high = cut_trench(&mut terrain, from, to, lowest + 100.0, TRENCH_HALF_WIDTH);
         assert!(high.cut.is_empty() && high.scorched.is_empty());
         // Луч посередине: высоты только опускаются.
         let mid = before.iter().sum::<f32>() / before.len() as f32;
-        cut_trench(&mut terrain, from, to, mid);
+        cut_trench(&mut terrain, from, to, mid, TRENCH_HALF_WIDTH);
         let after: Vec<f32> = (-4..=34).flat_map(|x| (-4..=4).map(move |z| (x, z))).map(|(x, z)| terrain.vertex_height(x, z)).collect();
         for (b, a) in before.iter().zip(&after) {
             assert!(a <= b);
@@ -545,7 +581,7 @@ mod tests {
             }
         }
         // Ровная площадка, луч в метре над ней: рельеф не срезан, полоса выжжена.
-        let trench = cut_trench(&mut terrain, Vec2::new(4.0, 10.0), Vec2::new(20.0, 10.0), 1.0);
+        let trench = cut_trench(&mut terrain, Vec2::new(4.0, 10.0), Vec2::new(20.0, 10.0), 1.0, TRENCH_HALF_WIDTH);
         assert!(trench.cut.is_empty());
         assert!(trench.scorched.contains(&IVec2::new(12, 10)));
         assert!(!trench.scorched.contains(&IVec2::new(12, 12)));

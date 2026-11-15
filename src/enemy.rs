@@ -37,7 +37,7 @@ use crate::waves::enemy_damage;
 use crate::weapons::CurrentWeapon;
 
 /// Здоровье таран-стрелка.
-const ENEMY_HEALTH: f32 = 30.0;
+pub const ENEMY_HEALTH: f32 = 30.0;
 
 /// Скорость таран-стрелка, м/с. Луноход быстрее: от врага можно уехать.
 pub const ENEMY_SPEED: f32 = 9.0;
@@ -97,7 +97,7 @@ const HULL_COLOR: Color = Color::srgb(0.72, 0.16, 0.12);
 const DARK_COLOR: Color = Color::srgb(0.1, 0.1, 0.12);
 
 /// Здоровье мортирщика.
-const MORTAR_HEALTH: f32 = 40.0;
+pub const MORTAR_HEALTH: f32 = 40.0;
 
 /// Скорость мортирщика, м/с.
 const MORTAR_SPEED: f32 = 7.0;
@@ -115,7 +115,7 @@ const MORTAR_SCATTER: f32 = 3.0;
 const MORTAR_COLOR: Color = Color::srgb(0.5, 0.2, 0.62);
 
 /// Здоровье ракетчика.
-const ROCKETEER_HEALTH: f32 = 50.0;
+pub const ROCKETEER_HEALTH: f32 = 50.0;
 /// Скорость ракетчика, м/с.
 const ROCKETEER_SPEED: f32 = 7.5;
 /// Укрытие ищется в этом кольце вокруг лунохода, м.
@@ -136,7 +136,7 @@ const LAUNCHER_HEIGHT: f32 = 0.9;
 const ROCKETEER_COLOR: Color = Color::srgb(0.85, 0.55, 0.12);
 
 /// Здоровье тяжёлого танка.
-const TANK_HEALTH: f32 = 220.0;
+pub const TANK_HEALTH: f32 = 220.0;
 /// Скорость танка, м/с.
 const TANK_SPEED: f32 = 6.0;
 /// Поворот танка, рад/с: медленный, линия прицела заметно доворачивает.
@@ -238,7 +238,7 @@ enum TankState {
 
 /// Тяжёлый танк.
 #[derive(Component)]
-struct HeavyTank {
+pub struct HeavyTank {
     state: TankState,
     reload: f32,
     /// Сторона захода: 1 или -1.
@@ -797,6 +797,7 @@ fn drive_tanks(
                         direction: vehicle.forward(),
                         team: Team::Enemy,
                         damage: enemy_damage::TANK_LASER,
+                        ..FireLaser::BASE
                     });
                     tank.reload = TANK_RELOAD;
                     tank.state = TankState::Flank;
@@ -867,6 +868,8 @@ fn fire_mortarmen(
             target: lead_target(rover.translation, velocity) + scatter,
             team: Team::Enemy,
             power: enemy_damage::MORTAR_POWER,
+            radius: crate::mortar::EXPLOSION_RADIUS,
+            cluster: 0,
         });
     }
 }
@@ -1003,6 +1006,7 @@ fn shoot_rover(
                 direction: spread * (target - muzzle),
                 team: Team::Enemy,
                 damage: enemy_damage::BULLET,
+                heavy: false,
             });
         }
     }

@@ -10,7 +10,8 @@ use bevy::prelude::*;
 use crate::aim::AimPoint;
 use crate::arsenal::Inventory;
 use crate::bullet::terrain_hit;
-use crate::combat::{Collider, Health, Team};
+use crate::combat::{Collider, Damage, Health, Team};
+use crate::debris::SpawnDebris;
 use crate::enemy::Enemy;
 use crate::explosion::Explosion;
 use crate::frame::{GameSet, RunMessages};
@@ -18,6 +19,7 @@ use crate::obstacles::{self, Obstacle};
 use crate::rover::{self, Rover};
 use crate::run::{GameState, RunScoped, WorldRebuilt};
 use crate::terrain::Terrain;
+use crate::upgrades::{self, WeaponLevels};
 use crate::weapons::CurrentWeapon;
 
 /// Перезарядка обычной ракеты, с.
@@ -32,12 +34,17 @@ const CRUISE_HEIGHT: f32 = 1.2;
 /// Как быстро ракета догоняет высоту полёта, 1/с.
 const CRUISE_FOLLOW: f32 = 8.0;
 
-/// Взрыв ракеты: мощность от мортиры и радиус.
-const ROCKET_POWER: f32 = 0.45;
-const ROCKET_RADIUS: f32 = 2.5;
+/// Взрыв обычной ракеты первого уровня: мощность от мортиры и радиус. Воронка около 8 м в поперечнике,
+/// лёгкий враг в ней гибнет (зона полного урона — `combat::core_blast_damage`).
+pub const ROCKET_POWER: f32 = 0.7;
+pub const ROCKET_RADIUS: f32 = 4.0;
+
+/// Взрыв боеголовки самонаводящейся ракеты первого уровня.
+pub const HOMING_POWER: f32 = 0.8;
+pub const HOMING_RADIUS: f32 = 4.5;
 
 /// Самонаводящиеся: ракет в залпе, перезарядка, скорость, поворот, взлёт, поиск целей.
-const SALVO: usize = 6;
+pub const SALVO: usize = 6;
 const SALVO_RELOAD: f32 = 1.5;
 const HOMING_SPEED: f32 = 32.0;
 const HOMING_TURN: f32 = 4.0;
@@ -45,6 +52,12 @@ const LAUNCH_SECONDS: f32 = 0.35;
 const FAN_ANGLE: f32 = 25.0 * std::f32::consts::PI / 180.0;
 const TARGET_RANGE: f32 = 40.0;
 const RETARGET_RANGE: f32 = 15.0;
+
+/// Расстояние между спаренными ракетами второго уровня, м.
+const PAIR_SPACING: f32 = 1.2;
+
+/// Горящих обломков-языков пламени у огня термобарической ракеты.
+const FIRE_FLAMES: usize = 6;
 
 /// Ракета дальше этого от старта взрывается сама, м.
 const MAX_RANGE: f32 = 80.0;
@@ -80,7 +93,7 @@ impl Plugin for RocketsPlugin {
                     .chain()
                     .after(rover::drive_rover)
                     .in_set(GameSet::Input),
-                (launch_requested, fly_rockets).chain().in_set(GameSet::Simulation),
+                (launch_requested, fly_rockets, burn_fires).chain().in_set(GameSet::Simulation),
                 (show_locks, fade_puffs).in_set(GameSet::Presentation),
             ),
         );
@@ -123,6 +136,7 @@ fn launch_requested(mut commands: Commands, mut requests: MessageReader<FireRock
                 travelled: 0.0,
                 puff: 0.0,
                 homing: None,
+                warhead: Warhead::ROCKET,
             },
         );
     }
@@ -138,6 +152,37 @@ pub struct Rocket {
     travelled: f32,
     puff: f32,
     homing: Option<Homing>,
+    warhead: Warhead,
+}
+
+/// Боеголовка: каким взрывом ракета кончится.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Warhead {
+    pub radius: f32,
+    pub power: f32,
+    /// Термобарическая: после взрыва на месте горит огонь.
+    pub burn: bool,
+}
+
+impl Warhead {
+    /// Обычная ракета первого уровня: так стреляют и враги.
+    pub const ROCKET: Warhead = Warhead {
+        radius: ROCKET_RADIUS,
+        power: ROCKET_POWER,
+        burn: false,
+    };
+    /// Самонаводящаяся ракета первого уровня.
+    pub const HOMING: Warhead = Warhead {
+        radius: HOMING_RADIUS,
+        power: HOMING_POWER,
+        burn: false,
+    };
+    /// Термобарическая ракета третьего уровня: больше взрыв и огонь на месте.
+    pub const THERMOBARIC: Warhead = Warhead {
+        radius: 5.5,
+        power: 1.0,
+        burn: true,
+    };
 }
 
 impl Rocket {
@@ -232,13 +277,15 @@ fn muzzle(rover: &Transform) -> Vec3 {
     rover.translation + Vec3::Y * 0.9
 }
 
-/// Обычные ракеты очередью, пока зажата кнопка.
+/// Обычные ракеты очередью, пока зажата кнопка. Число ракет за выстрел и боеголовка — по уровню
+/// (`upgrades::rockets`): спаренные летят рядом, каждая в свою точку сбоку от прицела.
 #[allow(clippy::too_many_arguments)]
 fn fire_rockets(
     mut commands: Commands,
     time: Res<Time>,
     mouse: Res<ButtonInput<MouseButton>>,
     weapon: Res<CurrentWeapon>,
+    levels: Res<WeaponLevels>,
     aim: Res<AimPoint>,
     assets: Res<RocketAssets>,
     mut inventory: ResMut<Inventory>,
@@ -257,45 +304,60 @@ fn fire_rockets(
     }
     *cooldown = ROCKET_RELOAD;
     inventory.spend(CurrentWeapon::Rockets);
+    let level = upgrades::rockets(levels.level(CurrentWeapon::Rockets));
     let origin = muzzle(rover);
     let flat = (aim.position - origin).with_y(0.0).normalize_or(Vec3::NEG_Z);
-    spawn_rocket(
-        &mut commands,
-        &assets,
-        origin,
-        Rocket {
-            velocity: flat * ROCKET_SPEED,
-            team: Team::Player,
-            target: aim.position,
-            travelled: 0.0,
-            puff: 0.0,
-            homing: None,
-        },
-    );
+    let side = Vec3::Y.cross(flat).normalize_or_zero();
+    for i in 0..level.per_shot {
+        let offset = side * pair_offset(level.per_shot, i);
+        spawn_rocket(
+            &mut commands,
+            &assets,
+            origin + offset * 0.4,
+            Rocket {
+                velocity: flat * ROCKET_SPEED,
+                team: Team::Player,
+                target: aim.position + offset,
+                travelled: 0.0,
+                puff: i as f32 * 0.01,
+                homing: None,
+                warhead: level.warhead,
+            },
+        );
+    }
 }
 
-/// До [`SALVO`] ближайших к прицелу врагов в пределах [`TARGET_RANGE`] от лунохода; если врагов
+/// Сдвиг ракеты `index` вбок от оси выстрела при `count` ракетах за выстрел, м.
+fn pair_offset(count: u8, index: u8) -> f32 {
+    if count < 2 {
+        return 0.0;
+    }
+    (index as f32 / (count - 1) as f32 - 0.5) * PAIR_SPACING
+}
+
+/// До `salvo` ближайших к прицелу врагов в пределах [`TARGET_RANGE`] от лунохода; если врагов
 /// меньше, цели повторяются по кругу.
-fn pick_targets(rover: Vec3, aim: Vec3, enemies: impl Iterator<Item = (Entity, Vec3)>) -> Vec<Entity> {
+fn pick_targets(rover: Vec3, aim: Vec3, salvo: usize, enemies: impl Iterator<Item = (Entity, Vec3)>) -> Vec<Entity> {
     let mut near: Vec<(f32, Entity)> = enemies
         .filter(|(_, p)| p.distance(rover) <= TARGET_RANGE)
         .map(|(e, p)| (p.distance_squared(aim), e))
         .collect();
     near.sort_by(|a, b| a.0.total_cmp(&b.0));
-    near.truncate(SALVO);
+    near.truncate(salvo);
     if near.is_empty() {
         return Vec::new();
     }
-    (0..SALVO).map(|i| near[i % near.len()].1).collect()
+    (0..salvo).map(|i| near[i % near.len()].1).collect()
 }
 
-/// Залп самонаводящихся ракет по нажатию.
+/// Залп самонаводящихся ракет по нажатию. Размер залпа и боеголовка — по уровню (`upgrades::homing`).
 #[allow(clippy::too_many_arguments)]
 fn fire_homing(
     mut commands: Commands,
     time: Res<Time>,
     mouse: Res<ButtonInput<MouseButton>>,
     weapon: Res<CurrentWeapon>,
+    levels: Res<WeaponLevels>,
     aim: Res<AimPoint>,
     assets: Res<RocketAssets>,
     mut inventory: ResMut<Inventory>,
@@ -315,9 +377,12 @@ fn fire_homing(
     }
     *cooldown = SALVO_RELOAD;
     inventory.spend(CurrentWeapon::HomingRockets);
+    let level = upgrades::homing(levels.level(CurrentWeapon::HomingRockets));
+    let salvo = level.salvo;
     let targets = pick_targets(
         rover.translation,
         aim.position,
+        salvo,
         enemies
             .iter()
             .filter(|(_, _, h)| !h.is_dead())
@@ -325,8 +390,8 @@ fn fire_homing(
     );
     let origin = muzzle(rover);
     let forward = (aim.position - origin).with_y(0.0).normalize_or(Vec3::NEG_Z);
-    for i in 0..SALVO {
-        let spread = (i as f32 / (SALVO - 1) as f32 - 0.5) * 2.0 * FAN_ANGLE;
+    for i in 0..salvo {
+        let spread = (i as f32 / (salvo - 1) as f32 - 0.5) * 2.0 * FAN_ANGLE;
         let side = Quat::from_rotation_y(spread) * forward;
         let velocity = (Vec3::Y * 1.6 + side * 0.6).normalize() * HOMING_SPEED;
         spawn_rocket(
@@ -343,6 +408,7 @@ fn fire_homing(
                     launch: LAUNCH_SECONDS,
                     entity: targets.get(i).copied(),
                 }),
+                warhead: level.warhead,
             },
         );
     }
@@ -357,6 +423,7 @@ fn show_locks(
     weapon: Res<CurrentWeapon>,
     aim: Res<AimPoint>,
     assets: Res<RocketAssets>,
+    levels: Res<WeaponLevels>,
     rover: Single<&Transform, With<Rover>>,
     enemies: Query<(Entity, &GlobalTransform, &Health), With<Enemy>>,
     mut markers: Query<(&LockMarker, &mut Transform, &mut Visibility), Without<Rover>>,
@@ -364,7 +431,8 @@ fn show_locks(
 ) {
     if !*spawned {
         *spawned = true;
-        for i in 0..SALVO {
+        // Колец — на самый большой залп: число целей растёт с уровнем.
+        for i in 0..upgrades::homing(upgrades::MAX_LEVEL).salvo {
             commands.spawn((
                 LockMarker(i),
                 NotShadowCaster,
@@ -380,6 +448,7 @@ fn show_locks(
         let mut t = pick_targets(
             rover.translation,
             aim.position,
+            upgrades::homing(levels.level(CurrentWeapon::HomingRockets)).salvo,
             enemies
                 .iter()
                 .filter(|(_, _, h)| !h.is_dead())
@@ -417,6 +486,7 @@ fn fly_rockets(
     obstacles: Query<(Entity, &Obstacle)>,
     puffs: Query<(), With<Puff>>,
     mut explosions: MessageWriter<Explosion>,
+    mut debris: MessageWriter<SpawnDebris>,
 ) {
     let dt = time.delta_secs();
     if dt <= 0.0 {
@@ -503,10 +573,13 @@ fn fly_rockets(
             commands.entity(entity).despawn();
             explosions.write(Explosion {
                 position: to,
-                radius: ROCKET_RADIUS,
-                power: ROCKET_POWER,
+                radius: rocket.warhead.radius,
+                power: rocket.warhead.power,
                 source_team: team,
             });
+            if rocket.warhead.burn {
+                spawn_fire(&mut commands, &mut debris, &terrain, to, rocket.warhead.radius, team);
+            }
             continue;
         }
         transform.translation = to;
@@ -536,6 +609,79 @@ fn fly_rockets(
     }
 }
 
+/// Огонь термобарической ракеты: горит на месте взрыва и ранит чужих в круге.
+#[derive(Component)]
+struct Fire {
+    remaining: f32,
+    radius: f32,
+    team: Team,
+}
+
+/// Огонь на месте взрыва: сущность урона и горящие обломки-языки пламени вокруг.
+fn spawn_fire(
+    commands: &mut Commands,
+    debris: &mut MessageWriter<SpawnDebris>,
+    terrain: &Terrain,
+    at: Vec3,
+    blast_radius: f32,
+    team: Team,
+) {
+    let radius = blast_radius * upgrades::FIRE_REACH;
+    let ground = at.with_y(terrain.height_at(at.x, at.z));
+    commands.spawn((
+        Fire {
+            remaining: upgrades::FIRE_SECONDS,
+            radius,
+            team,
+        },
+        RunScoped,
+        Transform::from_translation(ground),
+    ));
+    for i in 0..FIRE_FLAMES {
+        let a = i as f32 / FIRE_FLAMES as f32 * std::f32::consts::TAU;
+        let r = radius * (0.3 + 0.6 * ((i * 7) % 5) as f32 / 4.0);
+        let p = ground + Vec3::new(a.cos() * r, 0.3, a.sin() * r);
+        debris.write(SpawnDebris {
+            position: p.with_y(terrain.height_at(p.x, p.z) + 0.3),
+            velocity: Vec3::new(a.cos(), 2.0, a.sin()),
+            size: Vec3::splat(0.35),
+            color: Color::srgb(0.2, 0.12, 0.08),
+            burning: true,
+        });
+    }
+}
+
+/// Огонь ранит чужих в своём круге каждую секунду горения и гаснет.
+fn burn_fires(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut fires: Query<(Entity, &Transform, &mut Fire)>,
+    targets: Query<(Entity, &GlobalTransform, &Team, &Health)>,
+    mut damage: MessageWriter<Damage>,
+) {
+    let dt = time.delta_secs();
+    for (entity, transform, mut fire) in &mut fires {
+        fire.remaining -= dt;
+        if fire.remaining <= 0.0 {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        let center = transform.translation;
+        for (target, at, team, health) in &targets {
+            if health.is_dead() || !fire.team.hostile_to(*team) {
+                continue;
+            }
+            if at.translation().with_y(0.0).distance(center.with_y(0.0)) <= fire.radius {
+                damage.write(Damage {
+                    target,
+                    amount: upgrades::FIRE_DAMAGE * dt,
+                    source_team: fire.team,
+                });
+            }
+        }
+    }
+}
+
 /// Дым следа расползается и тает.
 fn fade_puffs(mut commands: Commands, time: Res<Time>, mut puffs: Query<(Entity, &mut Transform, &mut Puff)>) {
     let dt = time.delta_secs();
@@ -559,8 +705,37 @@ mod tests {
     #[test]
     fn single_enemy_takes_the_whole_salvo() {
         let e = Entity::PLACEHOLDER;
-        let targets = pick_targets(Vec3::ZERO, Vec3::new(5.0, 0.0, 0.0), [(e, Vec3::new(6.0, 0.0, 0.0))].into_iter());
+        let targets = pick_targets(Vec3::ZERO, Vec3::new(5.0, 0.0, 0.0), SALVO, [(e, Vec3::new(6.0, 0.0, 0.0))].into_iter());
         assert_eq!(targets, vec![e; SALVO]);
-        assert!(pick_targets(Vec3::ZERO, Vec3::ZERO, std::iter::empty()).is_empty());
+        assert!(pick_targets(Vec3::ZERO, Vec3::ZERO, SALVO, std::iter::empty()).is_empty());
+    }
+
+    /// Урон ракеты лунохода по врагу на расстоянии `d` от точки взрыва.
+    fn rocket_hit(warhead: Warhead, d: f32) -> f32 {
+        crate::combat::explosion_damage_to(Team::Player, Team::Enemy, warhead.power, warhead.radius, d)
+    }
+
+    #[test]
+    fn first_level_rocket_kills_a_rocketeer_two_metres_away() {
+        use crate::enemy::{ENEMY_HEALTH, MORTAR_HEALTH, ROCKETEER_HEALTH};
+        for health in [ENEMY_HEALTH, MORTAR_HEALTH, ROCKETEER_HEALTH] {
+            assert!(rocket_hit(Warhead::ROCKET, 2.0) >= health);
+        }
+    }
+
+    #[test]
+    fn heavy_tank_survives_a_rocket_in_the_centre() {
+        assert!(rocket_hit(Warhead::ROCKET, 0.0) < crate::enemy::TANK_HEALTH);
+        assert!(rocket_hit(Warhead::HOMING, 0.0) < crate::enemy::TANK_HEALTH);
+    }
+
+    #[test]
+    fn rocket_crater_is_visible_but_smaller_than_the_mortar_one() {
+        // Глубина кратера ∝ R·p (`craters.rs`); поперечник — 2R.
+        assert!(Warhead::ROCKET.radius * 2.0 >= 3.0);
+        let rocket = Warhead::ROCKET.radius * Warhead::ROCKET.power;
+        let homing = Warhead::HOMING.radius * Warhead::HOMING.power;
+        let mortar = crate::mortar::EXPLOSION_RADIUS * crate::mortar::EXPLOSION_POWER;
+        assert!(rocket < homing && homing < mortar);
     }
 }

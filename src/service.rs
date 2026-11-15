@@ -756,6 +756,7 @@ fn shoot_rover(
                         direction: spread * (target - muzzle),
                         team: Team::Service,
                         damage: balance::BULLET_DAMAGE,
+                        heavy: false,
                     });
                 } else {
                     vehicle.burst_timer = 0.35;
@@ -769,6 +770,8 @@ fn shoot_rover(
                         target: target + velocity * mortar::FLIGHT_TIME + scatter,
                         team: Team::Service,
                         power: balance::SHELL_POWER,
+                        radius: mortar::EXPLOSION_RADIUS,
+                        cluster: 0,
                     });
                 }
             }

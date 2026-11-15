@@ -237,8 +237,46 @@ pub fn blast_damage(power: f32, radius: f32, distance: f32, friendly: bool) -> f
     if friendly { damage * FRIENDLY_FIRE } else { damage }
 }
 
+/// Доля радиуса взрыва, в которой урон полный: чаша кратера. Вал кратера — уже зона спада.
+pub const BLAST_CORE: f32 = 0.75;
+
+/// Во сколько радиусов взрыва кончается урон взрыва с ядром: чуть дальше кратера.
+pub const BLAST_REACH: f32 = 1.25;
+
+/// Урон взрыва лунохода по врагу: полный во всей чаше кратера (до [`BLAST_CORE`]·R),
+/// дальше спадает как `(1 - t)²` до нуля на [`BLAST_REACH`]·R.
+///
+/// Так ракета, упавшая рядом с врагом, уничтожает его в своей воронке без точного попадания.
+pub fn core_blast_damage(power: f32, radius: f32, distance: f32) -> f32 {
+    if radius <= 0.0 {
+        return 0.0;
+    }
+    let core = radius * BLAST_CORE;
+    let reach = radius * BLAST_REACH;
+    if distance <= core {
+        return EXPLOSION_DAMAGE * power;
+    }
+    if distance >= reach {
+        return 0.0;
+    }
+    let falloff = 1.0 - (distance - core) / (reach - core);
+    EXPLOSION_DAMAGE * power * falloff * falloff
+}
+
+/// Урон взрыва команды `source` по цели команды `target`: взрывы лунохода бьют врагов и Службу
+/// с ядром ([`core_blast_damage`]), остальные — прежним спадом от центра ([`blast_damage`]).
+pub fn explosion_damage_to(source: Team, target: Team, power: f32, radius: f32, distance: f32) -> f32 {
+    let share = source.damage_share(target);
+    let base = if source == Team::Player && matches!(target, Team::Enemy | Team::Service) {
+        core_blast_damage(power, radius, distance)
+    } else {
+        blast_damage(power, radius, distance, false)
+    };
+    base * share
+}
+
 /// Взрыв ранит всех со здоровьем в своём радиусе: свою команду слабо, союзников — никак
-/// ([`Team::damage_share`]).
+/// ([`Team::damage_share`]). Взрывы лунохода бьют врагов полным уроном во всей воронке.
 fn explosion_damage(
     mut explosions: MessageReader<Explosion>,
     targets: Query<(Entity, &GlobalTransform, &Team, &Health)>,
@@ -250,8 +288,8 @@ fn explosion_damage(
                 continue;
             }
             let distance = transform.translation().distance(explosion.position);
-            let share = explosion.source_team.damage_share(*team);
-            let amount = blast_damage(explosion.power, explosion.radius, distance, false) * share;
+            let amount =
+                explosion_damage_to(explosion.source_team, *team, explosion.power, explosion.radius, distance);
             if amount > 0.0 {
                 damage.write(Damage {
                     target,
@@ -567,5 +605,36 @@ mod tests {
         let target = app.world_mut().spawn_empty().id();
         hit(&mut app, target, 20.0);
         assert!(app.world().resource::<Deaths>().0.is_empty());
+    }
+
+    #[test]
+    fn player_blast_deals_full_damage_in_the_whole_crater_bowl() {
+        let full = core_blast_damage(1.0, 4.0, 0.0);
+        assert_eq!(core_blast_damage(1.0, 4.0, 2.9), full);
+        let edge = core_blast_damage(1.0, 4.0, 4.5);
+        assert!(edge > 0.0 && edge < full, "{edge}");
+        assert_eq!(core_blast_damage(1.0, 4.0, 5.0), 0.0);
+    }
+
+    #[test]
+    fn enemy_blast_on_rover_keeps_the_old_falloff() {
+        for d in [0.0, 1.0, 2.5, 4.0, 6.9] {
+            assert_eq!(
+                explosion_damage_to(Team::Enemy, Team::Player, 1.4, 7.0, d),
+                blast_damage(1.4, 7.0, d, false),
+            );
+        }
+        // Свой взрыв ранит луноход прежней долей и тоже без ядра.
+        assert_eq!(
+            explosion_damage_to(Team::Player, Team::Player, 1.4, 7.0, 3.0),
+            blast_damage(1.4, 7.0, 3.0, false) * FRIENDLY_FIRE,
+        );
+    }
+
+    #[test]
+    fn player_blast_hits_enemies_and_service_with_the_core() {
+        let near_miss = explosion_damage_to(Team::Player, Team::Enemy, 0.7, 4.0, 2.0);
+        assert_eq!(near_miss, core_blast_damage(0.7, 4.0, 2.0));
+        assert_eq!(explosion_damage_to(Team::Player, Team::Service, 0.7, 4.0, 2.0), near_miss);
     }
 }

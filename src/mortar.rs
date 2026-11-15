@@ -16,6 +16,8 @@ use crate::rover::Rover;
 use crate::run::{RunScoped, WorldRebuilt};
 use crate::terrain::Terrain;
 use crate::arsenal::Inventory;
+use crate::rng::GameRng;
+use crate::upgrades::{self, WeaponLevels};
 use crate::weapons::CurrentWeapon;
 
 /// Время полёта снаряда до точки прицела, с.
@@ -41,10 +43,10 @@ const HIT_STEP: f32 = 0.25;
 const HIT_REFINE_STEPS: usize = 8;
 
 /// Радиус взрыва снаряда мортиры, м.
-const EXPLOSION_RADIUS: f32 = 7.0;
+pub const EXPLOSION_RADIUS: f32 = 7.0;
 
 /// Мощность взрыва снаряда мортиры: единица, от которой считается всё остальное оружие.
-const EXPLOSION_POWER: f32 = 1.4;
+pub const EXPLOSION_POWER: f32 = 1.4;
 
 /// Ствол над центром корпуса в его системе координат, м.
 const MUZZLE_OFFSET: Vec3 = Vec3::new(0.0, 0.7, -0.4);
@@ -160,8 +162,11 @@ pub struct Shell {
     marker: Entity,
     /// Чей снаряд: от этого зависит, кого взрыв щадит.
     team: Team,
-    /// Мощность взрыва.
+    /// Мощность и радиус взрыва.
     power: f32,
+    radius: f32,
+    /// Суббоеприпасов кассеты: разлетаются из точки взрыва.
+    cluster: u8,
 }
 
 impl Shell {
@@ -184,6 +189,10 @@ pub struct FireShell {
     pub target: Vec3,
     pub team: Team,
     pub power: f32,
+    /// Радиус взрыва, м: обычно [`EXPLOSION_RADIUS`].
+    pub radius: f32,
+    /// Кассетный снаряд: столько суббоеприпасов разлетится из точки взрыва.
+    pub cluster: u8,
 }
 
 /// Отметка будущей точки падения на земле.
@@ -277,6 +286,7 @@ fn fire(
     mut mortar: ResMut<Mortar>,
     rover: Single<(&Transform, &Health), With<Rover>>,
     mut inventory: ResMut<Inventory>,
+    levels: Res<WeaponLevels>,
     mut shots: MessageWriter<FireShell>,
 ) {
     let (rover, health) = *rover;
@@ -289,11 +299,14 @@ fn fire(
     }
     inventory.spend(CurrentWeapon::Mortar);
     let muzzle = rover.transform_point(MUZZLE_OFFSET);
+    let level = upgrades::mortar(levels.level(CurrentWeapon::Mortar));
     shots.write(FireShell {
         origin: muzzle,
         target: aim.position,
         team: Team::Player,
-        power: EXPLOSION_POWER,
+        power: level.power,
+        radius: level.radius,
+        cluster: level.cluster,
     });
     commands.spawn((
         MuzzleFlash::default(),
@@ -339,6 +352,8 @@ fn spawn_shell(
             marker,
             team: shot.team,
             power: shot.power,
+            radius: shot.radius,
+            cluster: shot.cluster,
         },
         Mesh3d(assets.shell_mesh.clone()),
         MeshMaterial3d(assets.shell_material.clone()),
@@ -365,7 +380,9 @@ fn fly_shells(
     mut commands: Commands,
     time: Res<Time>,
     terrain: Res<Terrain>,
+    mut dice: ResMut<GameRng>,
     mut explosions: MessageWriter<Explosion>,
+    mut cluster: MessageWriter<FireShell>,
     mut shells: Query<(Entity, &mut Shell, &mut Transform)>,
 ) {
     for (entity, mut shell, mut transform) in &mut shells {
@@ -381,10 +398,24 @@ fn fly_shells(
         if let Some(position) = hit {
             explosions.write(Explosion {
                 position,
-                radius: EXPLOSION_RADIUS,
+                radius: shell.radius,
                 power: shell.power,
                 source_team: shell.team,
             });
+            // Кассета: суббоеприпасы разлетаются вразброс вокруг точки взрыва.
+            for i in 0..shell.cluster {
+                let angle = (i as f32 + dice.range(0.0, 0.6)) / shell.cluster as f32 * std::f32::consts::TAU;
+                let distance = dice.range(upgrades::CLUSTER_SPREAD.0, upgrades::CLUSTER_SPREAD.1);
+                let target = position + Vec3::new(angle.cos(), 0.0, angle.sin()) * distance;
+                cluster.write(FireShell {
+                    origin: position + Vec3::Y * 0.5,
+                    target: target.with_y(terrain.height_at(target.x, target.z)),
+                    team: shell.team,
+                    power: upgrades::CLUSTER_POWER,
+                    radius: upgrades::CLUSTER_RADIUS,
+                    cluster: 0,
+                });
+            }
             commands.entity(entity).despawn();
             commands.entity(shell.marker).despawn();
             continue;

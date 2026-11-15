@@ -10,6 +10,7 @@ use bevy::prelude::*;
 
 use crate::frame::{GameSet, RunMessages};
 use crate::run::{GameState, WorldRebuilt};
+use crate::upgrades::{MAX_LEVEL, WeaponLevels, WeaponUpgraded};
 use crate::weapons::CurrentWeapon;
 
 /// Пауза после переключения колесом, с: одна прокрутка растянута на несколько кадров.
@@ -20,6 +21,9 @@ const DENIED_SECONDS: f32 = 0.4;
 
 /// Сколько вспыхивает новая ячейка, с.
 const NEW_CELL_SECONDS: f32 = 0.6;
+
+/// Сколько вспыхивает ячейка улучшенного оружия, с.
+const UPGRADE_FLASH_SECONDS: f32 = 1.2;
 
 /// Параметры вида оружия.
 pub struct WeaponSpec {
@@ -273,6 +277,17 @@ struct Cell {
 #[derive(Component)]
 struct AmmoText(CurrentWeapon);
 
+/// Отметка уровня в ячейке: `index` от 0, горит, если уровень оружия больше него.
+#[derive(Component)]
+struct LevelPip {
+    weapon: CurrentWeapon,
+    index: u8,
+}
+
+/// Цвет горящей и пустой отметки уровня.
+const PIP_ON: Color = Color::srgb(1.0, 0.78, 0.2);
+const PIP_OFF: Color = Color::srgba(1.0, 1.0, 1.0, 0.18);
+
 /// Корень панели.
 #[derive(Component)]
 struct Panel;
@@ -317,14 +332,34 @@ fn spawn_panel(mut commands: Commands) {
                     BorderColor::all(Color::NONE),
                 ))
                 .with_children(|cell| {
-                    cell.spawn((
-                        Text::new(key.to_string()),
-                        TextFont {
-                            font_size: FontSize::Px(11.0),
-                            ..default()
-                        },
-                        TextColor(Color::srgb(0.7, 0.7, 0.7)),
-                    ));
+                    // Клавиша и отметки уровня в одной строке.
+                    cell.spawn(Node {
+                        flex_direction: FlexDirection::Row,
+                        align_items: AlignItems::Center,
+                        column_gap: Val::Px(3.0),
+                        ..default()
+                    })
+                    .with_children(|top| {
+                        top.spawn((
+                            Text::new(key.to_string()),
+                            TextFont {
+                                font_size: FontSize::Px(11.0),
+                                ..default()
+                            },
+                            TextColor(Color::srgb(0.7, 0.7, 0.7)),
+                        ));
+                        for index in 0..MAX_LEVEL {
+                            top.spawn((
+                                LevelPip { weapon, index },
+                                Node {
+                                    width: Val::Px(6.0),
+                                    height: Val::Px(6.0),
+                                    ..default()
+                                },
+                                BackgroundColor(PIP_OFF),
+                            ));
+                        }
+                    });
                     cell.spawn((
                         Text::new(s.icon),
                         TextFont {
@@ -348,15 +383,19 @@ fn spawn_panel(mut commands: Commands) {
 }
 
 /// Панель повторяет инвентарь: имеющиеся виды, патроны, текущее оружие, пустое приглушено.
+#[allow(clippy::too_many_arguments)]
 fn update_panel(
     time: Res<Time>,
     state: Res<State<GameState>>,
     inventory: Res<Inventory>,
+    levels: Res<WeaponLevels>,
     weapon: Res<CurrentWeapon>,
     mut denied: MessageReader<WeaponDenied>,
+    mut upgraded: MessageReader<WeaponUpgraded>,
     mut panel: Query<&mut Visibility, With<Panel>>,
-    mut cells: Query<(&mut Cell, &mut Node, &mut BorderColor, &mut BackgroundColor)>,
+    mut cells: Query<(&mut Cell, &mut Node, &mut BorderColor, &mut BackgroundColor), Without<LevelPip>>,
     mut texts: Query<(&AmmoText, &mut Text)>,
+    mut pips: Query<(&LevelPip, &mut BackgroundColor), Without<Cell>>,
 ) {
     let wanted = if *state.get() == GameState::Menu {
         Visibility::Hidden
@@ -369,6 +408,13 @@ fn update_panel(
         }
     }
     let denied: Vec<CurrentWeapon> = denied.read().map(|d| d.0).collect();
+    let upgraded: Vec<CurrentWeapon> = upgraded
+        .read()
+        .filter_map(|u| match u {
+            WeaponUpgraded::Level { weapon, .. } => Some(*weapon),
+            WeaponUpgraded::Refill { .. } => None,
+        })
+        .collect();
     let dt = time.delta_secs();
     for (mut cell, mut node, mut border, mut background) in &mut cells {
         let owned = inventory.owns(cell.weapon);
@@ -382,6 +428,9 @@ fn update_panel(
         cell.shown = owned;
         if denied.contains(&cell.weapon) {
             cell.denied = DENIED_SECONDS;
+        }
+        if upgraded.contains(&cell.weapon) {
+            cell.flash = UPGRADE_FLASH_SECONDS;
         }
         cell.flash = (cell.flash - dt).max(0.0);
         cell.denied = (cell.denied - dt).max(0.0);
@@ -403,6 +452,19 @@ fn update_panel(
         node.margin.bottom = Val::Px(if current { 8.0 } else { 0.0 });
         let alpha = if usable { 0.65 } else { 0.26 };
         background.0 = Color::srgba(0.0, 0.0, 0.0, alpha);
+    }
+    // Отметки уровня: горят до уровня оружия, при улучшении вспыхивают вместе с рамкой.
+    let flashing: Vec<CurrentWeapon> = cells.iter().filter(|c| c.0.flash > 0.0).map(|c| c.0.weapon).collect();
+    for (pip, mut background) in &mut pips {
+        let lit = pip.index < levels.level(pip.weapon);
+        let color = match (lit, flashing.contains(&pip.weapon)) {
+            (true, true) => Color::WHITE,
+            (true, false) => PIP_ON,
+            (false, _) => PIP_OFF,
+        };
+        if background.0 != color {
+            background.0 = color;
+        }
     }
     for (ammo, mut text) in &mut texts {
         let label = match inventory.ammo(ammo.0) {

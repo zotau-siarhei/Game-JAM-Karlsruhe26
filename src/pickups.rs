@@ -3,6 +3,9 @@
 //! Предмет подбирается проездом. Ящики падают раз в несколько секунд в кольце вокруг лунохода,
 //! чаще у мест разрушений. Содержимое открывается по времени забега. Враг роняет при гибели
 //! оружие, которое носит по своему типу (`CarriedWeapon` ставит `enemy.rs`).
+//!
+//! Золотой ящик улучшения ([`GoldenCrate`]) падает с неба реже обычных, выпадает из танка и всегда
+//! из босса ([`SpawnUpgrade`]). Подбор шлёт `upgrades::UpgradePicked`, уровень выбирает `upgrades`.
 
 use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
@@ -11,12 +14,14 @@ use crate::arsenal::{Inventory, spec};
 use crate::buildings::BuildingDestroyed;
 use crate::camera::GameCamera;
 use crate::combat::{Died, Health, SurvivalTime};
+use crate::enemy::HeavyTank;
 use crate::frame::{GameSet, RunMessages};
 use crate::rng::GameRng;
 use crate::rover::Rover;
 use crate::run::{RunScoped, WorldRebuilt};
 use crate::subsidence::TerrainChanged;
 use crate::terrain::Terrain;
+use crate::upgrades::UpgradePicked;
 use crate::weapons::CurrentWeapon;
 
 /// Радиус подбора, м.
@@ -46,6 +51,22 @@ const RUIN_RADIUS: f32 = 6.0;
 /// Сколько последних мест разрушений помнить.
 const RUIN_MEMORY: usize = 30;
 
+/// Золотой ящик с неба: не раньше этой секунды забега, не чаще раза в столько секунд и с таким
+/// шансом на каждый падающий ящик.
+const GOLDEN_FROM: f32 = 60.0;
+const GOLDEN_GAP: f32 = 45.0;
+const GOLDEN_CHANCE: f32 = 0.12;
+
+/// Шанс золотого ящика из погибшего тяжёлого танка.
+const GOLDEN_FROM_TANK: f32 = 0.4;
+
+/// Искр вокруг золотого ящика и радиус их кружения, м.
+const SPARKLES: usize = 4;
+const SPARKLE_ORBIT: f32 = 1.0;
+
+/// Размер золотого ящика, м: чуть крупнее обычного.
+const GOLDEN_SIZE: f32 = 1.2;
+
 /// Трофей врага живёт и мигает последние секунды.
 const LOOT_SECONDS: f32 = 20.0;
 const LOOT_BLINK: f32 = 5.0;
@@ -57,17 +78,18 @@ impl Plugin for PickupsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CrateDirector>()
             .add_run_message::<SpawnLoot>()
+            .add_run_message::<SpawnUpgrade>()
             .add_systems(Startup, create_pickup_assets)
             .add_systems(
                 Update,
                 (
                     reset_crates.in_set(GameSet::Reset),
-                    (remember_ruins, drop_crates, spawn_loot, descend, collect)
+                    (remember_ruins, drop_crates, spawn_loot, spawn_upgrades, descend, collect)
                         .chain()
                         .in_set(GameSet::Simulation),
                     // Враг ещё существует: трофей берёт оружие с него.
                     drop_loot.in_set(GameSet::Death),
-                    float_popups.in_set(GameSet::Presentation),
+                    (float_popups, spin_sparkles).in_set(GameSet::Presentation),
                 ),
             );
     }
@@ -93,6 +115,16 @@ struct Parachuting {
 #[derive(Component)]
 struct Crate;
 
+/// Золотой ящик улучшения: подбор поднимает уровень оружия, а не даёт заряды.
+#[derive(Component)]
+pub struct GoldenCrate;
+
+/// Искра, кружащая вокруг золотого ящика.
+#[derive(Component)]
+struct Sparkle {
+    phase: f32,
+}
+
 /// Оружие, которое носит враг.
 #[derive(Component)]
 pub struct CarriedWeapon {
@@ -109,6 +141,8 @@ pub struct Popup {
 #[derive(Resource, Default)]
 struct CrateDirector {
     timer: f32,
+    /// Секунд с последнего золотого ящика с неба.
+    since_golden: f32,
     /// Последние места разрушений.
     ruins: Vec<Vec3>,
 }
@@ -118,6 +152,8 @@ struct PickupAssets {
     cube: Handle<Mesh>,
     canopy: Handle<Mesh>,
     crate_material: Handle<StandardMaterial>,
+    gold_material: Handle<StandardMaterial>,
+    sparkle_material: Handle<StandardMaterial>,
     canopy_material: Handle<StandardMaterial>,
     glow: Vec<Handle<StandardMaterial>>,
 }
@@ -143,6 +179,20 @@ fn create_pickup_assets(
         cube: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
         canopy: meshes.add(Sphere::new(1.0).mesh().uv(12, 6)),
         crate_material: materials.add(Color::srgb(0.55, 0.38, 0.2)),
+        // Золото светится через свечение камеры: яркость выше единицы.
+        gold_material: materials.add(StandardMaterial {
+            base_color: Color::srgb(1.0, 0.78, 0.2),
+            emissive: LinearRgba::rgb(2.2, 1.5, 0.3),
+            metallic: 0.9,
+            perceptual_roughness: 0.25,
+            ..default()
+        }),
+        sparkle_material: materials.add(StandardMaterial {
+            base_color: Color::srgb(1.0, 0.95, 0.6),
+            emissive: LinearRgba::rgb(6.0, 5.0, 1.5),
+            unlit: true,
+            ..default()
+        }),
         canopy_material: materials.add(Color::srgb(0.95, 0.95, 0.95)),
         glow,
     });
@@ -213,6 +263,7 @@ fn drop_crates(
         }
     }
     director.timer += time.delta_secs();
+    director.since_golden += time.delta_secs();
     if director.timer < CRATE_INTERVAL || near >= MAX_CRATES {
         return;
     }
@@ -239,6 +290,13 @@ fn drop_crates(
         .unwrap_or(&candidates[0])
         .0;
 
+    let ground = terrain.height_at(place.x, place.z);
+    if golden_due(survival.0, director.since_golden, dice.range(0.0, 1.0)) {
+        director.since_golden = 0.0;
+        spawn_golden(&mut commands, &assets, Vec3::new(place.x, ground + DROP_HEIGHT, place.z), true);
+        return;
+    }
+
     // Содержимое: новые для лунохода виды выпадают чаще.
     let kinds = crate_weapons(survival.0);
     let weights: Vec<f32> = kinds.iter().map(|w| if inventory.owns(*w) { 1.0 } else { 3.0 }).collect();
@@ -252,7 +310,6 @@ fn drop_crates(
         })
         .map_or(kinds[0], |(k, _)| *k);
 
-    let ground = terrain.height_at(place.x, place.z);
     let canopy = commands
         .spawn((
             Mesh3d(assets.canopy.clone()),
@@ -326,15 +383,24 @@ fn descend(
 fn collect(
     mut commands: Commands,
     mut inventory: ResMut<Inventory>,
-    items: Query<(Entity, &Transform, &Pickup), Without<Parachuting>>,
+    items: Query<(Entity, &Transform, &Pickup, Has<GoldenCrate>), Without<Parachuting>>,
     rover: Single<(&Transform, &Health), With<Rover>>,
+    mut upgrades: MessageWriter<UpgradePicked>,
 ) {
     let (rover, health) = *rover;
     if health.is_dead() {
         return;
     }
-    for (entity, transform, pickup) in &items {
+    for (entity, transform, pickup, golden) in &items {
         if transform.translation.with_y(0.0).distance(rover.translation.with_y(0.0)) > PICKUP_RADIUS {
+            continue;
+        }
+        if golden {
+            // Надпись, звук и реплику даёт `upgrades::WeaponUpgraded`.
+            commands.entity(entity).despawn();
+            upgrades.write(UpgradePicked {
+                position: rover.translation,
+            });
             continue;
         }
         let new = !inventory.owns(pickup.weapon);
@@ -396,12 +462,17 @@ fn drop_loot(
     mut commands: Commands,
     mut died: MessageReader<Died>,
     assets: Res<PickupAssets>,
-    carriers: Query<(&GlobalTransform, &CarriedWeapon)>,
+    mut dice: ResMut<GameRng>,
+    carriers: Query<(&GlobalTransform, &CarriedWeapon, Has<HeavyTank>)>,
 ) {
     for death in died.read() {
-        let Ok((transform, carried)) = carriers.get(death.entity) else {
+        let Ok((transform, carried, tank)) = carriers.get(death.entity) else {
             continue;
         };
+        if tank && dice.range(0.0, 1.0) < GOLDEN_FROM_TANK {
+            // Рядом с трофеем, чтобы не слиплись.
+            spawn_golden(&mut commands, &assets, transform.translation() + Vec3::new(1.8, 0.0, 0.0), false);
+        }
         if carried.weapon == CurrentWeapon::MachineGun {
             continue;
         }
@@ -446,9 +517,91 @@ fn spawn_loot(mut commands: Commands, mut requests: MessageReader<SpawnLoot>, as
     }
 }
 
+/// Просьба положить золотой ящик улучшения: так босс оставляет его после гибели.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct SpawnUpgrade {
+    pub position: Vec3,
+}
+
+fn spawn_upgrades(mut commands: Commands, mut requests: MessageReader<SpawnUpgrade>, assets: Res<PickupAssets>) {
+    for r in requests.read() {
+        spawn_golden(&mut commands, &assets, r.position, false);
+    }
+}
+
+/// Пора ли сбросить с неба золотой ящик: после [`GOLDEN_FROM`] секунд забега, не чаще раза в
+/// [`GOLDEN_GAP`] и с шансом [`GOLDEN_CHANCE`]; `roll` — случайное число от 0 до 1.
+fn golden_due(survival: f32, since_golden: f32, roll: f32) -> bool {
+    survival >= GOLDEN_FROM && since_golden >= GOLDEN_GAP && roll < GOLDEN_CHANCE
+}
+
+/// Золотой ящик с кружащими искрами. С парашютом — падает с неба, без — лежит на месте.
+fn spawn_golden(commands: &mut Commands, assets: &PickupAssets, position: Vec3, parachute: bool) {
+    let id = commands
+        .spawn((
+            Pickup {
+                weapon: CurrentWeapon::MachineGun,
+                amount: 0,
+                expires: None,
+            },
+            GoldenCrate,
+            Crate,
+            RunScoped,
+            Mesh3d(assets.cube.clone()),
+            MeshMaterial3d(assets.gold_material.clone()),
+            Transform::from_translation(position).with_scale(Vec3::splat(GOLDEN_SIZE)),
+            Visibility::default(),
+        ))
+        .with_children(|c| {
+            for i in 0..SPARKLES {
+                c.spawn((
+                    Sparkle {
+                        phase: i as f32 / SPARKLES as f32 * std::f32::consts::TAU,
+                    },
+                    NotShadowCaster,
+                    Mesh3d(assets.cube.clone()),
+                    MeshMaterial3d(assets.sparkle_material.clone()),
+                    Transform::from_scale(Vec3::splat(0.1)),
+                ));
+            }
+        })
+        .id();
+    if parachute {
+        let canopy = commands
+            .spawn((
+                Mesh3d(assets.canopy.clone()),
+                MeshMaterial3d(assets.canopy_material.clone()),
+                NotShadowCaster,
+                Transform::from_xyz(0.0, 2.2, 0.0).with_scale(Vec3::new(1.6, 0.8, 1.6)),
+            ))
+            .id();
+        commands.entity(id).add_child(canopy).insert(Parachuting { canopy, sway: 0.0 });
+    }
+}
+
+/// Искры кружат вокруг золотого ящика на разной высоте и мерцают размером.
+fn spin_sparkles(time: Res<Time>, mut sparkles: Query<(&Sparkle, &mut Transform)>) {
+    let t = time.elapsed_secs();
+    // Искры — потомки масштабированного ящика: орбита в долях его размера.
+    let orbit = SPARKLE_ORBIT / GOLDEN_SIZE;
+    for (sparkle, mut transform) in &mut sparkles {
+        let a = sparkle.phase + t * 2.2;
+        transform.translation = Vec3::new(a.cos() * orbit, 0.3 + (a * 1.7).sin() * 0.35, a.sin() * orbit);
+        transform.scale = Vec3::splat(0.07 + 0.06 * (t * 9.0 + sparkle.phase * 3.0).sin().abs());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn golden_crate_falls_only_after_a_minute_and_not_too_often() {
+        assert!(!golden_due(59.0, 100.0, 0.0));
+        assert!(!golden_due(120.0, 44.0, 0.0));
+        assert!(golden_due(120.0, 46.0, 0.05));
+        assert!(!golden_due(120.0, 46.0, 0.5));
+    }
 
     #[test]
     fn first_minute_crates_hold_only_mortar_and_rockets() {

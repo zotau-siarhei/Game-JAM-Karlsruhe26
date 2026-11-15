@@ -23,6 +23,7 @@ use crate::lava::CrustBreached;
 use crate::mortar::{FLIGHT_TIME, Shell};
 use crate::music::{MusicState, Track};
 use crate::pickups::Popup;
+use crate::upgrades::WeaponUpgraded;
 use crate::props::{Prop, PropKind};
 use crate::records::{Records, records_path};
 use crate::repair::{MedkitPicked, RepairChanged};
@@ -126,6 +127,7 @@ impl Plugin for AudioEventsPlugin {
                 sound_rockets,
                 sound_special_weapons,
                 sound_pickups,
+                sound_upgrades,
                 sound_hits,
                 sound_explosions,
                 sound_buildings,
@@ -490,6 +492,18 @@ fn sound_pickups(
     mut cues: MessageWriter<VoiceCue>,
 ) {
     for _ in &popups {
+        sounds.write(PlaySound::new("pickup"));
+        cues.write(VoiceCue::new("weapon_pickup"));
+    }
+}
+
+/// Золотой ящик: звон подбора и восторг механика «UPGRADE!».
+fn sound_upgrades(
+    mut upgraded: MessageReader<WeaponUpgraded>,
+    mut sounds: MessageWriter<PlaySound>,
+    mut cues: MessageWriter<VoiceCue>,
+) {
+    for _ in upgraded.read() {
         sounds.write(PlaySound::new("pickup"));
         cues.write(VoiceCue::new("weapon_pickup"));
     }

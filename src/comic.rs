@@ -3,6 +3,9 @@
 //! Надпись вылетает у места события, раздувается и тает за 0,8 с. Мем редкий: у пулемёта —
 //! каждая 25-я пуля, у лазера — каждый 6-й импульс, у мощного взрыва — по шансу, у пустого оружия —
 //! всегда; одна и та же надпись не чаще раза в 8 с.
+//!
+//! Улучшение оружия даёт крупную золотую надпись с названием уровня у лунохода, без кулдауна
+//! и дольше мемов, чтобы её успели прочитать.
 
 use bevy::prelude::*;
 
@@ -16,9 +19,13 @@ use crate::laser::FireLaser;
 use crate::rover::Rover;
 use crate::run::{RunScoped, WorldRebuilt};
 use crate::sound_list::Dice;
+use crate::upgrades::{self, WeaponUpgraded};
 
 /// Сколько живёт надпись, с.
 const LIFETIME: f32 = 0.8;
+/// Сколько живёт надпись улучшения, с, и её цвет.
+const UPGRADE_LIFETIME: f32 = 1.8;
+const UPGRADE_COLOR: Color = Color::srgb(1.0, 0.8, 0.2);
 /// Одна и та же надпись не чаще, с.
 const COOLDOWN: f32 = 8.0;
 /// Каждая какая пуля пулемёта и импульс лазера дают надпись.
@@ -43,7 +50,7 @@ impl Plugin for ComicPlugin {
         app.init_resource::<ComicState>()
             .add_systems(
                 Update,
-                (pick_captions, float_captions).chain().in_set(GameSet::Presentation),
+                (pick_captions, upgrade_captions, float_captions).chain().in_set(GameSet::Presentation),
             );
     }
 }
@@ -62,6 +69,7 @@ struct Caption {
     world: Vec3,
     age: f32,
     drift: f32,
+    lifetime: f32,
 }
 
 /// Выбирает поводы для надписей и создаёт их.
@@ -121,26 +129,43 @@ fn pick_captions(
         }
         state.cooldowns[index] = COOLDOWN;
         let (text, color) = CAPTIONS[index];
-        commands.spawn((
-            Caption {
-                world,
-                age: 0.0,
-                drift: dice.range(-30.0, 30.0),
-            },
-            RunScoped,
-            Text::new(text),
-            TextFont {
-                font_size: FontSize::Px(44.0),
-                ..default()
-            },
-            TextColor(color),
-            TextShadow::default(),
-            Node {
-                position_type: PositionType::Absolute,
-                ..default()
-            },
-            UiTransform::default(),
-        ));
+        spawn_caption(&mut commands, text, color, world, dice.range(-30.0, 30.0), LIFETIME, 44.0);
+    }
+}
+
+/// Надпись у точки мира.
+fn spawn_caption(commands: &mut Commands, text: &str, color: Color, world: Vec3, drift: f32, lifetime: f32, size: f32) {
+    commands.spawn((
+        Caption {
+            world,
+            age: 0.0,
+            drift,
+            lifetime,
+        },
+        RunScoped,
+        Text::new(text),
+        TextFont {
+            font_size: FontSize::Px(size),
+            ..default()
+        },
+        TextColor(color),
+        TextShadow::default(),
+        Node {
+            position_type: PositionType::Absolute,
+            ..default()
+        },
+        UiTransform::default(),
+    ));
+}
+
+/// Улучшение оружия: крупная золотая надпись с названием нового уровня над луноходом.
+fn upgrade_captions(mut commands: Commands, mut upgraded: MessageReader<WeaponUpgraded>) {
+    for u in upgraded.read() {
+        let (text, position) = match *u {
+            WeaponUpgraded::Level { weapon, level, position } => (upgrades::title(weapon, level), position),
+            WeaponUpgraded::Refill { position } => ("ПОЛНЫЙ БОЕЗАПАС!", position),
+        };
+        spawn_caption(&mut commands, text, UPGRADE_COLOR, position + Vec3::Y * 3.0, 0.0, UPGRADE_LIFETIME, 52.0);
     }
 }
 
@@ -156,7 +181,7 @@ fn float_captions(
     };
     for (entity, mut caption, mut node, mut color, mut transform, computed) in &mut captions {
         caption.age += time.delta_secs();
-        let t = caption.age / LIFETIME;
+        let t = caption.age / caption.lifetime;
         if t >= 1.0 {
             commands.entity(entity).despawn();
             continue;

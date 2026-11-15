@@ -56,6 +56,7 @@ mod sound_list;
 mod steering;
 mod terrain;
 mod trains;
+mod upgrades;
 mod vehicle;
 mod weapon_sfx;
 mod weapons;
@@ -158,6 +159,7 @@ fn game_plugins(app: &mut App) {
             comic::ComicPlugin,
             intro::IntroPlugin,
             weapon_sfx::WeaponSfxPlugin,
+            upgrades::UpgradesPlugin,
         ));
 }
 

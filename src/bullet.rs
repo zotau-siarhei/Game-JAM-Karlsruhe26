@@ -3,7 +3,7 @@
 //! Чтобы выстрелить, отправь сообщение [`FireBullet`]:
 //!
 //! ```ignore
-//! bullets.write(FireBullet { origin, direction, team: Team::Player, damage: 6.0 });
+//! bullets.write(FireBullet { origin, direction, team: Team::Player, damage: 6.0, heavy: false });
 //! ```
 
 use bevy::prelude::*;
@@ -12,7 +12,11 @@ use crate::combat::{Collider, Damage, Health, Team};
 use crate::frame::{GameSet, RunMessages};
 use crate::obstacles;
 use crate::run::RunScoped;
-use crate::terrain::Terrain;
+use std::collections::HashSet;
+
+use crate::debris::SpawnDebris;
+use crate::run::WorldRebuilt;
+use crate::terrain::{self, ChunkDirty, Terrain, VisibleChunks};
 
 /// Скорость пули, м/с.
 pub const BULLET_SPEED: f32 = 60.0;
@@ -32,11 +36,14 @@ pub struct BulletPlugin;
 impl Plugin for BulletPlugin {
     fn build(&self, app: &mut App) {
         app.add_run_message::<FireBullet>()
+            .init_resource::<PendingChips>()
             .add_systems(Startup, create_bullet_assets)
             .add_systems(
                 Update,
                 (
+                    reset_chips.in_set(GameSet::Reset),
                     (spawn_bullets, move_bullets).chain().in_set(GameSet::Simulation),
+                    apply_chips.before(terrain::rebuild_dirty_chunks).in_set(GameSet::Damage),
                     fade_ground_flashes.in_set(GameSet::Presentation),
                 ),
             );
@@ -54,6 +61,8 @@ pub struct FireBullet {
     pub team: Team,
     /// Урон при попадании.
     pub damage: f32,
+    /// Тяжёлая пуля пулемёта третьего уровня: попадание в землю выбивает щербину.
+    pub heavy: bool,
 }
 
 /// Летящая пуля.
@@ -64,6 +73,21 @@ struct Bullet {
     remaining: f32,
     team: Team,
     damage: f32,
+    heavy: bool,
+}
+
+/// Насколько тяжёлая пуля опускает вершины вокруг попадания, м.
+const CHIP_DEPTH: f32 = 0.05;
+/// Во сколько темнеет земля в щербине.
+const CHIP_DARKEN: f32 = 0.85;
+/// Щербины применяются пачкой не чаще этого, с: участок не пересобирается на каждую пулю.
+const CHIP_INTERVAL: f32 = 1.0 / 6.0;
+
+/// Места попаданий тяжёлых пуль в землю, ещё не выбитые в рельефе.
+#[derive(Resource, Default)]
+struct PendingChips {
+    points: Vec<Vec3>,
+    timer: f32,
 }
 
 /// Сколько секунд видна вспышка там, где пуля ушла в землю.
@@ -124,6 +148,7 @@ fn spawn_bullets(
                 remaining: BULLET_RANGE,
                 team: shot.team,
                 damage: shot.damage,
+                heavy: shot.heavy,
             },
             Mesh3d(assets.mesh.clone()),
             MeshMaterial3d(material),
@@ -169,6 +194,8 @@ fn move_bullets(
     mut damage: MessageWriter<Damage>,
     assets: Option<Res<BulletAssets>>,
     obstacles: obstacles::NearObstacles,
+    mut chips: ResMut<PendingChips>,
+    mut debris: MessageWriter<SpawnDebris>,
 ) {
     let dt = time.delta_secs();
     if dt <= 0.0 {
@@ -222,6 +249,19 @@ fn move_bullets(
             });
         }
 
+        // Тяжёлая пуля выбивает щербину и комок пыли.
+        if into_ground && bullet.heavy {
+            chips.points.push(to);
+            let dir = -bullet.velocity.normalize_or(Vec3::NEG_Z);
+            debris.write(SpawnDebris {
+                position: to + Vec3::Y * 0.1,
+                velocity: (dir.with_y(0.0) * 1.5 + Vec3::Y * 3.0),
+                size: Vec3::splat(0.12),
+                color: Color::srgb(0.42, 0.33, 0.24),
+                burning: false,
+            });
+        }
+
         // Пуля ушла в землю: короткая вспышка цвета пули показывает, куда она попала.
         if let (true, Some(assets)) = (into_ground, assets.as_ref()) {
             let material = match bullet.team {
@@ -245,6 +285,47 @@ fn move_bullets(
         } else {
             transform.translation = to;
         }
+    }
+}
+
+/// Выбивает накопленные щербины тяжёлых пуль: опускает четыре ближайшие вершины и темнит их.
+/// Пачкой раз в [`CHIP_INTERVAL`], `TerrainChanged` не шлёт: от 5 см ничего не оседает.
+fn apply_chips(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut chips: ResMut<PendingChips>,
+    mut terrain: ResMut<Terrain>,
+    visible: Res<VisibleChunks>,
+) {
+    chips.timer -= time.delta_secs();
+    if chips.points.is_empty() || chips.timer > 0.0 {
+        return;
+    }
+    chips.timer = CHIP_INTERVAL;
+    let mut dirty: HashSet<IVec2> = HashSet::new();
+    for p in std::mem::take(&mut chips.points) {
+        let (x0, z0) = (p.x.floor() as i32, p.z.floor() as i32);
+        for (vx, vz) in [(x0, z0), (x0 + 1, z0), (x0, z0 + 1), (x0 + 1, z0 + 1)] {
+            dirty.extend(terrain.edit_vertex(vx, vz, |h, color| {
+                *h -= CHIP_DEPTH;
+                for c in &mut color[..3] {
+                    *c *= CHIP_DARKEN;
+                }
+            }));
+        }
+    }
+    for coord in dirty {
+        for o in [IVec2::ZERO, IVec2::X, IVec2::NEG_X, IVec2::Y, IVec2::NEG_Y] {
+            if let Some(e) = visible.entity(coord + o) {
+                commands.entity(e).try_insert(ChunkDirty);
+            }
+        }
+    }
+}
+
+fn reset_chips(mut rebuilt: MessageReader<WorldRebuilt>, mut chips: ResMut<PendingChips>) {
+    if rebuilt.read().last().is_some() {
+        *chips = PendingChips::default();
     }
 }
 
@@ -306,6 +387,8 @@ mod tests {
         app.insert_resource(terrain)
             .init_resource::<Time>()
             .add_message::<Damage>()
+            .add_message::<SpawnDebris>()
+            .init_resource::<PendingChips>()
             .init_resource::<Taken>()
             .add_systems(Update, (move_bullets, collect_damage).chain());
         let target = app
@@ -348,6 +431,7 @@ mod tests {
             remaining: BULLET_RANGE,
             team: Team::Player,
             damage: 6.0,
+            heavy: false,
         };
         let entity = fly(&mut app, bullet, origin);
         assert_eq!(app.world().resource::<Taken>().0, vec![(target, 6.0)]);
@@ -364,6 +448,7 @@ mod tests {
             remaining: BULLET_RANGE,
             team: Team::Enemy,
             damage: 6.0,
+            heavy: false,
         };
         let entity = fly(&mut app, bullet, origin);
         assert!(app.world().resource::<Taken>().0.is_empty());

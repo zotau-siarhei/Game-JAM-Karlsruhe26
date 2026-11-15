@@ -20,7 +20,7 @@ use crate::enemy::Enemy;
 use crate::frame::GameSet;
 use crate::hud::RunUi;
 use crate::mortar::FireShell;
-use crate::pickups::Pickup;
+use crate::pickups::{GoldenCrate, Pickup};
 use crate::repair::Medkit;
 use crate::rover::Rover;
 use crate::run::{GameState, WorldRebuilt};
@@ -55,6 +55,9 @@ const POOL: usize = 64;
 const ENEMY_COLOR: Color = Color::srgb(1.0, 0.3, 0.2);
 const MEDKIT_COLOR: Color = Color::srgb(1.0, 1.0, 1.0);
 const CRATE_COLOR: Color = Color::srgb(1.0, 0.85, 0.15);
+/// Золотой ящик улучшения: золото с белым кольцом, крупнее обычного ящика.
+const UPGRADE_COLOR: Color = Color::srgb(1.0, 0.7, 0.1);
+const UPGRADE_RING: Color = Color::srgb(1.0, 1.0, 1.0);
 const TRAIN_COLOR: Color = Color::srgb(0.7, 0.7, 0.72);
 const BOSS_COLOR: Color = Color::srgb(1.0, 0.1, 0.4);
 /// Служба защиты жителей: оранжевые кружки.
@@ -73,6 +76,8 @@ enum Mark {
     Boss,
     Train,
     Crate,
+    /// Золотой ящик улучшения.
+    Upgrade,
     Medkit,
     Danger,
     /// Место падения десантной капсулы.
@@ -89,6 +94,7 @@ impl Mark {
             Mark::Boss => BOSS_COLOR,
             Mark::Train => TRAIN_COLOR,
             Mark::Crate => CRATE_COLOR,
+            Mark::Upgrade => UPGRADE_COLOR,
             Mark::Medkit => MEDKIT_COLOR,
             Mark::Danger | Mark::Capsule | Mark::Strike => Color::NONE,
         }
@@ -100,6 +106,7 @@ impl Mark {
             Mark::Danger => DANGER_COLOR,
             Mark::Capsule => CAPSULE_COLOR,
             Mark::Strike => STRIKE_COLOR,
+            Mark::Upgrade => UPGRADE_RING,
             _ => Color::NONE,
         }
     }
@@ -111,6 +118,7 @@ impl Mark {
             Mark::Boss => (15.0, 15.0, true),
             Mark::Train => (10.0, 4.0, false),
             Mark::Crate => (6.0, 6.0, false),
+            Mark::Upgrade => (9.0, 9.0, false),
             Mark::Medkit => (6.0, 6.0, false),
             Mark::Danger => (12.0, 12.0, true),
             Mark::Capsule => (11.0, 11.0, true),
@@ -267,7 +275,7 @@ fn update_markers(
     capsules: Query<&Transform, With<Capsule>>,
     strikes: Query<&Strike>,
     medkits: Query<&Transform, With<Medkit>>,
-    pickups: Query<&Transform, With<Pickup>>,
+    pickups: Query<(&Transform, Has<GoldenCrate>), With<Pickup>>,
     cars: Query<(&Transform, &Visibility), With<Car>>,
     dangers: Res<DangerMarks>,
     mut markers: Query<(&Marker, &mut Node, &mut BackgroundColor, &mut BorderColor)>,
@@ -289,7 +297,11 @@ fn update_markers(
     targets.extend(enemies.iter().filter(|(_, b)| !*b).map(|(t, _)| (flat(t), Mark::Enemy)));
     targets.extend(service.iter().map(|t| (flat(t), Mark::Service)));
     targets.extend(cars.iter().filter(|(_, v)| **v != Visibility::Hidden).map(|(t, _)| (flat(t), Mark::Train)));
-    targets.extend(pickups.iter().map(|t| (flat(t), Mark::Crate)));
+    targets.extend(
+        pickups
+            .iter()
+            .map(|(t, golden)| (flat(t), if golden { Mark::Upgrade } else { Mark::Crate })),
+    );
     targets.extend(medkits.iter().map(|t| (flat(t), Mark::Medkit)));
     targets.truncate(POOL);
 
