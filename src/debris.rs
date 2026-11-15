@@ -3,7 +3,7 @@
 //! Обломок создаётся сообщением [`SpawnDebris`]. Уснувший обломок записывается в хранилище
 //! [`DebrisStore`] по участку рельефа и восстанавливается, когда участок снова загружен,
 //! поэтому обломки лежат на месте после отъезда и возвращения. Коллайдеров у обломков нет:
-//! машины проезжают сквозь них.
+//! машины проезжают сквозь них. Уснувшие обломки оседают по любому [`TerrainChanged`].
 
 use std::collections::HashMap;
 
@@ -13,6 +13,7 @@ use bevy::prelude::*;
 use crate::explosion::Explosion;
 use crate::frame::{GameSet, RunMessages};
 use crate::run::{RunScoped, WorldRebuilt};
+use crate::subsidence::TerrainChanged;
 use crate::terrain::{self, Terrain, VisibleChunks, chunk_coord_at};
 
 /// Гравитация, м/с².
@@ -201,10 +202,56 @@ fn spawn_debris(
 /// Докуда от взрыва в долях радиуса подпрыгивают уснувшие обломки.
 const WAKE_REACH: f32 = 1.8;
 
-/// Взрыв будит уснувшие обломки рядом: они подпрыгивают от центра и падают в новый кратер.
+/// Насколько обломок может разойтись с новым рельефом, прежде чем его поднять, м.
+const SETTLE_GAP: f32 = 0.05;
+
+/// Забирает из хранилища уснувшие обломки в круге, для которых `take` вернул `true`, и убирает
+/// их сущности из сцены. Возвращает забранные обломки.
+fn take_pieces(
+    store: &mut DebrisStore,
+    commands: &mut Commands,
+    center: Vec3,
+    reach: f32,
+    mut take: impl FnMut(&DebrisPiece) -> bool,
+) -> Vec<DebrisPiece> {
+    let mut taken = Vec::new();
+    let low = chunk_coord_at(center.x - reach, center.z - reach);
+    let high = chunk_coord_at(center.x + reach, center.z + reach);
+    for cz in low.y..=high.y {
+        for cx in low.x..=high.x {
+            let chunk = IVec2::new(cx, cz);
+            let Some(pieces) = store.chunks.get_mut(&chunk) else {
+                continue;
+            };
+            let mut shown = store.shown.get_mut(&chunk);
+            let mut i = 0;
+            while i < pieces.len() {
+                let p = pieces[i].transform.translation;
+                if (p - center).with_y(0.0).length() > reach || !take(&pieces[i]) {
+                    i += 1;
+                    continue;
+                }
+                taken.push(pieces.remove(i));
+                // Списки обломков участка и их сущностей идут в одном порядке.
+                if let Some(entities) = shown.as_mut()
+                    && i < entities.len()
+                {
+                    commands.entity(entities.remove(i)).try_despawn();
+                }
+            }
+        }
+    }
+    taken
+}
+
+/// Будит уснувшие обломки. Взрыв подбрасывает их от центра, и они падают в новый кратер.
+/// Любое другое изменение рельефа (траншея лазера, вскрытый туннель, провал) отпускает обломки,
+/// разошедшиеся с новой поверхностью: висящие падают, утонувшие встают на неё.
 fn wake_debris(
     mut commands: Commands,
     mut explosions: MessageReader<Explosion>,
+    mut changes: MessageReader<TerrainChanged>,
+    terrain: Res<Terrain>,
     mut store: ResMut<DebrisStore>,
     mut requests: MessageWriter<SpawnDebris>,
 ) {
@@ -212,40 +259,37 @@ fn wake_debris(
     for explosion in explosions.read() {
         let reach = explosion.radius * WAKE_REACH;
         let c = explosion.position;
-        let low = chunk_coord_at(c.x - reach, c.z - reach);
-        let high = chunk_coord_at(c.x + reach, c.z + reach);
-        for cz in low.y..=high.y {
-            for cx in low.x..=high.x {
-                let chunk = IVec2::new(cx, cz);
-                let Some(pieces) = store.chunks.get_mut(&chunk) else {
-                    continue;
-                };
-                let mut shown = store.shown.get_mut(&chunk);
-                let mut i = 0;
-                while i < pieces.len() {
-                    let p = pieces[i].transform.translation;
-                    let offset = (p - c).with_y(0.0);
-                    let d = offset.length();
-                    if d > reach {
-                        i += 1;
-                        continue;
-                    }
-                    let piece = pieces.remove(i);
-                    if let Some(entities) = shown.as_mut() {
-                        if i < entities.len() {
-                            commands.entity(entities.remove(i)).try_despawn();
-                        }
-                    }
-                    let k = 1.0 - d / reach;
-                    requests.write(SpawnDebris {
-                        position: p + Vec3::Y * 0.2,
-                        velocity: offset.normalize_or(Vec3::X) * 6.0 * k + Vec3::Y * (2.0 + 7.0 * k),
-                        size: piece.transform.scale,
-                        color: piece.color,
-                        burning: false,
-                    });
-                }
-            }
+        for piece in take_pieces(store, &mut commands, c, reach, |_| true) {
+            let p = piece.transform.translation;
+            let offset = (p - c).with_y(0.0);
+            let k = 1.0 - offset.length() / reach;
+            requests.write(SpawnDebris {
+                position: p + Vec3::Y * 0.2,
+                velocity: offset.normalize_or(Vec3::X) * 6.0 * k + Vec3::Y * (2.0 + 7.0 * k),
+                size: piece.transform.scale,
+                color: piece.color,
+                burning: false,
+            });
+        }
+    }
+    // Обломки у взрывов уже подброшены выше, здесь остаются только разошедшиеся с рельефом.
+    for change in changes.read() {
+        let off_ground = |piece: &DebrisPiece| {
+            let p = piece.transform.translation;
+            let ground = terrain.height_at(p.x, p.z) + piece.transform.scale.y * 0.5;
+            (p.y - ground).abs() > SETTLE_GAP
+        };
+        for piece in take_pieces(store, &mut commands, change.center, change.radius, off_ground) {
+            let p = piece.transform.translation;
+            // Утонувший встаёт на поверхность, висящий падает с места.
+            let ground = terrain.height_at(p.x, p.z) + piece.transform.scale.y * 0.5;
+            requests.write(SpawnDebris {
+                position: p.with_y(p.y.max(ground)),
+                velocity: Vec3::ZERO,
+                size: piece.transform.scale,
+                color: piece.color,
+                burning: false,
+            });
         }
     }
 }

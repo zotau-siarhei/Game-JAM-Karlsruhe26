@@ -25,6 +25,12 @@ const SLOWMO_SPEED: f32 = 0.25;
 const SLOWMO_HOLD: f32 = 0.15;
 /// За сколько время плавно возвращается к обычному, с реального времени.
 const SLOWMO_RETURN: f32 = 0.35;
+/// Дальше этого расстояния от лунохода мощный взрыв время не замедляет, м: дальность прицела
+/// 40 м плюс половина линии авиаудара, дальше — уже за краем кадра.
+const SLOWMO_RANGE: f32 = 55.0;
+/// Сколько после конца замедления новое не начинается, с реального времени: серия бомб
+/// авиаудара даёт одно замедление, а не цепочку.
+const SLOWMO_COOLDOWN: f32 = 1.0;
 
 /// Плагин тряски и замедления.
 pub struct ImpactPlugin;
@@ -45,9 +51,25 @@ impl Plugin for ImpactPlugin {
     }
 }
 
-/// Сколько прошло реального времени с начала замедления, с; `None` — замедления нет.
+/// Замедление времени.
 #[derive(Resource, Default)]
-struct SlowMotion(Option<f32>);
+struct SlowMotion {
+    /// Сколько прошло реального времени с начала замедления, с; `None` — замедления нет.
+    age: Option<f32>,
+    /// Сколько ещё нельзя начать новое замедление, с реального времени.
+    cooldown: f32,
+}
+
+impl SlowMotion {
+    /// Начинает замедление, если оно не идёт и не остывает: идущее не продлевается.
+    fn try_start(&mut self) -> bool {
+        if self.age.is_some() || self.cooldown > 0.0 {
+            return false;
+        }
+        self.age = Some(0.0);
+        true
+    }
+}
 
 fn add_shake(mut commands: Commands, camera: Single<Entity, With<GameCamera>>) {
     commands.entity(*camera).insert((
@@ -80,10 +102,20 @@ fn shake_on_explosion(
     }
 }
 
-fn start_slowmo(mut explosions: MessageReader<Explosion>, mut slowmo: ResMut<SlowMotion>) {
-    if explosions.read().any(|e| e.power > SLOWMO_POWER) {
-        slowmo.0 = Some(0.0);
+/// Замедляет время на мощном взрыве рядом с луноходом.
+fn start_slowmo(
+    mut explosions: MessageReader<Explosion>,
+    mut slowmo: ResMut<SlowMotion>,
+    rover: Single<&Transform, With<Rover>>,
+) {
+    if explosions.read().any(|e| slows_time(e.power, e.position.distance(rover.translation))) {
+        slowmo.try_start();
     }
+}
+
+/// Замедляет ли время взрыв мощности `power` в `distance` метрах от лунохода.
+pub fn slows_time(power: f32, distance: f32) -> bool {
+    power > SLOWMO_POWER && distance <= SLOWMO_RANGE
 }
 
 /// Скорость времени через `age` секунд реального времени после начала замедления.
@@ -103,18 +135,21 @@ fn run_slowmo(
     mut slowmo: ResMut<SlowMotion>,
     state: Res<State<GameState>>,
 ) {
-    let Some(age) = slowmo.0 else {
-        return;
-    };
     if *state.get() == GameState::Paused {
         return;
     }
-    let age = age + real.delta_secs();
+    let dt = real.delta_secs();
+    let Some(age) = slowmo.age else {
+        slowmo.cooldown = (slowmo.cooldown - dt).max(0.0);
+        return;
+    };
+    let age = age + dt;
     if age >= SLOWMO_HOLD + SLOWMO_RETURN {
-        slowmo.0 = None;
+        slowmo.age = None;
+        slowmo.cooldown = SLOWMO_COOLDOWN;
         time.set_relative_speed(1.0);
     } else {
-        slowmo.0 = Some(age);
+        slowmo.age = Some(age);
         time.set_relative_speed(slowmo_speed(age));
     }
 }
@@ -125,7 +160,7 @@ fn reset_slowmo(
     mut time: ResMut<Time<Virtual>>,
 ) {
     if started.read().count() > 0 {
-        slowmo.0 = None;
+        *slowmo = SlowMotion::default();
         time.set_relative_speed(1.0);
     }
 }
@@ -144,5 +179,24 @@ mod tests {
     fn замедление_возвращается_к_обычной_скорости() {
         assert_eq!(slowmo_speed(0.0), SLOWMO_SPEED);
         assert!((slowmo_speed(SLOWMO_HOLD + SLOWMO_RETURN) - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn далёкий_взрыв_время_не_замедляет() {
+        assert!(slows_time(1.6, 10.0));
+        assert!(!slows_time(1.6, SLOWMO_RANGE + 1.0));
+        assert!(!slows_time(1.4, 0.0));
+    }
+
+    #[test]
+    fn идущее_замедление_не_продлевается() {
+        let mut slowmo = SlowMotion::default();
+        assert!(slowmo.try_start());
+        slowmo.age = Some(0.3);
+        assert!(!slowmo.try_start());
+        assert_eq!(slowmo.age, Some(0.3));
+        slowmo.age = None;
+        slowmo.cooldown = SLOWMO_COOLDOWN;
+        assert!(!slowmo.try_start(), "после замедления новое не начинается сразу");
     }
 }
