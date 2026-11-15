@@ -10,6 +10,7 @@ use crate::alarm::Alarm;
 use crate::arsenal::AmmoRanOut;
 use crate::boss::Boss;
 use crate::buildings::BuildingDestroyed;
+use crate::birds::BirdsTookOff;
 use crate::bullet::FireBullet;
 use crate::casings::CasingClink;
 use crate::capsule::{Capsule, FALL_SECONDS, MARK_SECONDS};
@@ -104,7 +105,7 @@ impl Plugin for AudioEventsPlugin {
         app.init_resource::<AudioMemory>()
             .add_systems(OnEnter(GameState::Menu), menu_music)
             .add_systems(Update, sound_trains.in_set(GameSet::Presentation))
-            .add_systems(Update, sound_casings.in_set(GameSet::Presentation))
+            .add_systems(Update, (sound_casings, sound_birds).in_set(GameSet::Presentation))
             .add_systems(OnExit(GameState::Menu), click)
             .add_systems(OnExit(GameState::GameOver), click)
             .add_systems(OnEnter(GameState::Paused), pause_blip)
@@ -382,6 +383,13 @@ fn music_follows_enemies(
 fn sound_casings(mut clinks: MessageReader<CasingClink>, mut sounds: MessageWriter<PlaySound>) {
     for clink in clinks.read() {
         sounds.write(PlaySound::at("casing_clink", clink.position));
+    }
+}
+
+/// Стая птиц взлетела. Записи `birds_takeoff` в списке звуков пока нет, как и у гильз.
+fn sound_birds(mut flocks: MessageReader<BirdsTookOff>, mut sounds: MessageWriter<PlaySound>) {
+    for flock in flocks.read() {
+        sounds.write(PlaySound::at("birds_takeoff", flock.position));
     }
 }
 

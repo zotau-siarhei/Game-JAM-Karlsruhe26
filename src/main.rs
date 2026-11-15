@@ -11,6 +11,7 @@ mod arsenal;
 mod audio_events;
 mod boss;
 mod buildings;
+mod birds;
 mod bullet;
 mod camera;
 mod capsule;
@@ -173,6 +174,7 @@ fn game_plugins(app: &mut App) {
             weapon_sfx::WeaponSfxPlugin,
             upgrades::UpgradesPlugin,
             casings::CasingsPlugin,
+            birds::BirdsPlugin,
         ));
 }
 
