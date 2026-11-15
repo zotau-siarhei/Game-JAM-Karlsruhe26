@@ -774,7 +774,7 @@ fn animate_lava(
 }
 
 /// Лава жжёт: луноход вязнет каждый кадр, а урон приходит тиком [`BURN_TICK`] с тем же уроном
-/// в секунду. Враги и жители сгорают, предметы исчезают, деревья и дома у края загораются.
+/// в секунду. Враги, машины Службы и жители сгорают, предметы исчезают, деревья и дома у края загораются.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn burn_in_lava(
     mut commands: Commands,
@@ -784,7 +784,8 @@ fn burn_in_lava(
     assets: Res<LavaAssets>,
     terrain: Res<Terrain>,
     mut rover: Query<(Entity, &Transform, &mut RoverMotion, &Health), With<Rover>>,
-    enemies: Query<(Entity, &Transform), With<Enemy>>,
+    // Машины Службы горят в лаве так же, как враги.
+    enemies: Query<(Entity, &Transform), Or<(With<Enemy>, With<crate::service::ServiceVehicle>)>>,
     residents: Query<(Entity, &Transform), With<Resident>>,
     pickups: Query<(Entity, &Transform), With<Pickup>>,
     flammable: Query<(Entity, &GlobalTransform, &Health, Option<&Prop>), Or<(With<Prop>, With<House>)>>,
