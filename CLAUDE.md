@@ -85,4 +85,7 @@ cargo test                                  # тесты
 - `bevy_trauma_shake` — тряска камеры.
 - `noise` — шум для ландшафта.
 - `serde`, `serde_json` — чтение списка реплик штаба.
-- `ehttp` — HTTP-запросы к ElevenLabs. Ключ API читать из переменной окружения, в репозиторий не класть.
+
+Игра в сеть не ходит. Звуки, музыку и реплики через ElevenLabs генерируют скрипты
+`scripts/gen_audio.py` и `scripts/gen_voice.py` (Python 3; эффекты на реплики накладывает `ffmpeg`).
+Ключ API — в переменной окружения `ELEVENLABS_API_KEY`, в репозиторий не класть.
