@@ -56,12 +56,16 @@
   Врага ставит сообщение `SpawnEnemy { place }` из `src/enemy.rs`, десантную капсулу — `DropCapsule { angle }`
   из `src/capsule.rs`, начало волны — `WaveStarted { number }`.
 - Тревога — ресурс `Alarm` из `src/alarm.rs` (ступени 0–5, `alarm.level()`): растёт от `BuildingDestroyed`,
-  управляет только Службой защиты жителей, волны от неё не зависят. Очки добавляет `Alarm::add`.
+  `ResidentDied`, гибели машин Службы и пассажирских вагонов, управляет только Службой защиты жителей,
+  волны от неё не зависят. Очки добавляет `Alarm::add`.
+- Служба защиты жителей — `src/service.rs`, команда `Team::Service`: с врагами взаимного урона нет.
+  Кто кого ранит и в кого попадает пуля — `Team::damage_share` и `Team::hostile_to` в `src/combat.rs`.
 - Враги ведут машину через `Steering` из `src/steering.rs` (желаемый курс и скорость): объезд домов и
   выход из застревания делает общая система; видимость для стрельбы — `steering::has_los`.
 - Выбранное оружие — ресурс `CurrentWeapon` из `src/weapons.rs`. Каждое оружие перед выстрелом по
   левой кнопке мыши проверяет, что выбрано именно оно.
-- Снаряд мортиры не от игрока — сообщением `FireShell { origin, target, team, power }` из `src/mortar.rs`.
+- Снаряд мортиры — сообщением `FireShell { origin, target, team, power }` из `src/mortar.rs`, и у игрока, и у врагов.
+- Лечение — только сообщением `Heal { target, amount }` из `src/combat.rs`.
 - Пули — сообщением `FireBullet { origin, direction, team, damage }` из `src/bullet.rs`; прямая
   видимость над рельефом — `bullet::has_line_of_sight`.
 - Озвучка игровых событий собрана в `src/audio_events.rs`: новое событие озвучивается там.

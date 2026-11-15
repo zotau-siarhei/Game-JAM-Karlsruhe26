@@ -14,9 +14,10 @@ use crate::rover::{self, Rover, SpeedFactor};
 use crate::run::{RunScoped, WorldRebuilt};
 use crate::terrain::Terrain;
 
-/// Сколько здоровья в секунду возвращает ремонт: доля полного здоровья. Числа ремонта и аптечки
-/// настраивались при здоровье 100 (10 в секунду и 35), доли сохраняют ту пропорцию.
-const REPAIR_RATE: f32 = 0.10 * ROVER_MAX_HEALTH;
+/// Сколько здоровья в секунду возвращает ремонт: доля полного здоровья. Ремонт 10 в секунду
+/// и аптечка 35 играли при здоровье 300, как и урон врагов в `waves::enemy_damage` и удар поезда:
+/// доли сохраняют пропорцию того баланса.
+const REPAIR_RATE: f32 = ROVER_MAX_HEALTH * (10.0 / 300.0);
 
 /// Во сколько раз луноход медленнее во время ремонта.
 const REPAIR_SLOWDOWN: f32 = 0.4;
@@ -43,7 +44,7 @@ const MEDKIT_FORGET_RADIUS: f32 = 150.0;
 const MEDKIT_RING: (f32, f32) = (15.0, 30.0);
 
 /// Сколько здоровья даёт аптечка: доля полного здоровья.
-pub const MEDKIT_HEAL: f32 = 0.35 * ROVER_MAX_HEALTH;
+pub const MEDKIT_HEAL: f32 = ROVER_MAX_HEALTH * (35.0 / 300.0);
 
 /// С какого расстояния аптечка подбирается, м.
 const PICKUP_DISTANCE: f32 = 2.0;
@@ -383,11 +384,11 @@ mod tests {
         assert!(!can_pick(PICKUP_DISTANCE + 0.1, &health));
     }
 
-    /// Ремонт и аптечка — те же доли здоровья, что 10 в секунду и 35 при здоровье 100.
+    /// Ремонт и аптечка — те же доли здоровья, что 10 в секунду и 35 при здоровье 300.
     #[test]
     fn healing_is_a_share_of_full_health() {
-        assert!((REPAIR_RATE / ROVER_MAX_HEALTH - 0.10).abs() < 1e-6);
-        assert!((MEDKIT_HEAL / ROVER_MAX_HEALTH - 0.35).abs() < 1e-6);
+        assert!((REPAIR_RATE / ROVER_MAX_HEALTH - 10.0 / 300.0).abs() < 1e-6);
+        assert!((MEDKIT_HEAL / ROVER_MAX_HEALTH - 35.0 / 300.0).abs() < 1e-6);
     }
 
     #[test]
@@ -399,9 +400,9 @@ mod tests {
             .add_message::<RepairChanged>()
             .add_message::<Heal>()
             .add_systems(Update, (repair, crate::combat::apply_heal, collect).chain());
-        // Ремонт за полсекунды возвращает 5 % здоровья: ранен на 15 % — три шага до полного.
+        // Ремонт за полсекунды возвращает 1/60 здоровья: ранен на 4,5 % — три шага до полного.
         let mut health = Health::new(ROVER_MAX_HEALTH);
-        health.damage(0.15 * ROVER_MAX_HEALTH);
+        health.damage(0.045 * ROVER_MAX_HEALTH);
         let rover = app.world_mut().spawn((Rover, health)).id();
         app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::Space);
 
@@ -413,7 +414,7 @@ mod tests {
         };
         let current = |app: &App| app.world().get::<Health>(rover).unwrap().current;
         step(&mut app);
-        assert!((current(&app) - 0.90 * ROVER_MAX_HEALTH).abs() < 1e-2, "{}", current(&app));
+        assert!((current(&app) - (0.955 + 1.0 / 60.0) * ROVER_MAX_HEALTH).abs() < 1e-2, "{}", current(&app));
         assert_eq!(app.world().get::<SpeedFactor>(rover).unwrap().0, REPAIR_SLOWDOWN);
 
         step(&mut app);
