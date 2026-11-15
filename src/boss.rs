@@ -85,6 +85,25 @@ const DEATH_BLAST: (f32, f32) = (7.0, 2.2);
 /// Ящиков с оружием после гибели.
 const LOOT_CRATES: usize = 3;
 
+/// Длина ноги от бедра до земли, м.
+const LEG_LENGTH: f32 = RIDE_HEIGHT + MODEL_HIPS.y;
+/// Размах шага: угол ноги от вертикали в крайнем положении, рад — в ходьбе и на таране.
+const STRIDE_ANGLE: (f32, f32) = (0.28, 0.42);
+/// На сколько поднимается бедро ноги в переносе, м.
+const STEP_LIFT: f32 = 0.45;
+/// Поворот на месте тоже перебирает ногами: путь ступни за радиан поворота, м.
+const TURN_REACH: f32 = 2.5;
+/// Покачивание туловища в шаге: подъём, м, и крен, рад; наклон вперёд на таране, рад.
+const BODY_BOB: f32 = 0.12;
+const BODY_ROLL: f32 = 0.04;
+const RAM_LEAN: f32 = 0.1;
+/// Поджатые ноги в падении: угол к центру корпуса, рад, подъём бедра, м; время разгибания, с.
+const FOLD_ANGLE: f32 = 0.7;
+const FOLD_LIFT: f32 = 0.7;
+const UNFOLD_TIME: f32 = 0.35;
+/// При гибели ноги подгибаются наполовину.
+const DYING_FOLD: f32 = 0.5;
+
 const BODY_COLOR: Color = Color::srgb(0.3, 0.12, 0.14);
 const LEG_COLOR: Color = Color::srgb(0.12, 0.12, 0.14);
 
@@ -103,7 +122,9 @@ impl Plugin for BossPlugin {
                         .before(vehicle::move_ground_vehicles)
                         .in_set(GameSet::Simulation),
                     start_dying.in_set(GameSet::Death),
-                    (animate_core, update_health_bar).chain().in_set(GameSet::Presentation),
+                    (animate_gait, animate_core, update_health_bar)
+                        .chain()
+                        .in_set(GameSet::Presentation),
                 ),
             );
     }
@@ -149,6 +170,38 @@ struct BossWarning {
 /// Светящееся ядро: разгорается во время подготовки атаки.
 #[derive(Component)]
 struct BossCore;
+
+/// Походка босса: фаза шага по пройденному пути, вес шага и поджатость ног.
+#[derive(Component)]
+struct BossGait {
+    /// Фаза цикла шага: целая часть — число циклов, дробная — где сейчас нога.
+    phase: f32,
+    /// Положение по горизонтали и курс в прошлом кадре.
+    last: Option<(Vec2, f32)>,
+    /// Насколько босс шагает: 0 — стоит, 1 — идёт.
+    walking: f32,
+    /// Размах шага, рад: растёт на таране.
+    stride_angle: f32,
+    /// Поджатость ног: 1 — в падении, 0 — стоит на ногах.
+    fold: f32,
+    /// Наклон туловища вперёд, рад.
+    lean: f32,
+}
+
+/// Шарнир ноги на бедре: поворачивается вперёд-назад и поднимается в шаге.
+#[derive(Component)]
+struct BossLeg {
+    /// Бедро в системе босса.
+    hip: Vec3,
+    /// Сдвиг фазы: диагональные пары ног идут в противофазе.
+    offset: f32,
+    /// Передняя нога: при поджатии ступня уходит назад, к центру корпуса.
+    front: bool,
+}
+
+/// Туловище с ядром: покачивается в шаге.
+#[derive(Component)]
+struct BossTorso;
 
 /// Полоса здоровья вверху экрана и её заполнение.
 #[derive(Component)]
@@ -292,34 +345,59 @@ fn spawn_boss(
             Health::new(health),
             Team::Enemy,
             Collider { radius: RADIUS },
+            BossGait {
+                phase: 0.0,
+                last: None,
+                walking: 0.0,
+                stride_angle: STRIDE_ANGLE.0,
+                fold: 1.0,
+                lean: 0.0,
+            },
             Transform::from_translation(position),
             Visibility::default(),
         ))
         .with_children(|parent| {
-            models.spawn_visual(parent, "boss_body", Transform::IDENTITY, |body| {
-                body.spawn((
-                    Mesh3d(assets.body.clone()),
-                    MeshMaterial3d(assets.body_material.clone()),
-                ));
-            });
-            for (x, z) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
-                let hip = Transform::from_xyz(x * MODEL_HIPS.x, MODEL_HIPS.y, z * MODEL_HIPS.z);
-                let leg = Transform::from_xyz(x * BODY.x * 0.45, -RIDE_HEIGHT * 0.5, z * BODY.z * 0.4);
-                models.spawn_visual(parent, "boss_leg", hip, |spare| {
-                    spare.spawn((
-                        Mesh3d(assets.leg.clone()),
-                        MeshMaterial3d(assets.leg_material.clone()),
-                        leg,
+            parent
+                .spawn((BossTorso, Transform::IDENTITY, Visibility::default()))
+                .with_children(|torso| {
+                    models.spawn_visual(torso, "boss_body", Transform::IDENTITY, |body| {
+                        body.spawn((
+                            Mesh3d(assets.body.clone()),
+                            MeshMaterial3d(assets.body_material.clone()),
+                        ));
+                    });
+                    torso.spawn((
+                        BossCore,
+                        NotShadowCaster,
+                        Mesh3d(assets.core.clone()),
+                        MeshMaterial3d(assets.core_material.clone()),
+                        core,
                     ));
                 });
+            // Диагональные пары: передняя левая с задней правой, передняя правая с задней левой.
+            for (x, z, offset) in [(-1.0, -1.0, 0.0), (1.0, -1.0, 0.5), (-1.0, 1.0, 0.5), (1.0, 1.0, 0.0)] {
+                let hip = Vec3::new(x * MODEL_HIPS.x, MODEL_HIPS.y, z * MODEL_HIPS.z);
+                let leg = Vec3::new(x * BODY.x * 0.45, -RIDE_HEIGHT * 0.5, z * BODY.z * 0.4);
+                parent
+                    .spawn((
+                        BossLeg {
+                            hip,
+                            offset,
+                            front: z < 0.0,
+                        },
+                        Transform::from_translation(hip),
+                        Visibility::default(),
+                    ))
+                    .with_children(|pivot| {
+                        models.spawn_visual(pivot, "boss_leg", Transform::IDENTITY, |spare| {
+                            spare.spawn((
+                                Mesh3d(assets.leg.clone()),
+                                MeshMaterial3d(assets.leg_material.clone()),
+                                Transform::from_translation(leg - hip),
+                            ));
+                        });
+                    });
             }
-            parent.spawn((
-                BossCore,
-                NotShadowCaster,
-                Mesh3d(assets.core.clone()),
-                MeshMaterial3d(assets.core_material.clone()),
-                core,
-            ));
         });
 }
 
@@ -607,23 +685,125 @@ fn run_dying(
     }
 }
 
+/// Поза ноги в цикле шага с длиной шага `stride`, м: угол от вертикали (плюс — ступня впереди)
+/// и доля подъёма бедра. Первая половина цикла — опора: ступня идёт назад ровно с ходом корпуса
+/// и стоит на месте относительно земли. Вторая — перенос: нога поднимается и выносится вперёд.
+fn leg_pose(phase: f32, stride: f32) -> (f32, f32) {
+    let p = phase.rem_euclid(1.0);
+    let half = stride * 0.5;
+    let (x, lift) = if p < 0.5 {
+        (half - stride * p * 2.0, 0.0)
+    } else {
+        let s = (p - 0.5) * 2.0;
+        let eased = s * s * (3.0 - 2.0 * s);
+        (-half + stride * eased, (s * std::f32::consts::PI).sin())
+    };
+    ((x / LEG_LENGTH).clamp(-1.0, 1.0).asin(), lift)
+}
+
+/// Длина шага при размахе `angle`, м.
+fn stride_length(angle: f32) -> f32 {
+    2.0 * LEG_LENGTH * angle.sin()
+}
+
+/// На сколько продвигается фаза шага за путь `distance`, м: цикл — опора и перенос, за цикл
+/// корпус проходит два шага.
+fn phase_advance(distance: f32, angle: f32) -> f32 {
+    distance / (2.0 * stride_length(angle))
+}
+
+/// Ноги переставляются по диагоналям в такт пути, корпус покачивается; в падении ноги поджаты.
+fn animate_gait(
+    time: Res<Time>,
+    mut bosses: Query<(&Boss, &Transform, &mut BossGait)>,
+    mut legs: Query<(&BossLeg, &ChildOf, &mut Transform), (Without<Boss>, Without<BossTorso>)>,
+    mut torsos: Query<(&ChildOf, &mut Transform), (With<BossTorso>, Without<Boss>, Without<BossLeg>)>,
+) {
+    let dt = time.delta_secs();
+    if dt <= 0.0 {
+        return;
+    }
+    for (boss, transform, mut gait) in &mut bosses {
+        let here = transform.translation.xz();
+        let heading = transform.rotation.to_euler(EulerRot::YXZ).0;
+        let falling = matches!(boss.phase, BossPhase::Falling(_));
+        let (moved, turned) = match gait.last {
+            Some((last, last_heading)) if !falling => {
+                let turn = (heading - last_heading + std::f32::consts::PI).rem_euclid(TAU) - std::f32::consts::PI;
+                ((here - last).length(), turn.abs())
+            }
+            _ => (0.0, 0.0),
+        };
+        gait.last = Some((here, heading));
+        let distance = moved + turned * TURN_REACH;
+        let ramming = matches!(boss.phase, BossPhase::Ramming(_));
+        let target_angle = if ramming { STRIDE_ANGLE.1 } else { STRIDE_ANGLE.0 };
+        gait.stride_angle += (target_angle - gait.stride_angle) * (dt * 4.0).min(1.0);
+        let advance = phase_advance(distance, gait.stride_angle);
+        gait.phase += advance;
+        // Шагает, пока движется; остановился — ноги плавно встают ровно.
+        let target_walk = if distance / dt > 0.5 { 1.0 } else { 0.0 };
+        gait.walking += (target_walk - gait.walking) * (dt * 5.0).min(1.0);
+        let target_fold = match boss.phase {
+            BossPhase::Falling(_) => 1.0,
+            BossPhase::Dying(..) => DYING_FOLD,
+            _ => 0.0,
+        };
+        let step = dt / UNFOLD_TIME;
+        gait.fold = if gait.fold < target_fold {
+            (gait.fold + step).min(target_fold)
+        } else {
+            (gait.fold - step).max(target_fold)
+        };
+        let target_lean = if ramming { -RAM_LEAN } else { 0.0 };
+        gait.lean += (target_lean - gait.lean) * (dt * 3.0).min(1.0);
+    }
+
+    let stride_of = |gait: &BossGait| stride_length(gait.stride_angle);
+    for (leg, child_of, mut leg_transform) in &mut legs {
+        let Ok((_, _, gait)) = bosses.get(child_of.parent()) else {
+            continue;
+        };
+        let (angle, lift) = leg_pose(gait.phase + leg.offset, stride_of(gait));
+        let walk_angle = angle * gait.walking;
+        let walk_lift = lift * STEP_LIFT * gait.walking;
+        let fold_angle = if leg.front { -FOLD_ANGLE } else { FOLD_ANGLE };
+        let angle = walk_angle + (fold_angle - walk_angle) * gait.fold;
+        let lift = walk_lift + (FOLD_LIFT - walk_lift) * gait.fold;
+        leg_transform.translation = leg.hip + Vec3::Y * lift;
+        leg_transform.rotation = Quat::from_rotation_x(angle);
+    }
+    for (child_of, mut torso) in &mut torsos {
+        let Ok((_, _, gait)) = bosses.get(child_of.parent()) else {
+            continue;
+        };
+        let p = gait.phase * TAU;
+        // Корпус оседает на каждую диагональную пару — дважды за цикл, и перекатывается с боку на бок.
+        torso.translation.y = BODY_BOB * (2.0 * p).cos() * gait.walking - FOLD_LIFT * 0.3 * gait.fold;
+        torso.rotation = Quat::from_rotation_x(gait.lean) * Quat::from_rotation_z(BODY_ROLL * p.sin() * gait.walking);
+    }
+}
+
 /// Ядро разгорается и пульсирует во время подготовки атаки.
 fn animate_core(
     time: Res<Time>,
-    bosses: Query<(&Boss, &Children)>,
-    mut cores: Query<&mut Transform, With<BossCore>>,
+    bosses: Query<&Boss>,
+    torsos: Query<&ChildOf, With<BossTorso>>,
+    mut cores: Query<(&ChildOf, &mut Transform), With<BossCore>>,
 ) {
-    for (boss, children) in &bosses {
+    for (child_of, mut core) in &mut cores {
+        let Ok(torso) = torsos.get(child_of.parent()) else {
+            continue;
+        };
+        let Ok(boss) = bosses.get(torso.parent()) else {
+            continue;
+        };
         let scale = match boss.phase {
             BossPhase::Preparing(left) => 1.0 + (1.0 - left / PREPARE_TIME) * 1.2 + 0.2 * (time.elapsed_secs() * 30.0).sin(),
             BossPhase::Ramming(_) => 1.6,
             _ => 1.0,
         };
-        for child in children.iter() {
-            if let Ok(mut core) = cores.get_mut(child) {
-                core.scale = Vec3::splat(scale);
-            }
-        }
+        core.scale = Vec3::splat(scale);
     }
 }
 
@@ -657,6 +837,40 @@ mod tests {
         assert!(ram_hits(pushed_apart, rover_radius));
         assert!(ram_hits(pushed_apart + 1.0, rover_radius));
         assert!(!ram_hits(pushed_apart + 5.0, rover_radius));
+    }
+
+    #[test]
+    fn ступня_в_опоре_стоит_на_месте() {
+        // Корпус идёт вперёд (к -Z) на путь d; ступня — бедро плюс вынос ноги L·sin(угол) вперёд.
+        let angle = STRIDE_ANGLE.0;
+        let stride = stride_length(angle);
+        let foot = |d: f32| {
+            let (a, lift) = leg_pose(phase_advance(d, angle), stride);
+            assert_eq!(lift, 0.0, "в опоре нога не поднята");
+            -d - LEG_LENGTH * a.sin()
+        };
+        let start = foot(0.0);
+        for i in 1..20 {
+            let d = stride * i as f32 / 20.0;
+            assert!((foot(d) - start).abs() < 1e-3, "ступня уехала на пути {d}");
+        }
+    }
+
+    #[test]
+    fn диагональные_пары_идут_в_противофазе() {
+        let stride = stride_length(STRIDE_ANGLE.0);
+        for i in 0..40 {
+            let phase = i as f32 / 40.0 + 0.0125;
+            let (_, lift_a) = leg_pose(phase, stride);
+            let (_, lift_b) = leg_pose(phase + 0.5, stride);
+            // Одна пара всегда стоит на земле.
+            assert!(lift_a == 0.0 || lift_b == 0.0, "обе пары в воздухе на фазе {phase}");
+        }
+        // В переносе нога выносится вперёд и поднимается.
+        let (a_start, _) = leg_pose(0.5, stride);
+        let (a_end, _) = leg_pose(0.999, stride);
+        let (_, lift_mid) = leg_pose(0.75, stride);
+        assert!(a_start < 0.0 && a_end > 0.0 && lift_mid > 0.9);
     }
 
     #[test]
