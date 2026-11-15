@@ -89,12 +89,28 @@
       "budget": 1500
     },
     {
-      "id": "enemy_heavy_tank",
-      "file": "enemy_heavy_tank.glb",
-      "scale": 3.0,
-      "rotation_y": 0.0,
-      "offset_y": 1.023,
-      "budget": 5000
+      "id": "enemy_tank_hull",
+      "file": "enemy_tank_hull.glb",
+      "scale": 2.56,
+      "rotation_y": -1.5708,
+      "offset_y": 0.8,
+      "budget": 3500
+    },
+    {
+      "id": "enemy_tank_turret",
+      "file": "enemy_tank_turret.glb",
+      "scale": 1.52,
+      "rotation_y": -1.5708,
+      "offset_y": 1.66,
+      "budget": 1500
+    },
+    {
+      "id": "enemy_tank_track",
+      "file": "enemy_tank_track.glb",
+      "scale": 3.04,
+      "rotation_y": 1.5708,
+      "offset_y": 0.42,
+      "budget": 2000
     }
   ]
 }

@@ -53,6 +53,14 @@ Negative prompt (если поле есть): `realistic, gritty, dark, rusty, b
 | id | бюджет | промпт |
 |---|---|---|
 | `enemy_heavy_tank` | 5000 | `heavy slow alien tank with a big laser cannon, purple armor with yellow glowing details, wide tracks` + суффикс |
+
+Тяжёлый танк сделан по частям, чтобы башня поворачивалась, а гусеницы бежали (`src/tank_look.rs`).
+Сначала картинка целого танка, потом по ней как образцу (Image References) — корпус и башня:
+`Only the hull of the same alien tank as in the reference image, as a separate game part: NO turret and NO tracks...`,
+`Only the turret ... one big laser cannon pointing straight forward, the cannon is centered and aligned with the turret`.
+Гусеницу с образцом целого танка модель упорно рисует парой, поэтому её промпт — без образца:
+`A single isolated tank track unit, one piece only... Only one object in the picture`. Лимит полигонов к ней
+не применился (25 тыс.), её упростили в Blender модификатором Decimate до 2 тыс.
 | `boss_colossus` | 15000 | `giant walking alien fortress on four mechanical legs, purple armor, yellow glowing core, mortar and rocket pods on its back` + суффикс |
 | `train_loco` / `train_wagon` | 4000 | `chunky cartoon alien locomotive, pastel blue and yellow (not red)` / `matching cargo wagon` + суффикс |
 | `house_barrack` | 4000 | `long low alien barrack, pastel walls, flat saturated roof` + суффикс |
