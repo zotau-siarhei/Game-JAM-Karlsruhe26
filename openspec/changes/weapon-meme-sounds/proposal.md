@@ -15,6 +15,6 @@
 
 ## Impact
 - `src/weapon_sfx.rs` (`WeaponSfxPlugin`) слушает Messages оружия: `WeaponFired{kind}`, `WeaponReload{kind}`, `WeaponEmpty{kind}`, `ShellImpact{pos, power}`, `WeaponSpecial{kind, what}`.
-- Голосовые мем-реплики идут через очередь `VoicePlugin` (изменение voice-cast), чтобы не накладываться на речь.
+- Голосовые мем-реплики идут поводами `VoiceCue` через отбор реплик штаба (`src/hq.rs`, изменение audio-minimap), чтобы не накладываться на речь: звучит одна реплика, очереди нет, мем-реплика во время другой реплики отбрасывается.
 - Ассеты: `assets/sfx/weapons/*.ogg`, шрифт для комикс-надписей.
 - Подробный список идей: `../voice-cast/meme-analysis.md`, раздел 5.
