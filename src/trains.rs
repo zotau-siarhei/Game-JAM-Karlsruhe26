@@ -18,15 +18,17 @@ use crate::buildings::{BuildingDestroyed, DestroyCause};
 use crate::camera::GameCamera;
 use crate::combat::{Collider, Damage, Died, Health, Team, blast_damage};
 use crate::explosion::Explosion;
+use crate::frame::GameSet;
 use crate::obstacles::{Obstacle, Shape};
 use crate::pickups::{SpawnLoot, crate_weapons};
 use crate::rails::TrackDamage;
 use crate::railway::{LineId, Lines};
+use crate::rng::GameRng;
 use crate::rover::Rover;
-use crate::run::{GameState, RunScoped, RunStarted};
+use crate::run::{RunScoped, WorldRebuilt};
 use crate::settlements::Footprint;
 use crate::sound_list::Dice;
-use crate::terrain::{Terrain, VisibleChunks, chunk_coord_at};
+use crate::terrain::{self, Terrain, VisibleChunks, chunk_coord_at};
 use crate::vehicle::GroundVehicle;
 use crate::waves::Threat;
 use crate::combat::SurvivalTime;
@@ -82,22 +84,25 @@ impl Plugin for TrainsPlugin {
             .add_systems(
                 Update,
                 (
-                    reset_trains,
-                    run_schedule.run_if(in_state(GameState::Playing)),
-                    move_trains,
-                    place_cars,
-                    hit_vehicles,
-                    blast_cars,
-                    derail_trains,
-                    move_wrecks,
-                    tumble_damage,
-                    settle_wrecks,
-                    stream_wrecks,
-                    knock_back,
-                    fade_fires,
-                )
-                    .chain()
-                    .after(crate::vehicle::move_ground_vehicles),
+                    reset_trains.in_set(GameSet::Reset),
+                    (
+                        run_schedule,
+                        move_trains,
+                        place_cars,
+                        hit_vehicles,
+                        move_wrecks,
+                        tumble_damage,
+                        settle_wrecks,
+                        knock_back,
+                    )
+                        .chain()
+                        .after(crate::vehicle::move_ground_vehicles)
+                        .in_set(GameSet::Simulation),
+                    blast_cars.in_set(GameSet::Damage),
+                    derail_trains.in_set(GameSet::Death),
+                    stream_wrecks.after(terrain::stream_chunks).in_set(GameSet::Streaming),
+                    fade_fires.in_set(GameSet::Presentation),
+                ),
             );
     }
 }
@@ -268,14 +273,20 @@ fn create_assets(
 }
 
 fn reset_trains(
-    mut started: MessageReader<RunStarted>,
+    mut commands: Commands,
+    mut rebuilt: MessageReader<WorldRebuilt>,
     mut schedule: ResMut<Schedule>,
     mut store: ResMut<WreckStore>,
+    knocked: Query<Entity, Or<(With<Knockback>, With<TrainHitCooldown>)>>,
 ) {
-    if started.read().last().is_some() {
+    if rebuilt.read().last().is_some() {
         // Сущности прошлого забега удалены через RunScoped.
         *schedule = Schedule::default();
         *store = WreckStore::default();
+        // Луноход переживает забег: отброс от поезда не должен перейти в новый.
+        for entity in &knocked {
+            commands.entity(entity).try_remove::<(Knockback, TrainHitCooldown)>();
+        }
     }
 }
 
@@ -284,7 +295,7 @@ fn reset_trains(
 fn run_schedule(
     mut commands: Commands,
     time: Res<Time>,
-    mut dice: ResMut<Dice>,
+    mut dice: ResMut<GameRng>,
     mut schedule: ResMut<Schedule>,
     terrain: Res<Terrain>,
     assets: Res<TrainAssets>,
@@ -549,7 +560,7 @@ fn hit_vehicles(
             }
             let (center, r) = obstacle.shape.bounds();
             if footprint.distance(center) <= r * 0.5 || shape.contains(center) {
-                commands.entity(entity).remove::<Obstacle>();
+                commands.entity(entity).try_remove::<Obstacle>();
                 damage.write(Damage {
                     target: entity,
                     amount: health.current + 1.0,
@@ -590,7 +601,7 @@ fn derail_trains(
     terrain: Res<Terrain>,
     damage: Res<TrackDamage>,
     survival: Res<SurvivalTime>,
-    mut dice: ResMut<Dice>,
+    mut dice: ResMut<GameRng>,
     mut threat: ResMut<Threat>,
     mut died: MessageReader<Died>,
     mut trains: Query<(Entity, &mut Train)>,
@@ -922,13 +933,13 @@ fn knock_back(
         knock.velocity *= (1.0 - 3.0 * dt).max(0.0);
         knock.remaining -= dt;
         if knock.remaining <= 0.0 {
-            commands.entity(entity).remove::<Knockback>();
+            commands.entity(entity).try_remove::<Knockback>();
         }
     }
     for (entity, mut cooldown) in &mut cooldowns {
         cooldown.0 -= dt;
         if cooldown.0 <= 0.0 {
-            commands.entity(entity).remove::<TrainHitCooldown>();
+            commands.entity(entity).try_remove::<TrainHitCooldown>();
         }
     }
 }
@@ -953,7 +964,7 @@ mod tests {
     #[test]
     fn после_сброса_остовов_нет() {
         let mut app = App::new();
-        app.add_message::<RunStarted>()
+        app.add_message::<WorldRebuilt>()
             .init_resource::<Schedule>()
             .init_resource::<WreckStore>()
             .add_systems(Update, reset_trains);
@@ -964,7 +975,7 @@ mod tests {
                 transform: Transform::default(),
             }],
         );
-        app.world_mut().write_message(RunStarted { seed: 1 });
+        app.world_mut().write_message(WorldRebuilt { seed: 1 });
         app.update();
         assert!(app.world().resource::<WreckStore>().is_empty());
     }

@@ -11,9 +11,10 @@ use crate::bullet::FireBullet;
 use crate::camera::GameCamera;
 use crate::combat::Team;
 use crate::explosion::Explosion;
+use crate::frame::GameSet;
 use crate::laser::FireLaser;
 use crate::rover::Rover;
-use crate::run::{RunScoped, RunStarted};
+use crate::run::{RunScoped, WorldRebuilt};
 use crate::sound_list::Dice;
 
 /// Сколько живёт надпись, с.
@@ -40,7 +41,10 @@ pub struct ComicPlugin;
 impl Plugin for ComicPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ComicState>()
-            .add_systems(Update, (pick_captions, float_captions).chain());
+            .add_systems(
+                Update,
+                (pick_captions, float_captions).chain().in_set(GameSet::Presentation),
+            );
     }
 }
 
@@ -67,7 +71,7 @@ fn pick_captions(
     time: Res<Time>,
     mut state: ResMut<ComicState>,
     mut dice: ResMut<Dice>,
-    mut started: MessageReader<RunStarted>,
+    mut started: MessageReader<WorldRebuilt>,
     mut explosions: MessageReader<Explosion>,
     mut bullets: MessageReader<FireBullet>,
     mut lasers: MessageReader<FireLaser>,

@@ -14,8 +14,8 @@
 use bevy::prelude::*;
 
 use crate::explosion::Explosion;
+use crate::frame::GameSet;
 use crate::rover::Rover;
-use crate::run::GameState;
 
 /// Здоровье лунохода.
 pub const ROVER_MAX_HEALTH: f32 = 1500.0;
@@ -44,13 +44,12 @@ impl Plugin for CombatPlugin {
             .add_systems(
                 Update,
                 (
-                    equip_rover,
-                    explosion_damage,
-                    apply_damage,
-                    update_flash,
-                    count_survival_time.run_if(in_state(GameState::Playing)),
-                )
-                    .chain(),
+                    equip_rover.in_set(GameSet::Reset),
+                    count_survival_time.in_set(GameSet::Simulation),
+                    explosion_damage.in_set(GameSet::Damage),
+                    apply_damage.in_set(GameSet::ApplyDamage),
+                    update_flash.in_set(GameSet::Presentation),
+                ),
             );
     }
 }
@@ -119,16 +118,22 @@ pub struct Damage {
     pub target: Entity,
     /// Сколько здоровья отнять.
     pub amount: f32,
-    // Команду источника прочитают тревога и счёт убийств.
-    #[allow(dead_code)]
     /// Чья атака.
     pub source_team: Team,
 }
 
 /// Здоровье сущности кончилось. Отправляется один раз.
+///
+/// Сама сущность доживает до набора `GameSet::Cleanup` этого кадра: читатель, которому нужны
+/// её компоненты, стоит в `GameSet::Death`. Читателю в `GameSet::Presentation` (звук, эффекты)
+/// сущность уже недоступна — для него в сообщении лежат место гибели и команда убившего.
 #[derive(Message, Debug, Clone, Copy)]
 pub struct Died {
     pub entity: Entity,
+    /// Где сущность была в момент гибели.
+    pub position: Vec3,
+    /// Чья атака добила.
+    pub killer: Team,
 }
 
 /// Время выживания в текущем забеге, с. Растёт, пока луноход жив.
@@ -211,6 +216,9 @@ fn explosion_damage(
 }
 
 /// Применяет урон, запускает вспышку корпуса и сообщает о гибели.
+///
+/// Единственная система набора `GameSet::ApplyDamage`: до неё — все, кто пишет [`Damage`] в этом
+/// кадре, после неё — читатели [`Died`].
 fn apply_damage(
     mut commands: Commands,
     mut damages: MessageReader<Damage>,
@@ -218,12 +226,13 @@ fn apply_damage(
     flash: Option<Res<FlashMaterial>>,
     mut targets: Query<(
         &mut Health,
+        Option<&GlobalTransform>,
         Option<&mut MeshMaterial3d<StandardMaterial>>,
         Option<&mut HitFlash>,
     )>,
 ) {
     for damage in damages.read() {
-        let Ok((mut health, material, flashing)) = targets.get_mut(damage.target) else {
+        let Ok((mut health, transform, material, flashing)) = targets.get_mut(damage.target) else {
             continue;
         };
         if health.is_dead() || damage.amount <= 0.0 {
@@ -233,6 +242,8 @@ fn apply_damage(
         if health.is_dead() {
             died.write(Died {
                 entity: damage.target,
+                position: transform.map_or(Vec3::ZERO, GlobalTransform::translation),
+                killer: damage.source_team,
             });
         }
 

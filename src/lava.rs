@@ -19,13 +19,15 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
 use crate::combat::{Damage, Health, Team};
+use crate::craters;
 use crate::enemy::Enemy;
 use crate::explosion::Explosion;
+use crate::frame::GameSet;
 use crate::pickups::Pickup;
 use crate::rails::TrackDamage;
 use crate::residents::Resident;
 use crate::rover::{Rover, RoverMotion};
-use crate::run::{RunScoped, RunStarted};
+use crate::run::{RunScoped, WorldRebuilt};
 use crate::subsidence::TerrainChanged;
 use crate::terrain::{ChunkDirty, Terrain, VisibleChunks};
 use crate::waves::Threat;
@@ -68,18 +70,18 @@ impl Plugin for LavaPlugin {
             .add_systems(
                 Update,
                 (
-                    reset_lava,
-                    watch_crust,
-                    blast_in_lava,
-                    grow_pools,
-                    draw_pools,
-                    animate_lava,
-                    burn_in_lava,
-                    fly_drops,
-                    smoke_hot_spots,
-                    fade_smoke,
-                )
-                    .chain(),
+                    reset_lava.in_set(GameSet::Reset),
+                    (burn_in_lava, fly_drops).chain().in_set(GameSet::Simulation),
+                    // После кратеров этого кадра: кора проверяется по новому рельефу, озёра
+                    // сразу пересчитываются.
+                    (watch_crust, blast_in_lava, grow_pools)
+                        .chain()
+                        .after(craters::dig_craters)
+                        .in_set(GameSet::Damage),
+                    (draw_pools, animate_lava, smoke_hot_spots, fade_smoke)
+                        .chain()
+                        .in_set(GameSet::Presentation),
+                ),
             );
     }
 }
@@ -245,7 +247,7 @@ fn create_assets(
 }
 
 fn reset_lava(
-    mut started: MessageReader<RunStarted>,
+    mut started: MessageReader<WorldRebuilt>,
     mut pools: ResMut<LavaPools>,
     mut spots: ResMut<HotSpots>,
 ) {

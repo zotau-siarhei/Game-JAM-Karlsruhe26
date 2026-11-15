@@ -7,8 +7,10 @@ use bevy::camera::visibility::NoFrustumCulling;
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
-use crate::camera::{self, GameCamera};
+use crate::camera::GameCamera;
+use crate::frame::GameSet;
 use crate::rover::Rover;
+use crate::run::GameState;
 use crate::terrain::Terrain;
 
 /// Предел дальности стрельбы по горизонтали от лунохода, м.
@@ -73,9 +75,15 @@ impl Plugin for AimPlugin {
             .add_systems(Startup, (spawn_marker, confine_cursor))
             .add_systems(
                 Update,
-                (update_aim_point, update_marker)
-                    .chain()
-                    .after(camera::follow_rover),
+                (
+                    // Перед вводом: всё оружие стреляет в точку под курсором этого кадра. Камера
+                    // стоит там, где её показал прошлый кадр, — туда игрок и целился.
+                    update_aim_point
+                        .run_if(in_state(GameState::Playing))
+                        .after(GameSet::Reset)
+                        .before(GameSet::Input),
+                    update_marker.in_set(GameSet::Presentation),
+                ),
             );
     }
 }
@@ -181,8 +189,9 @@ fn spawn_marker(
 }
 
 /// Двигает маркер в точку прицела, кладёт его вершины на рельеф и красит по дальности.
-/// Маркер виден только у мортиры: остальному оружию точка падения не нужна.
+/// Маркер виден только в забеге и только у мортиры: остальному оружию точка падения не нужна.
 fn update_marker(
+    state: Res<State<GameState>>,
     aim: Res<AimPoint>,
     weapon: Res<crate::weapons::CurrentWeapon>,
     terrain: Res<Terrain>,
@@ -199,7 +208,7 @@ fn update_marker(
     >,
 ) {
     let (mut transform, mesh, mut material, mut visibility) = marker.into_inner();
-    let mortar = *weapon == crate::weapons::CurrentWeapon::Mortar;
+    let mortar = *state.get() == GameState::Playing && *weapon == crate::weapons::CurrentWeapon::Mortar;
     visibility.set_if_neq(if mortar {
         Visibility::Inherited
     } else {

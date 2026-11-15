@@ -12,15 +12,16 @@ use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 use noise::{NoiseFn, Perlin};
 
+use crate::frame::GameSet;
 use crate::obstacles::{Obstacle, Shape};
 use crate::rover::Rover;
-use crate::run::{RunScoped, RunStarted};
+use crate::run::{RunScoped, WorldRebuilt};
 use crate::vehicle::GroundVehicle;
 use crate::combat::{Collider, Damage, Died, Health, blast_damage};
 use crate::debris::SpawnDebris;
 use crate::explosion::Explosion;
-use crate::settlements::{self, HouseState, REGION_SIZE, Settlements, region_of};
-use crate::terrain::{CHUNK_SIZE, Terrain, VisibleChunks, chunk_coord_at, chunk_origin};
+use crate::settlements::{HouseState, REGION_SIZE, Settlements, region_of};
+use crate::terrain::{self, CHUNK_SIZE, Terrain, VisibleChunks, chunk_coord_at, chunk_origin};
 
 /// Ячеек сетки по стороне участка: шаг около 2,5 м.
 const CELLS: i32 = 13;
@@ -75,18 +76,13 @@ impl Plugin for PropsPlugin {
             .add_systems(
                 Update,
                 (
-                    reset_props,
-                    stream_props,
-                    crush_small_props,
-                    shockwave_props,
-                    break_props,
-                    fly_shards,
-                    fell_trees,
-                    sway_trees,
-                    burn_crowns,
-                )
-                    .chain()
-                    .after(settlements::reset_settlements),
+                    reset_props.in_set(GameSet::Reset),
+                    crush_small_props.in_set(GameSet::Simulation),
+                    shockwave_props.in_set(GameSet::Damage),
+                    break_props.in_set(GameSet::Death),
+                    stream_props.after(terrain::stream_chunks).in_set(GameSet::Streaming),
+                    (fly_shards, fell_trees, sway_trees, burn_crowns).chain().in_set(GameSet::Presentation),
+                ),
             );
     }
 }
@@ -393,14 +389,14 @@ fn add_village_props(
     }
 }
 
-/// Новый забег: объекты строятся заново от нового сида.
+/// Мир перестроен: объекты строятся заново от нового сида.
 fn reset_props(
-    mut started: MessageReader<RunStarted>,
+    mut rebuilt: MessageReader<WorldRebuilt>,
     mut props: ResMut<Props>,
     mut spawned: ResMut<SpawnedProps>,
 ) {
-    if let Some(run) = started.read().last() {
-        *props = Props::new(run.seed);
+    if let Some(world) = rebuilt.read().last() {
+        *props = Props::new(world.seed);
         // Сущности прошлого забега удалены через RunScoped.
         spawned.0.clear();
     }
@@ -1118,22 +1114,21 @@ fn break_props(
                 };
                 state.status = PropStatus::Fallen(fallen);
                 let flame_height = 3.0 * transform.scale.y;
-                let flame = commands
-                    .spawn((
-                        CrownFire {
-                            remaining: 4.0 + (p.x * 1.7).sin().abs() * 2.0,
-                        },
-                        NotShadowCaster,
-                        Mesh3d(assets.flame.mesh.clone()),
-                        MeshMaterial3d(assets.flame.material.clone()),
-                        Transform::from_xyz(0.0, flame_height, 0.0),
-                    ))
-                    .id();
+                // Только «мягкие» команды: дерево могло исчезнуть в этом же кадре, и это не паника.
+                commands.spawn((
+                    CrownFire {
+                        remaining: 4.0 + (p.x * 1.7).sin().abs() * 2.0,
+                    },
+                    ChildOf(death.entity),
+                    NotShadowCaster,
+                    Mesh3d(assets.flame.mesh.clone()),
+                    MeshMaterial3d(assets.flame.material.clone()),
+                    Transform::from_xyz(0.0, flame_height, 0.0),
+                ));
                 commands
                     .entity(death.entity)
-                    .remove::<(Obstacle, Health)>()
-                    .add_child(flame)
-                    .insert(TreeFall {
+                    .try_remove::<(Obstacle, Health)>()
+                    .try_insert(TreeFall {
                         rest: transform.rotation,
                         axis,
                         elapsed: 0.0,
@@ -1185,7 +1180,7 @@ fn fell_trees(mut commands: Commands, time: Res<Time>, mut trees: Query<(Entity,
             let b = (t - 1.0) / 0.25;
             if b >= 1.0 {
                 transform.rotation = Quat::from_axis_angle(fall.axis, half_pi) * fall.rest;
-                commands.entity(entity).remove::<TreeFall>();
+                commands.entity(entity).try_remove::<TreeFall>();
                 continue;
             }
             half_pi - 0.12 * (b * std::f32::consts::PI).sin()
@@ -1200,7 +1195,7 @@ fn sway_trees(mut commands: Commands, time: Res<Time>, mut trees: Query<(Entity,
         sway.elapsed += time.delta_secs();
         if sway.elapsed >= SWAY_SECONDS {
             transform.rotation = sway.rest;
-            commands.entity(entity).remove::<Sway>();
+            commands.entity(entity).try_remove::<Sway>();
             continue;
         }
         let t = sway.elapsed;

@@ -8,9 +8,9 @@ use bevy::prelude::*;
 use crate::aim::AimPoint;
 use crate::bullet::FireBullet;
 use crate::combat::{Health, Team};
+use crate::frame::GameSet;
+use crate::rng::GameRng;
 use crate::rover::{self, Rover};
-use crate::run::GameState;
-use crate::sound_list::Dice;
 use crate::vehicle;
 
 /// Выстрелов пулемёта в секунду.
@@ -52,17 +52,15 @@ pub struct WeaponsPlugin;
 impl Plugin for WeaponsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CurrentWeapon>()
-            .init_resource::<Dice>()
             .add_systems(
                 Update,
                 (
-                    attach_turret,
+                    attach_turret.in_set(GameSet::Reset),
                     (aim_turret, fire_machine_gun)
                         .chain()
-                        .run_if(in_state(GameState::Playing)),
-                )
-                    .chain()
-                    .after(rover::drive_rover),
+                        .after(rover::drive_rover)
+                        .in_set(GameSet::Input),
+                ),
             );
     }
 }
@@ -221,7 +219,7 @@ fn fire_machine_gun(
     mouse: Res<ButtonInput<MouseButton>>,
     weapon: Res<CurrentWeapon>,
     aim: Res<AimPoint>,
-    mut dice: ResMut<Dice>,
+    mut dice: ResMut<GameRng>,
     mut rover: Query<(&Transform, &Health, &mut MachineGun), With<Rover>>,
     mut bullets: MessageWriter<FireBullet>,
 ) {

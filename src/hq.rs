@@ -45,7 +45,10 @@ impl Plugin for HqPlugin {
             .init_resource::<Dice>()
             .add_message::<VoiceCue>()
             .add_systems(Startup, spawn_subtitle)
-            .add_systems(Update, (select_voice, update_subtitle));
+            .add_systems(
+                Update,
+                (select_voice, update_subtitle).in_set(crate::frame::GameSet::Presentation),
+            );
     }
 }
 

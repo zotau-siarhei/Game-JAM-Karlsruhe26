@@ -9,14 +9,15 @@ use crate::combat::{Damage, Died, Health, Team, blast_damage};
 use crate::collapse::CollapseHouse;
 use crate::subsidence::Collapsing;
 use crate::explosion::Explosion;
+use crate::camera::Focus;
+use crate::frame::GameSet;
 use crate::obstacles::{Obstacle, Shape};
-use crate::rover::Rover;
-use crate::run::{RunScoped, RunStarted};
+use crate::run::{RunScoped, WorldRebuilt};
 use crate::settlements::{
     HouseId, HouseKind, HouseState, HouseStatus, ROOF_COLORS, Settlements,
     WALL_COLORS, region_of,
 };
-use crate::terrain::{CHUNK_SIZE, LOAD_RADIUS, Terrain, VisibleChunks, chunk_coord_at};
+use crate::terrain::{self, CHUNK_SIZE, LOAD_RADIUS, Terrain, VisibleChunks, chunk_coord_at};
 
 /// На сколько стены уходят ниже самой низкой точки рельефа под домом, м.
 const FOUNDATION_DEPTH: f32 = 1.5;
@@ -61,25 +62,17 @@ impl Plugin for BuildingsPlugin {
         app.init_resource::<SpawnedHouses>()
             .add_message::<BreakDoor>()
             .add_systems(Startup, create_house_assets)
-            .add_systems(
-                Update,
-                (forget_spawned_houses, stream_houses)
-                    .chain()
-                    .after(crate::settlements::reset_settlements),
-            )
             .add_message::<BuildingDestroyed>()
             .add_systems(
                 Update,
                 (
-                    break_doors,
-                    blast_houses,
-                    react_to_hits,
-                    destroy_houses,
-                    wobble_houses,
-                    darken_damaged_houses,
-                )
-                    .chain()
-                    .after(stream_houses),
+                    forget_spawned_houses.in_set(GameSet::Reset),
+                    wobble_houses.in_set(GameSet::Simulation),
+                    (break_doors, blast_houses, react_to_hits).chain().in_set(GameSet::Damage),
+                    (remember_house_health, destroy_houses).chain().in_set(GameSet::Death),
+                    stream_houses.after(terrain::stream_chunks).in_set(GameSet::Streaming),
+                    darken_damaged_houses.in_set(GameSet::Presentation),
+                ),
             );
     }
 }
@@ -183,10 +176,6 @@ pub struct BuildingDestroyed {
     pub cause: DestroyCause,
 }
 
-/// Чей был последний урон по дому: он и считается разрушителем.
-#[derive(Component, Debug, Clone, Copy)]
-struct LastHit(Team);
-
 /// Центр последнего взрыва, задевшего дом: стены падают от него.
 #[derive(Component, Debug, Clone, Copy)]
 pub(crate) struct BlastFrom(pub(crate) Vec3);
@@ -263,9 +252,9 @@ fn create_house_assets(
     });
 }
 
-/// Новый забег: старые сущности удалены через [`RunScoped`], список забывается.
-fn forget_spawned_houses(mut started: MessageReader<RunStarted>, mut spawned: ResMut<SpawnedHouses>) {
-    if started.read().last().is_some() {
+/// Мир перестроен: старые сущности удалены через [`RunScoped`], список забывается.
+fn forget_spawned_houses(mut rebuilt: MessageReader<WorldRebuilt>, mut spawned: ResMut<SpawnedHouses>) {
+    if rebuilt.read().last().is_some() {
         spawned.0.clear();
     }
 }
@@ -278,7 +267,7 @@ fn stream_houses(
     terrain: Res<Terrain>,
     visible: Res<VisibleChunks>,
     assets: Res<HouseAssets>,
-    rover: Single<&Transform, With<Rover>>,
+    focus: Res<Focus>,
 ) {
     if settlements.seed().is_none() || !visible.is_changed() {
         return;
@@ -304,7 +293,7 @@ fn stream_houses(
 
     // Создать дома в регионах, задевающих загруженную область.
     let reach = ((LOAD_RADIUS + 2) * CHUNK_SIZE) as f32;
-    let center = Vec2::new(rover.translation.x, rover.translation.z);
+    let center = Vec2::new(focus.0.x, focus.0.z);
     let low = region_of(center - Vec2::splat(reach));
     let high = region_of(center + Vec2::splat(reach));
     for rz in low.y..=high.y {
@@ -525,31 +514,35 @@ fn blast_houses(
     }
 }
 
-/// Попадание: дом вздрагивает, запоминает стрелявшего, прочность пишется в хранилище.
+/// Попадание: дом вздрагивает.
 fn react_to_hits(
     mut commands: Commands,
     mut damages: MessageReader<Damage>,
-    mut settlements: ResMut<Settlements>,
-    houses: Query<(&House, &Transform, &Health, Option<&Wobble>)>,
+    houses: Query<(&Transform, &Health, Option<&Wobble>), With<House>>,
 ) {
     for hit in damages.read() {
-        let Ok((house, transform, health, wobble)) = houses.get(hit.target) else {
+        let Ok((transform, health, wobble)) = houses.get(hit.target) else {
             continue;
         };
-        if let Some(state) = settlements.house_mut(house.0) {
-            // Сообщение урона применяется в этом же кадре: пишем прочность с запасом на него.
-            state.health = (health.current - hit.amount).max(0.0);
-        }
         let rest = wobble.map_or(*transform, |w| w.rest);
         let angle = ((hit.target.to_bits() % 1024) as f32 * 1.7 + health.current).sin() * std::f32::consts::PI;
-        commands.entity(hit.target).try_insert((
-            LastHit(hit.source_team),
-            Wobble {
-                rest,
-                remaining: WOBBLE_SECONDS,
-                axis: Vec3::new(angle.cos(), 0.0, angle.sin()),
-            },
-        ));
+        commands.entity(hit.target).try_insert(Wobble {
+            rest,
+            remaining: WOBBLE_SECONDS,
+            axis: Vec3::new(angle.cos(), 0.0, angle.sin()),
+        });
+    }
+}
+
+/// Прочность раненого дома пишется в хранилище: дом, выгруженный и загруженный снова, помнит её.
+///
+/// Стоит после применения урона и пишет уже применённое значение, а не «прочность минус урон»:
+/// от порядка систем результат не зависит и урон не вычитается дважды.
+fn remember_house_health(mut settlements: ResMut<Settlements>, houses: Query<(&House, &Health), Changed<Health>>) {
+    for (house, health) in &houses {
+        if let Some(state) = settlements.house_mut(house.0) {
+            state.health = health.current;
+        }
     }
 }
 
@@ -565,7 +558,6 @@ fn destroy_houses(
     houses: Query<(
         &House,
         &Transform,
-        Option<&LastHit>,
         Option<&Wobble>,
         Option<&BlastFrom>,
         Has<Collapsing>,
@@ -573,7 +565,7 @@ fn destroy_houses(
     mut collapse: MessageWriter<CollapseHouse>,
 ) {
     for death in died.read() {
-        let Ok((house, transform, last_hit, wobble, blast, collapsing)) = houses.get(death.entity) else {
+        let Ok((house, transform, wobble, blast, collapsing)) = houses.get(death.entity) else {
             continue;
         };
         let Some(state) = settlements.house_mut(house.0) else {
@@ -588,9 +580,9 @@ fn destroy_houses(
         commands.entity(death.entity).try_despawn();
         let ruin = spawn_ruin(&mut commands, &assets, &terrain, &state);
         spawned.0.insert(house.0, ruin);
-        let cause = match last_hit.map(|h| h.0) {
+        let cause = match death.killer {
             _ if collapsing => DestroyCause::Collapse,
-            Some(Team::Enemy) => DestroyCause::Enemy,
+            Team::Enemy => DestroyCause::Enemy,
             _ => DestroyCause::Player,
         };
         let position = wobble.map_or(transform.translation, |w| w.rest.translation);
@@ -617,7 +609,7 @@ fn wobble_houses(
         wobble.remaining -= time.delta_secs();
         if wobble.remaining <= 0.0 {
             *transform = wobble.rest;
-            commands.entity(entity).remove::<Wobble>();
+            commands.entity(entity).try_remove::<Wobble>();
             continue;
         }
         let t = wobble.remaining / WOBBLE_SECONDS;

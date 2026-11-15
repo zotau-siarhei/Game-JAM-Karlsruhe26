@@ -29,7 +29,7 @@ impl Plugin for VoicePlugin {
         app.init_resource::<VoiceLines>()
             .add_message::<PlayVoice>()
             .add_systems(Startup, load_voice_lines)
-            .add_systems(Update, play_voice);
+            .add_systems(Update, play_voice.in_set(crate::frame::GameSet::Presentation));
     }
 }
 

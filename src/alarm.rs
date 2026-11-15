@@ -9,7 +9,8 @@ use bevy::prelude::*;
 use bevy::ui::UiTransform;
 
 use crate::buildings::BuildingDestroyed;
-use crate::run::{GameState, RunStarted};
+use crate::frame::GameSet;
+use crate::run::{GameState, WorldRebuilt};
 
 /// Числа тревоги.
 pub mod balance {
@@ -60,12 +61,11 @@ impl Plugin for AlarmPlugin {
             .add_systems(
                 Update,
                 (
-                    reset_alarm,
-                    raise_on_destruction,
-                    decay_alarm.run_if(in_state(GameState::Playing)),
-                    show_alarm,
-                )
-                    .chain(),
+                    reset_alarm.in_set(GameSet::Reset),
+                    decay_alarm.in_set(GameSet::Simulation),
+                    raise_on_destruction.in_set(GameSet::Death),
+                    show_alarm.in_set(GameSet::Presentation),
+                ),
             );
     }
 }
@@ -123,7 +123,7 @@ fn level_start(level: u8) -> f32 {
     }
 }
 
-fn reset_alarm(mut started: MessageReader<RunStarted>, mut alarm: ResMut<Alarm>) {
+fn reset_alarm(mut started: MessageReader<WorldRebuilt>, mut alarm: ResMut<Alarm>) {
     if started.read().count() > 0 {
         *alarm = Alarm::default();
     }

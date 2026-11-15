@@ -4,6 +4,7 @@
 use bevy::prelude::*;
 
 use crate::combat::{Health, SurvivalTime};
+use crate::frame::GameSet;
 use crate::rover::Rover;
 use crate::run::GameState;
 use crate::weapons::CurrentWeapon;
@@ -23,7 +24,10 @@ pub struct HudPlugin;
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_hud)
-            .add_systems(Update, (update_health_bar, update_time, update_weapon, hide_in_menu));
+            .add_systems(
+                Update,
+                (update_health_bar, update_time, update_weapon, hide_in_menu).in_set(GameSet::Presentation),
+            );
     }
 }
 

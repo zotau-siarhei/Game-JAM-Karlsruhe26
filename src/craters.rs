@@ -1,9 +1,14 @@
 //! Кратеры: взрыв вырывает в рельефе чашу с валом и перекрашивает землю в коричневый.
+//!
+//! Сразу после деформации отсюда же уходит [`TerrainChanged`]: читатель сообщения всегда видит
+//! уже изменённый рельеф, в каком бы порядке ни шли системы.
 
 use bevy::prelude::*;
 
 use crate::explosion::Explosion;
-use crate::terrain::{self, ChunkDirty, Terrain, VisibleChunks};
+use crate::frame::GameSet;
+use crate::subsidence::TerrainChanged;
+use crate::terrain::{CRATER_EXTENT, ChunkDirty, Terrain, VisibleChunks};
 
 /// Взрыв слабее этого рельеф не меняет.
 const MIN_POWER: f32 = 0.3;
@@ -26,19 +31,18 @@ pub struct CratersPlugin;
 
 impl Plugin for CratersPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            Update,
-            dig_craters.before(terrain::rebuild_dirty_chunks),
-        );
+        app.add_systems(Update, dig_craters.in_set(GameSet::Damage));
     }
 }
 
-/// Вырывает кратеры по взрывам и помечает на пересборку изменённые участки и их соседей по краю.
-fn dig_craters(
+/// Вырывает кратеры по взрывам, помечает на пересборку изменённые участки и их соседей по краю
+/// и сообщает об изменении рельефа во всей зоне кратера: чаша и вал.
+pub fn dig_craters(
     mut commands: Commands,
     mut explosions: MessageReader<Explosion>,
     mut terrain: ResMut<Terrain>,
     visible: Res<VisibleChunks>,
+    mut changes: MessageWriter<TerrainChanged>,
 ) {
     let mut dirty: Vec<IVec2> = Vec::new();
     for explosion in explosions.read() {
@@ -52,6 +56,10 @@ fn dig_craters(
             r * DEPTH_PER_RADIUS * explosion.power,
             r * RIM_PER_RADIUS * explosion.power,
         );
+        changes.write(TerrainChanged {
+            center: explosion.position,
+            radius: r * CRATER_EXTENT,
+        });
         let changed: Vec<IVec2> = changed
             .into_iter()
             .chain(scorch(&mut terrain, explosion.position, r * SCORCH_REACH, explosion.power))
@@ -68,11 +76,10 @@ fn dig_craters(
     }
     for coord in dirty {
         if let Some(entity) = visible.entity(coord) {
-            commands.entity(entity).insert(ChunkDirty);
+            commands.entity(entity).try_insert(ChunkDirty);
         }
     }
 }
-
 
 /// Затемняет цвета вершин вокруг взрыва, сохраняя оттенок рельефа: вокруг кратера остаётся
 /// выжженное пятно с рваным краем. Возвращает изменённые участки.

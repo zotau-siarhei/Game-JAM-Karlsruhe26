@@ -15,13 +15,14 @@ use bevy::prelude::*;
 use crate::combat::{Collider, Damage, Died, Health, Team};
 use crate::enemy::Enemy;
 use crate::explosion::Explosion;
+use crate::frame::GameSet;
 use crate::mortar::FireShell;
 use crate::obstacles::Obstacle;
 use crate::pickups::SpawnLoot;
+use crate::rng::GameRng;
 use crate::rockets::FireRocket;
 use crate::rover::Rover;
-use crate::run::{GameState, RunScoped};
-use crate::sound_list::Dice;
+use crate::run::RunScoped;
 use crate::terrain::Terrain;
 use crate::vehicle::{self, GroundVehicle};
 use crate::waves::Threat;
@@ -90,18 +91,13 @@ impl Plugin for BossPlugin {
             .add_systems(
                 Update,
                 (
-                    start_warning.run_if(in_state(GameState::Playing)),
-                    run_warning,
-                    fall,
-                    fight,
-                    crush_obstacles,
-                    start_dying,
-                    run_dying,
-                    animate_core,
-                    update_health_bar,
-                )
-                    .chain()
-                    .before(vehicle::move_ground_vehicles),
+                    (start_warning, run_warning, fall, fight, crush_obstacles, run_dying)
+                        .chain()
+                        .before(vehicle::move_ground_vehicles)
+                        .in_set(GameSet::Simulation),
+                    start_dying.in_set(GameSet::Death),
+                    (animate_core, update_health_bar).chain().in_set(GameSet::Presentation),
+                ),
             );
     }
 }
@@ -192,7 +188,7 @@ pub fn boss_health(threat: f32) -> f32 {
 fn start_warning(
     mut commands: Commands,
     mut requests: MessageReader<SpawnBoss>,
-    mut dice: ResMut<Dice>,
+    mut dice: ResMut<GameRng>,
     rover: Single<&Transform, With<Rover>>,
 ) {
     for _ in requests.read() {
@@ -350,7 +346,7 @@ fn fall(
         });
         let heading = vehicle::heading_towards(rover.translation - transform.translation);
         transform.rotation = Quat::from_rotation_y(heading);
-        commands.entity(entity).insert(GroundVehicle::new(
+        commands.entity(entity).try_insert(GroundVehicle::new(
             heading,
             RIDE_HEIGHT,
             Vec2::new(BODY.x, BODY.z) * 0.4,
@@ -363,7 +359,7 @@ fn fall(
 #[allow(clippy::too_many_arguments)]
 fn fight(
     time: Res<Time>,
-    mut dice: ResMut<Dice>,
+    mut dice: ResMut<GameRng>,
     rover: Single<(Entity, &Transform, &Health), (With<Rover>, Without<Boss>)>,
     mut bosses: Query<(&Transform, &mut GroundVehicle, &mut Boss)>,
     mut shells: MessageWriter<FireShell>,
@@ -480,7 +476,7 @@ fn crush_obstacles(
             }
             commands
                 .entity(entity)
-                .remove::<Obstacle>()
+                .try_remove::<Obstacle>()
                 .try_insert((
                     crate::props::PropBlastFrom(transform.translation),
                     crate::buildings::BlastFrom(transform.translation),
@@ -513,7 +509,7 @@ fn start_dying(
 fn run_dying(
     mut commands: Commands,
     time: Res<Time>,
-    mut dice: ResMut<Dice>,
+    mut dice: ResMut<GameRng>,
     mut bosses: Query<(Entity, &Transform, &mut Boss)>,
     mut explosions: MessageWriter<Explosion>,
     mut loot: MessageWriter<SpawnLoot>,

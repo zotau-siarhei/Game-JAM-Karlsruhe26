@@ -30,7 +30,7 @@ pub struct ExplosionPlugin;
 impl Plugin for ExplosionPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<Explosion>()
-            .add_systems(Update, log_explosions);
+            .add_systems(Update, log_explosions.in_set(crate::frame::GameSet::Presentation));
     }
 }
 

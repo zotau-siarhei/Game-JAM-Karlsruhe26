@@ -50,7 +50,10 @@ impl Plugin for MusicPlugin {
         app.init_resource::<MusicState>()
             .init_resource::<MusicPlayer>()
             .add_systems(Startup, load_tracks)
-            .add_systems(Update, (switch_track, fade_layers).chain());
+            .add_systems(
+                Update,
+                (switch_track, fade_layers).chain().in_set(crate::frame::GameSet::Presentation),
+            );
     }
 }
 

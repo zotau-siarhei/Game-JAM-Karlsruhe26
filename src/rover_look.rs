@@ -54,7 +54,10 @@ pub struct RoverLookPlugin;
 
 impl Plugin for RoverLookPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (attach_look, run_tracks).chain());
+        app.add_systems(
+            Update,
+            (attach_look, run_tracks).chain().in_set(crate::frame::GameSet::Presentation),
+        );
     }
 }
 

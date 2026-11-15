@@ -8,9 +8,10 @@ use std::f32::consts::TAU;
 use bevy::prelude::*;
 
 use crate::combat::Health;
+use crate::frame::GameSet;
+use crate::rng::GameRng;
 use crate::rover::{self, Rover, SpeedFactor};
-use crate::run::{GameState, RunScoped, RunStarted};
-use crate::sound_list::Dice;
+use crate::run::{RunScoped, WorldRebuilt};
 use crate::terrain::Terrain;
 
 /// Сколько здоровья в секунду возвращает ремонт.
@@ -48,18 +49,17 @@ pub struct RepairPlugin;
 
 impl Plugin for RepairPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Dice>()
-            .init_resource::<MedkitTimer>()
+        app.init_resource::<MedkitTimer>()
             .add_message::<RepairChanged>()
             .add_message::<MedkitPicked>()
             .add_systems(Startup, create_assets)
             .add_systems(
                 Update,
                 (
-                    repair.before(rover::drive_rover).run_if(in_state(GameState::Playing)),
-                    (spawn_sparks, move_sparks, reset_medkits, spawn_medkits.run_if(in_state(GameState::Playing)), pick_medkits, spin_medkits)
-                        .chain()
-                        .after(rover::drive_rover),
+                    reset_repair.in_set(GameSet::Reset),
+                    repair.before(rover::drive_rover).in_set(GameSet::Input),
+                    (spawn_sparks, spawn_medkits, pick_medkits).chain().in_set(GameSet::Simulation),
+                    (move_sparks, spin_medkits).in_set(GameSet::Presentation),
                 ),
             );
     }
@@ -165,14 +165,14 @@ fn repair(
     if repairing {
         health.heal(REPAIR_RATE * time.delta_secs());
         if !was_repairing {
-            commands.entity(entity).insert((Repairing, SpeedFactor(REPAIR_SLOWDOWN)));
+            commands.entity(entity).try_insert((Repairing, SpeedFactor(REPAIR_SLOWDOWN)));
             changed.write(RepairChanged::Started);
         }
         if !can_repair(&health) {
             changed.write(RepairChanged::Done);
         }
     } else if was_repairing {
-        commands.entity(entity).remove::<(Repairing, SpeedFactor)>();
+        commands.entity(entity).try_remove::<(Repairing, SpeedFactor)>();
     }
 }
 
@@ -181,7 +181,7 @@ fn spawn_sparks(
     mut commands: Commands,
     time: Res<Time>,
     assets: Res<RepairAssets>,
-    mut dice: ResMut<Dice>,
+    mut dice: ResMut<GameRng>,
     mut debt: Local<f32>,
     rover: Query<&Transform, (With<Rover>, With<Repairing>)>,
 ) {
@@ -224,10 +224,19 @@ fn move_sparks(
     }
 }
 
-/// Новый забег: отсчёт до первой аптечки начинается заново.
-fn reset_medkits(mut started: MessageReader<RunStarted>, mut timer: ResMut<MedkitTimer>) {
-    if started.read().count() > 0 {
+/// Мир перестроен: отсчёт до первой аптечки начинается заново, луноход не чинится. Ремонт,
+/// зажатый в конце прошлого забега, в новый не переходит.
+fn reset_repair(
+    mut commands: Commands,
+    mut rebuilt: MessageReader<WorldRebuilt>,
+    mut timer: ResMut<MedkitTimer>,
+    repairing: Query<Entity, With<Repairing>>,
+) {
+    if rebuilt.read().count() > 0 {
         *timer = MedkitTimer::default();
+        for entity in &repairing {
+            commands.entity(entity).try_remove::<(Repairing, SpeedFactor)>();
+        }
     }
 }
 
@@ -236,7 +245,7 @@ fn spawn_medkits(
     mut commands: Commands,
     time: Res<Time>,
     mut timer: ResMut<MedkitTimer>,
-    mut dice: ResMut<Dice>,
+    mut dice: ResMut<GameRng>,
     assets: Res<RepairAssets>,
     terrain: Res<Terrain>,
     rover: Query<(&Transform, &Health), With<Rover>>,

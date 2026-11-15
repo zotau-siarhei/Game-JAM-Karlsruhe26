@@ -9,6 +9,7 @@
 use bevy::prelude::*;
 
 use crate::combat::{Collider, Damage, Health, Team};
+use crate::frame::GameSet;
 use crate::obstacles::{self, Obstacle};
 use crate::run::RunScoped;
 use crate::terrain::Terrain;
@@ -32,7 +33,13 @@ impl Plugin for BulletPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<FireBullet>()
             .add_systems(Startup, create_bullet_assets)
-            .add_systems(Update, (spawn_bullets, move_bullets, fade_ground_flashes).chain());
+            .add_systems(
+                Update,
+                (
+                    (spawn_bullets, move_bullets).chain().in_set(GameSet::Simulation),
+                    fade_ground_flashes.in_set(GameSet::Presentation),
+                ),
+            );
     }
 }
 

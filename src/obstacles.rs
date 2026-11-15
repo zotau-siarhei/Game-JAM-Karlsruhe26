@@ -9,7 +9,8 @@ use bevy::prelude::*;
 
 use crate::combat::{Collider, Damage, Health, Team};
 use crate::enemy::Enemy;
-use crate::rover::{self, Rover, RoverMotion};
+use crate::frame::GameSet;
+use crate::rover::{Rover, RoverMotion};
 use std::f32::consts::{PI, TAU};
 use crate::settlements::Footprint;
 use crate::vehicle::{self, GroundVehicle};
@@ -30,10 +31,11 @@ impl Plugin for ObstaclesPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Update,
+            // После того как машины сдвинулись в этом кадре.
             (ram_obstacles, push_vehicles_out)
                 .chain()
-                .after(rover::drive_rover)
-                .after(vehicle::move_ground_vehicles),
+                .after(vehicle::move_ground_vehicles)
+                .in_set(GameSet::Simulation),
         );
     }
 }
@@ -187,7 +189,7 @@ fn ram_obstacles(
         motion.speed *= 1.0 - weight * 0.5;
         commands
             .entity(entity)
-            .remove::<Obstacle>()
+            .try_remove::<Obstacle>()
             .try_insert((
                 crate::props::PropBlastFrom(transform.translation),
                 crate::buildings::BlastFrom(transform.translation),

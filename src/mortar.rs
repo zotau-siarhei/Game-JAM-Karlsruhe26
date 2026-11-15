@@ -11,8 +11,9 @@ use bevy::prelude::*;
 use crate::aim::{self, AimPoint};
 use crate::combat::{Health, Team};
 use crate::explosion::Explosion;
+use crate::frame::GameSet;
 use crate::rover::Rover;
-use crate::run::{GameState, RunScoped};
+use crate::run::RunScoped;
 use crate::terrain::Terrain;
 use crate::arsenal::Inventory;
 use crate::weapons::CurrentWeapon;
@@ -212,11 +213,9 @@ impl Plugin for MortarPlugin {
             .add_systems(
                 Update,
                 (
-                    fire.after(aim::update_aim_point).run_if(in_state(GameState::Playing)),
-                    launch_requested_shells,
-                    fly_shells,
-                    update_impact_markers,
-                    fade_muzzle_flash,
+                    fire.in_set(GameSet::Input),
+                    (launch_requested_shells, fly_shells).chain().in_set(GameSet::Simulation),
+                    (update_impact_markers, fade_muzzle_flash).in_set(GameSet::Presentation),
                 ),
             );
     }

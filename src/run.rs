@@ -1,21 +1,27 @@
 //! Забег и экраны вокруг него: меню, гибель лунохода, экран конца забега и рестарт.
 //!
 //! Игра открывается в меню: планета летит под камерой, забега нет. Пауза останавливает
-//! виртуальное время: всё, что считает по `Time`, замирает само. Новый забег объявляется
-//! сообщением [`RunStarted`]: каждый модуль, который что-то хранит на весь забег, сбрасывает это
-//! по сообщению. Конец забега — сообщение [`RunEnded`]: его отправляют рестарт и выход в меню,
-//! вместе с ним удаляются сущности с [`RunScoped`] и заменяется рельеф.
+//! виртуальное время: всё, что считает по `Time`, замирает само, а игровая симуляция стоит во
+//! всех состояниях, кроме `Playing` (см. `frame::GameSet`).
+//!
+//! Мир строится заново в одном месте — [`RunWorld::reset`]: при рестарте и при выходе в меню.
+//! Он заменяет рельеф, удаляет сущности с [`RunScoped`] и шлёт [`WorldRebuilt`] с новым сидом.
+//! Каждый модуль, который хранит что-то о мире или о забеге, сбрасывает это по [`WorldRebuilt`]
+//! в наборе `GameSet::Reset`. [`RunStarted`] приходит только в начале забега, сразу за
+//! [`WorldRebuilt`]: на него подписано то, чего не должно быть при выходе в меню.
 
 use bevy::app::AppExit;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy::window::WindowFocused;
 
+use crate::camera::Focus;
 use crate::combat::{Died, Health, SurvivalTime, Team, ROVER_MAX_HEALTH};
 use crate::explosion::Explosion;
+use crate::frame::GameSet;
 use crate::hud::format_time;
 use crate::records::{self, Record, Records};
-use crate::rover::{self, Rover, RoverMotion};
+use crate::rover::{Rover, RoverMotion};
 use crate::terrain::{ChunkMesh, RunSeed, Terrain, VisibleChunks};
 
 /// Сколько секунд после гибели до экрана конца забега.
@@ -40,17 +46,14 @@ impl Plugin for RunPlugin {
             .init_resource::<RunResult>()
             .init_resource::<PauseChoice>()
             .insert_resource(RecordsTable::load())
+            .add_message::<WorldRebuilt>()
             .add_message::<RunStarted>()
-            .add_message::<RunEnded>()
+            .add_systems(Startup, announce_first_world)
             .add_systems(
                 Update,
                 (
                     // Сначала полёт, потом ввод: иначе полёт спрятал бы луноход, только что поставленный на старт.
                     (fly_over_planet, menu_input).chain().run_if(in_state(GameState::Menu)),
-                    (watch_rover_death, hold_dead_rover)
-                        .chain()
-                        .after(rover::drive_rover)
-                        .run_if(in_state(GameState::Playing)),
                     pause_on_escape_or_blur.run_if(in_state(GameState::Playing)),
                     (pause_input, highlight_pause_choice)
                         .chain()
@@ -58,8 +61,11 @@ impl Plugin for RunPlugin {
                     (game_over_input, draw_game_over)
                         .chain()
                         .run_if(in_state(GameState::GameOver)),
-                ),
+                )
+                    .in_set(GameSet::Screens),
             )
+            // После всех, кто двигает луноход в этом кадре: погибший стоит на месте.
+            .add_systems(Update, (watch_rover_death, hold_dead_rover).chain().in_set(GameSet::Death))
             .add_systems(OnEnter(GameState::Menu), show_menu)
             .add_systems(OnExit(GameState::Menu), hide_screen::<MenuScreen>)
             .add_systems(OnEnter(GameState::Paused), (stop_time, show_pause))
@@ -83,17 +89,21 @@ pub enum GameState {
     GameOver,
 }
 
-/// Забег закончился и его мир убран: рестарт или выход в меню.
+/// Мир перестроен: рельеф заменён новым с этим сидом, сущности с [`RunScoped`] удалены, луноход
+/// стоит на старте. Приходит при запуске игры, при каждом начале забега и при выходе в меню.
+///
+/// По нему сбрасывается всё, что хранит состояние мира или забега: посёлки, объекты, пути,
+/// обломки, лава, волны, тревога, инвентарь, таймеры. Читать в наборе `GameSet::Reset`.
 #[derive(Message, Debug, Clone, Copy)]
-pub struct RunEnded;
-
-/// Начался новый забег. Модули сбрасывают по нему всё, что хранили на прошлый.
-#[derive(Message, Debug, Clone, Copy)]
-pub struct RunStarted {
-    // Сид читают модули, которые строят мир: посёлки, пути.
-    #[allow(dead_code)]
+pub struct WorldRebuilt {
+    /// Сид нового мира: от него строятся посёлки, объекты, пути и игровой генератор.
     pub seed: u32,
 }
+
+/// Начался новый забег: приходит сразу за [`WorldRebuilt`], в том же кадре. Только для того,
+/// что случается именно в начале забега и не нужно в меню: приветствие штаба.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct RunStarted;
 
 /// Сущность живёт один забег и удаляется при рестарте: враги, пули, аптечки.
 #[derive(Component, Default)]
@@ -217,8 +227,11 @@ struct RunWorld<'w, 's> {
     commands: Commands<'w, 's>,
     death: ResMut<'w, Death>,
     survival: ResMut<'w, SurvivalTime>,
+    seed: ResMut<'w, RunSeed>,
+    terrain: ResMut<'w, Terrain>,
     visible: ResMut<'w, VisibleChunks>,
-    ended: MessageWriter<'w, RunEnded>,
+    focus: ResMut<'w, Focus>,
+    rebuilt: MessageWriter<'w, WorldRebuilt>,
     started: MessageWriter<'w, RunStarted>,
     next: ResMut<'w, NextState<GameState>>,
     mouse: ResMut<'w, ButtonInput<MouseButton>>,
@@ -238,39 +251,42 @@ struct RunWorld<'w, 's> {
 }
 
 impl RunWorld<'_, '_> {
-    /// Убирает мир прошлого забега: сущности забега, рельеф с кратерами; ставит целый луноход
-    /// на старт нового рельефа. Возвращает новый сид.
-    fn reset(&mut self) -> u32 {
+    /// Строит мир заново: убирает сущности забега и рельеф с кратерами, ставит целый луноход
+    /// на старт нового рельефа и объявляет [`WorldRebuilt`]. `rover` — виден ли луноход.
+    ///
+    /// Рельеф и сид заменяются сразу, а не отложенной командой: подгрузка участков в этом же
+    /// кадре собирает меши уже из нового рельефа.
+    fn reset(&mut self, rover: Visibility) {
         for entity in self.scoped.iter().chain(self.chunks.iter()) {
             self.commands.entity(entity).try_despawn();
         }
 
         // Новый рельеф: старое хранилище с кратерами выбрасывается целиком.
         let seed = RunSeed::from_clock();
-        let terrain = Terrain::new(seed.0);
+        *self.seed = seed;
+        *self.terrain = Terrain::new(seed.0);
         *self.visible = VisibleChunks::default();
 
+        let start = Vec3::new(0.0, self.terrain.height_at(0.0, 0.0) + ROVER_RIDE_HEIGHT, 0.0);
+        let up = self.terrain.normal_at(0.0, 0.0);
         for (mut transform, mut motion, mut health, mut visibility) in &mut self.rover {
-            let up = terrain.normal_at(0.0, 0.0);
-            transform.translation = Vec3::new(0.0, terrain.height_at(0.0, 0.0) + ROVER_RIDE_HEIGHT, 0.0);
+            transform.translation = start;
             transform.rotation = Quat::from_rotation_arc(Vec3::Y, up);
             *motion = RoverMotion { up, ..default() };
             *health = Health::new(ROVER_MAX_HEALTH);
-            *visibility = Visibility::Inherited;
+            *visibility = rover;
         }
+        self.focus.0 = start;
 
-        self.commands.insert_resource(seed);
-        self.commands.insert_resource(terrain);
         *self.death = Death::default();
         self.survival.0 = 0.0;
-        self.ended.write(RunEnded);
-        seed.0
+        self.rebuilt.write(WorldRebuilt { seed: seed.0 });
     }
 
     /// Новый забег на новом рельефе.
     fn start_run(&mut self) {
-        let seed = self.reset();
-        self.started.write(RunStarted { seed });
+        self.reset(Visibility::Inherited);
+        self.started.write(RunStarted);
         // Нажатие, которое начало забег, не стреляет: кнопка считается отпущенной до нового нажатия.
         self.mouse.reset_all();
         self.next.set(GameState::Playing);
@@ -284,26 +300,33 @@ impl RunWorld<'_, '_> {
 
     /// Выход в меню: мир забега убран, планета снова летит под камерой.
     fn open_menu(&mut self) {
-        self.reset();
+        self.reset(Visibility::Hidden);
         self.next.set(GameState::Menu);
     }
 }
 
-/// Фон меню: точка, за которой следят камера и подгрузка рельефа, медленно летит по прямой.
-/// Эта точка — спрятанный луноход, поэтому камере и рельефу меню ничем не отличается от забега.
+/// Запуск игры: первый мир объявляется так же, как перестроенный, и меню показывает планету
+/// с посёлками и путями.
+fn announce_first_world(seed: Res<RunSeed>, mut rebuilt: MessageWriter<WorldRebuilt>) {
+    rebuilt.write(WorldRebuilt { seed: seed.0 });
+}
+
+/// Фон меню: фокус, за которым следят камера и подгрузка мира, медленно летит по прямой.
+/// Луноход в меню спрятан и стоит на старте: игровые системы его не видят и не двигают.
 fn fly_over_planet(
     time: Res<Time>,
     terrain: Res<Terrain>,
-    mut rover: Query<(&mut Transform, &mut Visibility), With<Rover>>,
+    mut focus: ResMut<Focus>,
+    mut rover: Query<&mut Visibility, With<Rover>>,
 ) {
-    for (mut transform, mut visibility) in &mut rover {
+    for mut visibility in &mut rover {
         if *visibility != Visibility::Hidden {
             *visibility = Visibility::Hidden;
         }
-        let mut position = transform.translation + MENU_FLIGHT * time.delta_secs();
-        position.y = terrain.height_at(position.x, position.z) + ROVER_RIDE_HEIGHT;
-        transform.translation = position;
     }
+    let mut position = focus.0 + MENU_FLIGHT * time.delta_secs();
+    position.y = terrain.height_at(position.x, position.z) + ROVER_RIDE_HEIGHT;
+    focus.0 = position;
 }
 
 /// Меню: Enter, пробел или клик начинают забег, Esc закрывает игру.

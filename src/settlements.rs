@@ -12,7 +12,8 @@ use std::f32::consts::{FRAC_PI_2, TAU};
 
 use bevy::prelude::*;
 
-use crate::run::RunStarted;
+use crate::frame::GameSet;
+use crate::run::WorldRebuilt;
 use crate::terrain::Terrain;
 
 /// Сторона региона посёлков, м. Регион `(0, 0)` стоит центром в начале координат.
@@ -66,7 +67,7 @@ pub struct SettlementsPlugin;
 impl Plugin for SettlementsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Settlements>()
-            .add_systems(Update, reset_settlements);
+            .add_systems(Update, reset_settlements.in_set(GameSet::Reset));
     }
 }
 
@@ -433,10 +434,10 @@ fn is_flat_enough(footprint: &Footprint, terrain: &Terrain) -> bool {
     (high - low) <= diagonal * MAX_SLOPE.tan()
 }
 
-/// Новый забег: посёлки прошлого выбрасываются, следующие строятся от нового сида.
-pub fn reset_settlements(mut started: MessageReader<RunStarted>, mut settlements: ResMut<Settlements>) {
-    if let Some(run) = started.read().last() {
-        *settlements = Settlements::new(run.seed);
+/// Мир перестроен: посёлки прошлого выбрасываются, следующие строятся от нового сида.
+fn reset_settlements(mut rebuilt: MessageReader<WorldRebuilt>, mut settlements: ResMut<Settlements>) {
+    if let Some(world) = rebuilt.read().last() {
+        *settlements = Settlements::new(world.seed);
     }
 }
 

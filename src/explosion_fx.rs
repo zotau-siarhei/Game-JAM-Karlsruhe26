@@ -23,6 +23,7 @@ use bevy_hanabi::prelude::*;
 
 use crate::debris::SpawnDebris;
 use crate::explosion::Explosion;
+use crate::frame::GameSet;
 use crate::run::RunScoped;
 use crate::terrain::Terrain;
 
@@ -103,8 +104,8 @@ pub struct ExplosionFxPlugin;
 
 impl Plugin for ExplosionFxPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(HanabiPlugin)
-            .add_systems(Startup, create_assets)
+        // `HanabiPlugin` подключает `main`: ему нужен рендер.
+        app.add_systems(Startup, create_assets)
             .add_systems(
                 Update,
                 (
@@ -114,7 +115,8 @@ impl Plugin for ExplosionFxPlugin {
                     animate_fireball,
                     animate_shockwave,
                 )
-                    .chain(),
+                    .chain()
+                    .in_set(GameSet::Presentation),
             );
     }
 }

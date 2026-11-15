@@ -15,11 +15,12 @@ use crate::boss::Boss;
 use crate::buildings::House;
 use crate::camera::GameCamera;
 use crate::enemy::Enemy;
+use crate::frame::GameSet;
 use crate::mortar::FireShell;
 use crate::pickups::Pickup;
 use crate::repair::Medkit;
 use crate::rover::Rover;
-use crate::run::{GameState, RunStarted};
+use crate::run::{GameState, WorldRebuilt};
 use crate::settlements::Settlements;
 use crate::terrain::Terrain;
 use crate::trains::Car;
@@ -109,7 +110,12 @@ impl Plugin for MinimapPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<DangerMarks>()
             .add_systems(Startup, spawn_minimap)
-            .add_systems(Update, (show_in_run, collect_dangers, update_markers, draw_terrain).chain());
+            .add_systems(
+                Update,
+                (show_in_run, collect_dangers, update_markers, draw_terrain)
+                    .chain()
+                    .in_set(GameSet::Presentation),
+            );
     }
 }
 
@@ -221,7 +227,7 @@ fn show_in_run(state: Res<State<GameState>>, mut maps: Query<&mut Visibility, Wi
 fn collect_dangers(
     time: Res<Time>,
     mut shells: MessageReader<FireShell>,
-    mut started: MessageReader<RunStarted>,
+    mut started: MessageReader<WorldRebuilt>,
     mut marks: ResMut<DangerMarks>,
 ) {
     if started.read().count() > 0 {

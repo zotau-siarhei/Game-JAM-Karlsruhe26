@@ -6,8 +6,9 @@ use bevy_trauma_shake::{Shake, ShakeSettings, TraumaPlugin};
 
 use crate::camera::GameCamera;
 use crate::explosion::Explosion;
+use crate::frame::GameSet;
 use crate::rover::Rover;
-use crate::run::{GameState, RunStarted};
+use crate::run::{GameState, WorldRebuilt};
 
 /// Дальше этого расстояния от лунохода взрыв не трясёт камеру, м.
 const SHAKE_RANGE: f32 = 60.0;
@@ -35,9 +36,12 @@ impl Plugin for ImpactPlugin {
             .add_systems(PostStartup, add_shake.after(crate::camera::spawn_camera))
             .add_systems(
                 Update,
-                (shake_on_explosion, start_slowmo, run_slowmo).chain(),
-            )
-            .add_systems(Update, reset_slowmo);
+                (
+                    reset_slowmo.in_set(GameSet::Reset),
+                    // Замедление идёт по реальному времени и должно закончиться и после гибели.
+                    (shake_on_explosion, start_slowmo, run_slowmo).chain().in_set(GameSet::Presentation),
+                ),
+            );
     }
 }
 
@@ -116,7 +120,7 @@ fn run_slowmo(
 }
 
 fn reset_slowmo(
-    mut started: MessageReader<RunStarted>,
+    mut started: MessageReader<WorldRebuilt>,
     mut slowmo: ResMut<SlowMotion>,
     mut time: ResMut<Time<Virtual>>,
 ) {

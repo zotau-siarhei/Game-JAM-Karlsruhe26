@@ -8,7 +8,8 @@
 use bevy::input::mouse::AccumulatedMouseScroll;
 use bevy::prelude::*;
 
-use crate::run::{GameState, RunStarted};
+use crate::frame::GameSet;
+use crate::run::{GameState, WorldRebuilt};
 use crate::weapons::CurrentWeapon;
 
 /// Пауза после переключения колесом, с: одна прокрутка растянута на несколько кадров.
@@ -99,13 +100,10 @@ impl Plugin for ArsenalPlugin {
             .add_systems(
                 Update,
                 (
-                    reset_inventory,
-                    (select_weapon, fall_back_to_machine_gun)
-                        .chain()
-                        .run_if(in_state(GameState::Playing)),
-                    update_panel,
-                )
-                    .chain(),
+                    reset_inventory.in_set(GameSet::Reset),
+                    (select_weapon, fall_back_to_machine_gun).chain().in_set(GameSet::Input),
+                    update_panel.in_set(GameSet::Presentation),
+                ),
             );
     }
 }
@@ -184,11 +182,11 @@ impl Inventory {
 pub struct WeaponDenied(pub CurrentWeapon);
 
 fn reset_inventory(
-    mut started: MessageReader<RunStarted>,
+    mut rebuilt: MessageReader<WorldRebuilt>,
     mut inventory: ResMut<Inventory>,
     mut weapon: ResMut<CurrentWeapon>,
 ) {
-    if started.read().last().is_some() {
+    if rebuilt.read().last().is_some() {
         *inventory = Inventory::default();
         *weapon = CurrentWeapon::MachineGun;
     }

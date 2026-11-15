@@ -20,6 +20,7 @@ mod craters;
 mod enemy;
 mod explosion;
 mod explosion_fx;
+mod frame;
 mod hq;
 mod hud;
 mod impact;
@@ -37,6 +38,7 @@ mod railway;
 mod records;
 mod repair;
 mod residents;
+mod rng;
 mod rockets;
 mod rover;
 mod rover_look;
@@ -73,6 +75,17 @@ fn main() {
             }),
             ..default()
         }))
+        // Частицы: плагину нужен рендер, поэтому он стоит здесь, а не среди плагинов игры.
+        .add_plugins(bevy_hanabi::HanabiPlugin)
+        .add_plugins(game_plugins)
+        .add_systems(Startup, spawn_light)
+        .run();
+}
+
+/// Все плагины игры. Отдельной функцией, чтобы тест собирал тот же кадр, что и игра.
+fn game_plugins(app: &mut App) {
+    // Порядок кадра и игровой генератор случайных чисел.
+    app.add_plugins((frame::FramePlugin, rng::RngPlugin))
         // Посёлки, объекты поверхности и разрушение.
         .add_plugins((
             settlements::SettlementsPlugin,
@@ -126,9 +139,7 @@ fn main() {
             music::MusicPlugin,
             audio_events::AudioEventsPlugin,
             comic::ComicPlugin,
-        ))
-        .add_systems(Startup, spawn_light)
-        .run();
+        ));
 }
 
 /// Создаёт солнце: невысокое, чтобы склоны холмов различались по яркости.

@@ -8,6 +8,7 @@ use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 
 use crate::debris::SpawnDebris;
+use crate::frame::GameSet;
 use crate::run::RunScoped;
 use crate::settlements::HouseState;
 
@@ -38,7 +39,9 @@ impl Plugin for CollapsePlugin {
             .add_systems(Startup, create_collapse_assets)
             .add_systems(
                 Update,
-                (start_collapse, animate_parts, spread_dust, fly_sparks, burn_ruins).chain(),
+                (start_collapse, animate_parts, spread_dust, fly_sparks, burn_ruins)
+                    .chain()
+                    .in_set(GameSet::Presentation),
             );
     }
 }

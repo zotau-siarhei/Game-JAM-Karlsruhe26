@@ -13,6 +13,7 @@ use crate::bullet::terrain_hit;
 use crate::combat::{Collider, Health, Team};
 use crate::enemy::Enemy;
 use crate::explosion::Explosion;
+use crate::frame::GameSet;
 use crate::obstacles::{self, Obstacle};
 use crate::rover::{self, Rover};
 use crate::run::{GameState, RunScoped};
@@ -62,15 +63,13 @@ impl Plugin for RocketsPlugin {
         app.add_message::<FireRocket>().add_systems(Startup, create_rocket_assets).add_systems(
             Update,
             (
-                launch_requested,
-                (fire_rockets, fire_homing, show_locks)
+                (fire_rockets, fire_homing)
                     .chain()
-                    .run_if(in_state(GameState::Playing)),
-                fly_rockets,
-                fade_puffs,
-            )
-                .chain()
-                .after(rover::drive_rover),
+                    .after(rover::drive_rover)
+                    .in_set(GameSet::Input),
+                (launch_requested, fly_rockets).chain().in_set(GameSet::Simulation),
+                (show_locks, fade_puffs).in_set(GameSet::Presentation),
+            ),
         );
     }
 }
@@ -311,10 +310,12 @@ fn fire_homing(
     }
 }
 
-/// Кольца захвата над целями, пока выбраны самонаводящиеся ракеты.
+/// Кольца захвата над целями, пока в забеге выбраны самонаводящиеся ракеты. В меню, на паузе
+/// и на экране конца забега колец нет.
 #[allow(clippy::too_many_arguments)]
 fn show_locks(
     mut commands: Commands,
+    state: Res<State<GameState>>,
     weapon: Res<CurrentWeapon>,
     aim: Res<AimPoint>,
     assets: Res<RocketAssets>,
@@ -337,7 +338,7 @@ fn show_locks(
         }
         return;
     }
-    let targets = if *weapon == CurrentWeapon::HomingRockets {
+    let targets = if *state.get() == GameState::Playing && *weapon == CurrentWeapon::HomingRockets {
         let mut t = pick_targets(
             rover.translation,
             aim.position,

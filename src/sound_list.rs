@@ -175,6 +175,9 @@ impl SoundList {
 }
 
 /// Маленький генератор случайных чисел для выбора вариантов и разброса высоты звука.
+///
+/// Как ресурс он принадлежит звуку и засевается часами. Игровая логика берёт случайность из
+/// `rng::GameRng`, который засевается сидом мира.
 #[derive(Resource)]
 pub struct Dice(u64);
 
@@ -188,6 +191,15 @@ impl Default for Dice {
 }
 
 impl Dice {
+    /// Генератор с заданным сидом: одна и та же последовательность при каждом запуске.
+    pub fn seeded(seed: u64) -> Self {
+        // Шаг SplitMix64 разносит близкие сиды; младший бит не даёт состоянию стать нулевым.
+        let mut mixed = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        Self((mixed ^ (mixed >> 31)) | 1)
+    }
+
     fn next(&mut self) -> u64 {
         self.0 ^= self.0 << 13;
         self.0 ^= self.0 >> 7;

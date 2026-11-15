@@ -20,6 +20,7 @@ use crate::props::{Prop, PropKind};
 use crate::rockets::Rocket;
 use crate::waves::{Threat, WaveStarted};
 use crate::explosion::Explosion;
+use crate::frame::GameSet;
 use crate::hq::{HqMemory, VoiceCue, HqTone};
 use crate::music::{MusicState, Track};
 use crate::repair::{MedkitPicked, RepairChanged};
@@ -58,12 +59,18 @@ impl Plugin for AudioEventsPlugin {
             .add_systems(OnEnter(GameState::Paused), |mut music: ResMut<MusicState>| music.paused = true)
             .add_systems(OnExit(GameState::Paused), |mut music: ResMut<MusicState>| music.paused = false)
             .add_systems(
+                Update,
+                (
+                    announce_run_start.in_set(GameSet::Reset),
+                    // Читает компоненты погибшего врага: пока он ещё существует.
+                    voice_enemies.in_set(GameSet::Death),
+                ),
+            )
+            .add_systems(
             Update,
             (
-                announce_run_start,
                 voice_rover_damage,
                 voice_rover_death,
-                voice_enemies,
                 sound_shots,
                 sound_shells,
                 sound_rockets,
@@ -79,7 +86,8 @@ impl Plugin for AudioEventsPlugin {
                 sound_pause_menu.run_if(in_state(GameState::Paused)),
                 music_follows_enemies.run_if(in_state(GameState::Playing)),
                 tone_follows_threat,
-            ),
+            )
+                .in_set(GameSet::Presentation),
         );
     }
 }
@@ -143,7 +151,7 @@ fn voice_rover_death(
 fn voice_enemies(
     mut waves: MessageReader<WaveStarted>,
     mut died: MessageReader<Died>,
-    enemies: Query<&Transform, With<Enemy>>,
+    enemies: Query<(), With<Enemy>>,
     mut sounds: MessageWriter<PlaySound>,
     mut cues: MessageWriter<VoiceCue>,
 ) {
@@ -151,8 +159,8 @@ fn voice_enemies(
         cues.write(VoiceCue::new("wave_start"));
     }
     for message in died.read() {
-        if let Ok(transform) = enemies.get(message.entity) {
-            sounds.write(PlaySound::at("enemy_death", transform.translation));
+        if enemies.contains(message.entity) {
+            sounds.write(PlaySound::at("enemy_death", message.position));
             cues.write(VoiceCue::new("kill"));
         }
     }

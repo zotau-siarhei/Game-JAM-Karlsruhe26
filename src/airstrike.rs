@@ -8,8 +8,9 @@ use crate::aim::AimPoint;
 use crate::arsenal::Inventory;
 use crate::combat::{Health, Team};
 use crate::explosion::Explosion;
+use crate::frame::GameSet;
 use crate::rover::{self, Rover};
-use crate::run::{GameState, RunScoped};
+use crate::run::RunScoped;
 use crate::settlements::Footprint;
 use crate::terrain::Terrain;
 use crate::weapons::CurrentWeapon;
@@ -48,13 +49,9 @@ impl Plugin for AirstrikePlugin {
         app.add_systems(Startup, create_airstrike_assets).add_systems(
             Update,
             (
-                call_airstrike.run_if(in_state(GameState::Playing)),
-                run_strikes,
-                pulse_marks,
-                drop_bombs,
-            )
-                .chain()
-                .after(rover::drive_rover),
+                call_airstrike.after(rover::drive_rover).in_set(GameSet::Input),
+                (run_strikes, pulse_marks, drop_bombs).chain().in_set(GameSet::Simulation),
+            ),
         );
     }
 }

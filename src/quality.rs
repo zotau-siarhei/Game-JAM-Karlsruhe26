@@ -70,7 +70,8 @@ impl Plugin for QualityPlugin {
                     apply_quality.run_if(resource_changed::<Quality>),
                     show_label,
                 )
-                    .chain(),
+                    .chain()
+                    .in_set(crate::frame::GameSet::Presentation),
             );
     }
 }

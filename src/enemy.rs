@@ -18,12 +18,14 @@ use crate::settlements::Settlements;
 use crate::bullet::FireBullet;
 use crate::combat::{Collider, Damage, Died, Health, Team};
 use crate::explosion::Explosion;
+use crate::frame::GameSet;
 use crate::laser::FireLaser;
 use crate::mortar::{self, FireShell};
 use crate::obstacles::Obstacle;
+use crate::rng::GameRng;
 use crate::rockets::FireRocket;
-use crate::rover::{self, Rover, RoverMotion};
-use crate::run::{GameState, RunScoped};
+use crate::rover::{Rover, RoverMotion};
+use crate::run::RunScoped;
 use crate::sound_list::Dice;
 use crate::steering::{self, Steering};
 use crate::terrain::Terrain;
@@ -163,29 +165,30 @@ pub struct EnemyPlugin;
 
 impl Plugin for EnemyPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Dice>()
-            .add_message::<SpawnEnemy>()
+        app.add_message::<SpawnEnemy>()
             .add_systems(Startup, create_enemy_assets)
             .add_systems(
                 Update,
                 (
-                    spawn_enemies.run_if(in_state(GameState::Playing)),
-                    chase_rover,
-                    drive_mortarmen,
-                    drive_rocketeers,
-                    drive_tanks,
-                    avoid_lava,
-                    steering::steer_vehicles,
-                    vehicle::move_ground_vehicles,
-                    separate_enemies,
-                    ram_rover,
-                    shoot_rover,
-                    fire_mortarmen,
-                    remove_far_enemies,
-                    remove_dead_enemies,
-                )
-                    .chain()
-                    .after(rover::drive_rover),
+                    (
+                        spawn_enemies,
+                        chase_rover,
+                        drive_mortarmen,
+                        drive_rocketeers,
+                        drive_tanks,
+                        avoid_lava,
+                        steering::steer_vehicles,
+                        vehicle::move_ground_vehicles,
+                        separate_enemies,
+                        ram_rover,
+                        shoot_rover,
+                        fire_mortarmen,
+                    )
+                        .chain()
+                        .in_set(GameSet::Simulation),
+                    // После всех читателей `Died`: трофей и звук ещё застают врага.
+                    (remove_far_enemies, remove_dead_enemies).chain().in_set(GameSet::Cleanup),
+                ),
             );
     }
 }
@@ -357,7 +360,7 @@ pub fn ring_point(center: Vec3, angle: f32, distance: f32) -> Vec3 {
 fn spawn_enemies(
     mut commands: Commands,
     mut requests: MessageReader<SpawnEnemy>,
-    mut dice: ResMut<Dice>,
+    mut dice: ResMut<GameRng>,
     assets: Res<EnemyAssets>,
     terrain: Res<Terrain>,
     rover: Query<(&Transform, &Health), With<Rover>>,
@@ -615,7 +618,7 @@ fn drive_rocketeers(
     terrain: Res<Terrain>,
     pools: Res<crate::lava::LavaPools>,
     obstacles: Query<(Entity, &Obstacle)>,
-    mut dice: ResMut<Dice>,
+    mut dice: ResMut<GameRng>,
     rover: Query<(&Transform, &Health), With<Rover>>,
     mut enemies: Query<(&Transform, &mut Steering, &mut Rocketeer), Without<Rover>>,
     mut rockets: MessageWriter<FireRocket>,
@@ -798,7 +801,7 @@ fn lead_target(rover: Vec3, velocity: Vec3) -> Vec3 {
 /// Стоящий мортирщик раз в несколько секунд стреляет с упреждением и разбросом.
 fn fire_mortarmen(
     time: Res<Time>,
-    mut dice: ResMut<Dice>,
+    mut dice: ResMut<GameRng>,
     rover: Query<(&Transform, &RoverMotion, &Health), (With<Rover>, Without<Enemy>)>,
     mut enemies: Query<(&Transform, &GroundVehicle, &mut Mortarman)>,
     mut shots: MessageWriter<FireShell>,
@@ -937,7 +940,7 @@ fn shoot_rover(
     time: Res<Time>,
     terrain: Res<Terrain>,
     obstacles: Query<(Entity, &Obstacle)>,
-    mut dice: ResMut<Dice>,
+    mut dice: ResMut<GameRng>,
     rover: Query<(&Transform, &Health), (With<Rover>, Without<Enemy>)>,
     mut enemies: Query<(&Transform, &mut EnemyWeapons), With<Enemy>>,
     mut bullets: MessageWriter<FireBullet>,

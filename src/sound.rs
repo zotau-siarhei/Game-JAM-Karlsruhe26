@@ -92,7 +92,8 @@ impl Plugin for SoundPlugin {
                     stretch_world_sounds::<SpatialAudioSink>,
                     pause_world_sounds::<AudioSink>.run_if(in_state(GameState::Paused)),
                     pause_world_sounds::<SpatialAudioSink>.run_if(in_state(GameState::Paused)),
-                ),
+                )
+                    .in_set(crate::frame::GameSet::Presentation),
             )
             .add_systems(
                 OnExit(GameState::Paused),

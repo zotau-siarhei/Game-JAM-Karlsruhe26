@@ -13,8 +13,10 @@ use crate::bullet::FireBullet;
 use crate::combat::{Collider, Damage, Died, Health, Team};
 use crate::enemy::Enemy;
 use crate::explosion::Explosion;
+use crate::frame::GameSet;
 use crate::mortar::FireShell;
 use crate::obstacles::Obstacle;
+use crate::rng::GameRng;
 use crate::rover::{Rover, RoverMotion};
 use crate::run::RunScoped;
 use crate::settlements::{HouseId, HouseStatus, Settlements};
@@ -72,21 +74,23 @@ impl Plugin for ResidentsPlugin {
             .add_systems(
                 Update,
                 (
-                    spawn_residents,
-                    gather_danger,
-                    react_to_danger,
-                    think,
-                    walk,
-                    dodge_vehicles,
-                    animate,
-                    resident_deaths,
-                    hidden_die_with_house,
-                    leave_shelters,
-                    window_eyes,
-                    fade_puffs,
-                    remove_far_residents,
-                )
-                    .chain(),
+                    // Походка считается от высоты, которую ставит `walk`: только вместе с ним.
+                    (
+                        spawn_residents,
+                        gather_danger,
+                        react_to_danger,
+                        think,
+                        walk,
+                        dodge_vehicles,
+                        animate,
+                        leave_shelters,
+                    )
+                        .chain()
+                        .in_set(GameSet::Simulation),
+                    (resident_deaths, hidden_die_with_house).chain().in_set(GameSet::Death),
+                    remove_far_residents.in_set(GameSet::Cleanup),
+                    (window_eyes, fade_puffs).in_set(GameSet::Presentation),
+                ),
             );
     }
 }
@@ -206,7 +210,7 @@ fn spawn_residents(
     assets: Res<ResidentAssets>,
     terrain: Res<Terrain>,
     settlements: Res<Settlements>,
-    mut dice: ResMut<Dice>,
+    mut dice: ResMut<GameRng>,
     houses: Query<&House, Added<House>>,
 ) {
     for house in &houses {
@@ -370,7 +374,7 @@ fn react_to_danger(
 /// Решения: пауза, новая цель у дома, разговоры парами, конец паники.
 fn think(
     time: Res<Time>,
-    mut dice: ResMut<Dice>,
+    mut dice: ResMut<GameRng>,
     settlements: Res<Settlements>,
     mut residents: Query<(Entity, &Transform, &mut Resident)>,
 ) {
@@ -504,7 +508,7 @@ fn walk(
 
 /// Медленная машина — житель отскакивает вбок, быстрая — сбивает насмерть.
 fn dodge_vehicles(
-    mut dice: ResMut<Dice>,
+    mut dice: ResMut<GameRng>,
     rover: Query<(&Transform, &RoverMotion), With<Rover>>,
     vehicles: Query<(&Transform, &GroundVehicle), Without<Resident>>,
     mut residents: Query<(Entity, &Transform, &mut Resident)>,
@@ -595,7 +599,7 @@ fn resident_deaths(
     mut died: MessageReader<Died>,
     assets: Res<ResidentAssets>,
     mut settlements: ResMut<Settlements>,
-    mut dice: ResMut<Dice>,
+    mut dice: ResMut<GameRng>,
     residents: Query<(&Transform, &Resident)>,
     mut deaths: MessageWriter<ResidentDied>,
 ) {
@@ -651,7 +655,7 @@ fn fade_puffs(mut commands: Commands, time: Res<Time>, mut puffs: Query<(Entity,
 fn hidden_die_with_house(
     mut commands: Commands,
     assets: Res<ResidentAssets>,
-    mut dice: ResMut<Dice>,
+    mut dice: ResMut<GameRng>,
     mut settlements: ResMut<Settlements>,
     mut destroyed: MessageReader<crate::buildings::BuildingDestroyed>,
     mut deaths: MessageWriter<ResidentDied>,
@@ -692,7 +696,7 @@ fn leave_shelters(
     time: Res<Time>,
     assets: Res<ResidentAssets>,
     terrain: Res<Terrain>,
-    mut dice: ResMut<Dice>,
+    mut dice: ResMut<GameRng>,
     mut danger: ResMut<Danger>,
     mut settlements: ResMut<Settlements>,
     houses: Query<(&House, &Transform)>,

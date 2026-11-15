@@ -10,9 +10,10 @@ use bevy::prelude::*;
 use crate::combat::Team;
 use crate::enemy::{self, EnemyKind, SpawnEnemy, SpawnPlace};
 use crate::explosion::Explosion;
+use crate::frame::GameSet;
+use crate::rng::GameRng;
 use crate::rover::Rover;
 use crate::run::RunScoped;
-use crate::sound_list::Dice;
 use crate::terrain::Terrain;
 
 /// Сколько секунд отметка видна до начала падения.
@@ -47,10 +48,12 @@ pub struct CapsulePlugin;
 
 impl Plugin for CapsulePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Dice>()
-            .add_message::<DropCapsule>()
+        app.add_message::<DropCapsule>()
             .add_systems(Startup, create_assets)
-            .add_systems(Update, (mark_landings, drop_capsules, settle_debris).chain());
+            .add_systems(
+                Update,
+                (mark_landings, drop_capsules, settle_debris).chain().in_set(GameSet::Simulation),
+            );
     }
 }
 
@@ -127,7 +130,7 @@ fn fall_height(falling: f32) -> f32 {
 fn mark_landings(
     mut commands: Commands,
     mut requests: MessageReader<DropCapsule>,
-    mut dice: ResMut<Dice>,
+    mut dice: ResMut<GameRng>,
     assets: Res<CapsuleAssets>,
     terrain: Res<Terrain>,
     rover: Query<&Transform, With<Rover>>,

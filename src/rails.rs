@@ -17,14 +17,16 @@ use std::collections::{HashMap, HashSet};
 use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 
+use crate::craters;
 use crate::explosion::Explosion;
 use crate::debris::SpawnDebris;
+use crate::frame::GameSet;
 use crate::obstacles::{Obstacle, Shape};
 use crate::railway::{Family, LineId, Lines, TRACK_BAND, TRACK_FLAT, TUNNEL_DEPTH};
 use crate::settlements::Footprint;
-use crate::run::{RunScoped, RunStarted};
+use crate::run::{RunScoped, WorldRebuilt};
 use crate::subsidence::TerrainChanged;
-use crate::terrain::{CHUNK_SIZE, ChunkDirty, ChunkMesh, Terrain, VisibleChunks, chunk_coord_at, chunk_origin};
+use crate::terrain::{self, CHUNK_SIZE, ChunkDirty, ChunkMesh, Terrain, VisibleChunks, chunk_coord_at, chunk_origin};
 
 /// Длина звена, м.
 pub const LINK_LENGTH: f32 = 4.0;
@@ -60,7 +62,15 @@ impl Plugin for RailsPlugin {
         app.init_resource::<SpawnedLinks>()
             .init_resource::<TrackDamage>()
             .add_systems(Startup, create_rail_assets)
-            .add_systems(Update, (forget_links, open_tunnels, stream_links, break_links).chain());
+            .add_systems(
+                Update,
+                (
+                    forget_links.in_set(GameSet::Reset),
+                    // После кратеров этого кадра: пути рвутся и туннели вскрываются по новому рельефу.
+                    (open_tunnels, break_links).chain().after(craters::dig_craters).in_set(GameSet::Damage),
+                    stream_links.after(terrain::stream_chunks).in_set(GameSet::Streaming),
+                ),
+            );
     }
 }
 
@@ -156,7 +166,7 @@ fn create_rail_assets(
 }
 
 fn forget_links(
-    mut started: MessageReader<RunStarted>,
+    mut started: MessageReader<WorldRebuilt>,
     mut spawned: ResMut<SpawnedLinks>,
     mut damage: ResMut<TrackDamage>,
 ) {

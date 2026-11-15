@@ -12,11 +12,12 @@ use bevy::prelude::*;
 use crate::aim::AimPoint;
 use crate::arsenal::Inventory;
 use crate::combat::{Collider, Damage, Health, Team};
+use crate::frame::GameSet;
 use crate::obstacles::Obstacle;
 use crate::rover::{self, Rover};
-use crate::run::{GameState, RunScoped, RunStarted};
+use crate::run::{RunScoped, WorldRebuilt};
 use crate::subsidence::TerrainChanged;
-use crate::terrain::{self, ChunkDirty, Terrain, VisibleChunks};
+use crate::terrain::{ChunkDirty, Terrain, VisibleChunks};
 use crate::weapons::CurrentWeapon;
 
 /// Перезарядка, с.
@@ -61,15 +62,11 @@ impl Plugin for LaserPlugin {
             .add_systems(
                 Update,
                 (
-                    reset_hot_edges,
-                    fire_laser.run_if(in_state(GameState::Playing)),
-                    apply_laser_shots,
-                    fade_beams,
-                    cool_edges,
-                )
-                    .chain()
-                    .after(rover::drive_rover)
-                    .before(terrain::rebuild_dirty_chunks),
+                    reset_hot_edges.in_set(GameSet::Reset),
+                    fire_laser.after(rover::drive_rover).in_set(GameSet::Input),
+                    (apply_laser_shots, cool_edges).chain().in_set(GameSet::Simulation),
+                    fade_beams.in_set(GameSet::Presentation),
+                ),
             );
     }
 }
@@ -117,7 +114,7 @@ fn create_laser_assets(
     });
 }
 
-fn reset_hot_edges(mut started: MessageReader<RunStarted>, mut hot: ResMut<HotEdges>) {
+fn reset_hot_edges(mut started: MessageReader<WorldRebuilt>, mut hot: ResMut<HotEdges>) {
     if started.read().last().is_some() {
         *hot = HotEdges::default();
     }

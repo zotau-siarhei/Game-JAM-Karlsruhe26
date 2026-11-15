@@ -1,23 +1,18 @@
 //! Провал в кратер: дома и крупные объекты оседают на новую поверхность и кренятся по ней,
 //! дом, просевший слишком глубоко или накренившийся слишком сильно, рушится.
 //!
-//! Рельеф меняет модуль `craters`. Здесь взрыв, достаточно сильный для кратера, читается уже
-//! после деформации и превращается в [`TerrainChanged`]: на него отвечают дома, объекты и обломки.
+//! Рельеф меняют модули `craters`, `laser`, `rails`: каждый после деформации сам шлёт
+//! [`TerrainChanged`], на него отвечают дома, объекты, пути и лава.
 
 use bevy::prelude::*;
 
 use crate::buildings::House;
 use crate::combat::{Damage, Health, Team};
-use crate::explosion::Explosion;
+use crate::craters;
+use crate::frame::GameSet;
 use crate::props::{Prop, PropKind, PropStatus, Props};
 use crate::settlements::{HouseStatus, Settlements};
-use crate::terrain::{self, Terrain};
-
-/// Взрыв слабее этого рельеф не меняет: как в модуле `craters`.
-const MIN_CRATER_POWER: f32 = 0.3;
-
-/// Во сколько раз зона изменения рельефа шире радиуса взрыва: чаша и вал.
-const CHANGE_EXTENT: f32 = 1.3;
+use crate::terrain::Terrain;
 
 /// Средняя просадка, с которой дом проваливается, м.
 const SINK_DEPTH: f32 = 1.0;
@@ -41,14 +36,18 @@ impl Plugin for SubsidencePlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<TerrainChanged>().add_systems(
             Update,
-            (announce_terrain_changes, sink_houses, sink_props, settle)
-                .chain()
-                .after(terrain::rebuild_dirty_chunks),
+            (
+                // В одном кадре с кратером: дом проваливается и получает урон до применения урона.
+                (sink_houses, sink_props).chain().after(craters::dig_craters).in_set(GameSet::Damage),
+                settle.in_set(GameSet::Simulation),
+            ),
         );
     }
 }
 
 /// Рельеф изменился в круге: дома, объекты и обломки в нём должны осесть.
+///
+/// Пишет тот, кто изменил рельеф, сразу после изменения: читатель видит уже новый рельеф.
 #[derive(Message, Debug, Clone, Copy)]
 pub struct TerrainChanged {
     pub center: Vec3,
@@ -65,17 +64,6 @@ struct Settling {
     from: Transform,
     to: Transform,
     elapsed: f32,
-}
-
-fn announce_terrain_changes(mut explosions: MessageReader<Explosion>, mut changed: MessageWriter<TerrainChanged>) {
-    for explosion in explosions.read() {
-        if explosion.power >= MIN_CRATER_POWER {
-            changed.write(TerrainChanged {
-                center: explosion.position,
-                radius: explosion.radius * CHANGE_EXTENT,
-            });
-        }
-    }
 }
 
 /// Дома, задетые кратером, оседают по четырём углам или рушатся.
@@ -190,7 +178,7 @@ fn settle(mut commands: Commands, time: Res<Time>, mut moving: Query<(Entity, &m
         transform.translation = settling.from.translation.lerp(settling.to.translation, k);
         transform.rotation = settling.from.rotation.slerp(settling.to.rotation, k);
         if t >= 1.0 {
-            commands.entity(entity).remove::<Settling>();
+            commands.entity(entity).try_remove::<Settling>();
         }
     }
 }

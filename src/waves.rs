@@ -13,10 +13,11 @@ use crate::capsule::DropCapsule;
 use crate::settlements::{HouseStatus, Settlements};
 use crate::enemy::{Enemy, EnemyKind, SpawnEnemy, SpawnPlace};
 use crate::explosion::Explosion;
+use crate::frame::GameSet;
+use crate::rng::GameRng;
 use crate::rover::Rover;
 use crate::buildings::{BuildingDestroyed, DestroyCause};
-use crate::run::{GameState, RunScoped, RunStarted};
-use crate::sound_list::Dice;
+use crate::run::{RunScoped, WorldRebuilt};
 
 /// Кривые баланса: всё, что зависит от угрозы.
 pub mod balance {
@@ -96,16 +97,14 @@ impl Plugin for WavesPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Threat>()
             .init_resource::<Director>()
-            .init_resource::<Dice>()
             .add_message::<WaveStarted>()
             .add_systems(
                 Update,
                 (
-                    reset_waves,
-                    (grow_threat, direct_waves).chain().run_if(in_state(GameState::Playing)),
-                    (announce_wave, fade_banners).chain(),
-                )
-                    .chain(),
+                    reset_waves.in_set(GameSet::Reset),
+                    (grow_threat, direct_waves).chain().in_set(GameSet::Simulation),
+                    (announce_wave, fade_banners).chain().in_set(GameSet::Presentation),
+                ),
             );
     }
 }
@@ -205,8 +204,8 @@ struct WaveBanner {
 /// Сколько секунд объявление волны видно.
 const BANNER_SECONDS: f32 = 1.2;
 
-/// Новый забег: угроза с нуля, первая волна после начальной передышки.
-fn reset_waves(mut started: MessageReader<RunStarted>, mut threat: ResMut<Threat>, mut director: ResMut<Director>) {
+/// Мир перестроен: угроза с нуля, первая волна после начальной передышки.
+fn reset_waves(mut started: MessageReader<WorldRebuilt>, mut threat: ResMut<Threat>, mut director: ResMut<Director>) {
     if started.read().count() > 0 {
         *threat = Threat::default();
         *director = Director::default();
@@ -238,7 +237,7 @@ fn direct_waves(
     time: Res<Time>,
     threat: Res<Threat>,
     mut director: ResMut<Director>,
-    mut dice: ResMut<Dice>,
+    mut dice: ResMut<GameRng>,
     rover: Query<&Health, With<Rover>>,
     enemies: Query<(), With<Enemy>>,
     mut started: MessageWriter<WaveStarted>,

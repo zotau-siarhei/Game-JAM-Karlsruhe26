@@ -13,10 +13,11 @@ use crate::buildings::BuildingDestroyed;
 use crate::camera::GameCamera;
 use crate::combat::{Died, Health, SurvivalTime, Team};
 use crate::enemy::Enemy;
+use crate::frame::GameSet;
+use crate::rng::GameRng;
 use crate::rockets::FireRocket;
 use crate::rover::Rover;
-use crate::run::{GameState, RunScoped, RunStarted};
-use crate::sound_list::Dice;
+use crate::run::{RunScoped, WorldRebuilt};
 use crate::subsidence::TerrainChanged;
 use crate::terrain::Terrain;
 use crate::weapons::CurrentWeapon;
@@ -62,16 +63,14 @@ impl Plugin for PickupsPlugin {
             .add_systems(
                 Update,
                 (
-                    reset_crates,
-                    remember_ruins,
-                    (drop_crates, arm_enemies, enemy_rockets).run_if(in_state(GameState::Playing)),
-                    drop_loot,
-                    spawn_loot,
-                    descend,
-                    collect,
-                    float_popups,
-                )
-                    .chain(),
+                    reset_crates.in_set(GameSet::Reset),
+                    (remember_ruins, drop_crates, arm_enemies, enemy_rockets, spawn_loot, descend, collect)
+                        .chain()
+                        .in_set(GameSet::Simulation),
+                    // Враг ещё существует: трофей берёт оружие с него.
+                    drop_loot.in_set(GameSet::Death),
+                    float_popups.in_set(GameSet::Presentation),
+                ),
             );
     }
 }
@@ -157,8 +156,8 @@ fn glow_of(assets: &PickupAssets, weapon: CurrentWeapon) -> Handle<StandardMater
     assets.glow[i].clone()
 }
 
-fn reset_crates(mut started: MessageReader<RunStarted>, mut director: ResMut<CrateDirector>) {
-    if started.read().last().is_some() {
+fn reset_crates(mut rebuilt: MessageReader<WorldRebuilt>, mut director: ResMut<CrateDirector>) {
+    if rebuilt.read().last().is_some() {
         *director = CrateDirector::default();
     }
 }
@@ -202,7 +201,7 @@ fn drop_crates(
     terrain: Res<Terrain>,
     assets: Res<PickupAssets>,
     mut director: ResMut<CrateDirector>,
-    mut dice: ResMut<Dice>,
+    mut dice: ResMut<GameRng>,
     crates: Query<(), With<Crate>>,
     rover: Single<&Transform, With<Rover>>,
 ) {
@@ -297,7 +296,7 @@ fn descend(
             transform.rotation = Quat::from_rotation_z((chute.sway * 2.0).sin() * 0.15);
             if transform.translation.y <= ground {
                 commands.entity(chute.canopy).try_despawn();
-                commands.entity(entity).remove::<Parachuting>();
+                commands.entity(entity).try_remove::<Parachuting>();
                 transform.rotation = Quat::IDENTITY;
             }
             continue;
@@ -382,7 +381,7 @@ fn float_popups(
 }
 
 /// Часть новых врагов получает ракеты.
-fn arm_enemies(mut commands: Commands, mut dice: ResMut<Dice>, enemies: Query<Entity, Added<Enemy>>) {
+fn arm_enemies(mut commands: Commands, mut dice: ResMut<GameRng>, enemies: Query<Entity, Added<Enemy>>) {
     for enemy in &enemies {
         if dice.range(0.0, 1.0) < ROCKET_CARRIER_CHANCE {
             commands.entity(enemy).try_insert(CarriedWeapon {

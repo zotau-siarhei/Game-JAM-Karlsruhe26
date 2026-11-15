@@ -1,5 +1,5 @@
 //! Ландшафт: рельеф из шума по сиду, хранилище участков на весь забег, меши и подгрузка
-//! участков вокруг лунохода.
+//! участков вокруг фокуса камеры.
 //!
 //! Как менять рельеф (кратеры): записать новые высоты и цвета в `Terrain::chunk_mut`,
 //! затем повесить `ChunkDirty` на сущности мешей изменённых участков и их соседей по краю
@@ -15,14 +15,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use bevy::prelude::*;
 
-use crate::rover::{self, Rover};
+use crate::camera::Focus;
+use crate::frame::GameSet;
 
 pub use mesh::build_chunk_mesh;
 // Часть API — для следующих изменений (кратеры пишут в ChunkData).
 #[allow(unused_imports)]
-pub use storage::{CHUNK_SIZE, CHUNK_VERTS, ChunkData, Terrain, chunk_coord_at, chunk_origin};
+pub use storage::{CHUNK_SIZE, CHUNK_VERTS, CRATER_EXTENT, ChunkData, Terrain, chunk_coord_at, chunk_origin};
 
-/// Радиус подгрузки в участках: в сцене квадрат (2R+1)×(2R+1) вокруг лунохода.
+/// Радиус подгрузки в участках: в сцене квадрат (2R+1)×(2R+1) вокруг фокуса.
 pub const LOAD_RADIUS: i32 = 3;
 
 /// Участки дальше этого радиуса убираются из сцены. Запас в одно кольцо против мигания на границе.
@@ -62,7 +63,7 @@ pub struct ChunkDirty;
 /// Участки, которые сейчас в сцене.
 #[derive(Resource, Default)]
 pub struct VisibleChunks {
-    /// Участок под луноходом на момент последней подгрузки.
+    /// Участок под фокусом на момент последней подгрузки.
     center: Option<IVec2>,
     /// Сущности мешей по координатам участков.
     entities: HashMap<IVec2, Entity>,
@@ -90,7 +91,7 @@ impl Plugin for TerrainPlugin {
                 Update,
                 (stream_chunks, rebuild_dirty_chunks)
                     .chain()
-                    .after(rover::drive_rover),
+                    .in_set(GameSet::Streaming),
             );
     }
 }
@@ -113,16 +114,16 @@ fn init_material(mut commands: Commands, mut materials: ResMut<Assets<StandardMa
     commands.insert_resource(TerrainMaterial(material));
 }
 
-/// Добавляет участки вокруг лунохода и убирает дальние. Данные участков остаются в хранилище.
-fn stream_chunks(
+/// Добавляет участки вокруг фокуса и убирает дальние. Данные участков остаются в хранилище.
+pub fn stream_chunks(
     mut commands: Commands,
     mut terrain: ResMut<Terrain>,
     mut visible: ResMut<VisibleChunks>,
     mut meshes: ResMut<Assets<Mesh>>,
     material: Res<TerrainMaterial>,
-    rover: Single<&Transform, With<Rover>>,
+    focus: Res<Focus>,
 ) {
-    let center = chunk_coord_at(rover.translation.x, rover.translation.z);
+    let center = chunk_coord_at(focus.0.x, focus.0.z);
     if visible.center == Some(center) {
         return;
     }
@@ -175,7 +176,7 @@ pub fn rebuild_dirty_chunks(
 mod tests {
     use super::*;
 
-    /// Приложение без окна и рендера: только подгрузка участков вокруг лунохода.
+    /// Приложение без окна и рендера: только подгрузка участков вокруг фокуса.
     fn headless_app() -> App {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
@@ -183,20 +184,15 @@ mod tests {
             .init_asset::<StandardMaterial>()
             .insert_resource(RunSeed(17))
             .init_resource::<VisibleChunks>()
+            .insert_resource(Focus(Vec3::new(5.0, 0.0, 5.0)))
             .add_systems(PreStartup, (init_terrain, init_material))
             .add_systems(Update, (stream_chunks, rebuild_dirty_chunks).chain());
-        app.world_mut()
-            .spawn((Rover, Transform::from_xyz(5.0, 0.0, 5.0)));
         app
     }
 
-    /// Ставит луноход в точку мира.
-    fn move_rover(app: &mut App, x: f32, z: f32) {
-        let world = app.world_mut();
-        let mut q = world.query_filtered::<&mut Transform, With<Rover>>();
-        let mut t = q.single_mut(world).unwrap();
-        t.translation.x = x;
-        t.translation.z = z;
+    /// Ставит фокус в точку мира.
+    fn move_focus(app: &mut App, x: f32, z: f32) {
+        app.world_mut().resource_mut::<Focus>().0 = Vec3::new(x, 0.0, z);
     }
 
     /// Число сущностей мешей участков в мире.
@@ -217,7 +213,7 @@ mod tests {
         // Долгая езда в одну сторону: сцена не растёт.
         let max_side = (2 * UNLOAD_RADIUS + 1) as usize;
         for step in 1..=60 {
-            move_rover(&mut app, 5.0 + step as f32 * 10.0, 5.0);
+            move_focus(&mut app, 5.0 + step as f32 * 10.0, 5.0);
             app.update();
             let n = chunk_entities(&mut app);
             assert!(n <= max_side * max_side, "в сцене {n} участков");
@@ -225,7 +221,7 @@ mod tests {
         assert_eq!(app.world().resource::<VisibleChunks>().entity(IVec2::ZERO), None);
 
         // Возврат к старту: данные участка прежние, он снова в сцене.
-        move_rover(&mut app, 5.0, 5.0);
+        move_focus(&mut app, 5.0, 5.0);
         app.update();
         let terrain = app.world().resource::<Terrain>();
         assert_eq!(terrain.get_chunk(IVec2::ZERO).cloned(), start);

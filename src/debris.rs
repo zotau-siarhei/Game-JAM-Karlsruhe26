@@ -11,8 +11,9 @@ use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 
 use crate::explosion::Explosion;
-use crate::run::{RunScoped, RunStarted};
-use crate::terrain::{Terrain, VisibleChunks, chunk_coord_at};
+use crate::frame::GameSet;
+use crate::run::{RunScoped, WorldRebuilt};
+use crate::terrain::{self, Terrain, VisibleChunks, chunk_coord_at};
 
 /// Гравитация, м/с².
 const GRAVITY: f32 = 20.0;
@@ -45,7 +46,12 @@ impl Plugin for DebrisPlugin {
             .add_systems(Startup, create_debris_assets)
             .add_systems(
                 Update,
-                (reset_debris, wake_debris, spawn_debris, fly_debris, burn_out, stream_debris).chain(),
+                (
+                    reset_debris.in_set(GameSet::Reset),
+                    stream_debris.after(terrain::stream_chunks).in_set(GameSet::Streaming),
+                    // Обломки ни на что не влияют: они долетают и догорают и вне забега.
+                    (wake_debris, spawn_debris, fly_debris, burn_out).chain().in_set(GameSet::Presentation),
+                ),
             );
     }
 }
@@ -137,8 +143,8 @@ fn create_debris_assets(
     });
 }
 
-fn reset_debris(mut started: MessageReader<RunStarted>, mut store: ResMut<DebrisStore>) {
-    if started.read().last().is_some() {
+fn reset_debris(mut rebuilt: MessageReader<WorldRebuilt>, mut store: ResMut<DebrisStore>) {
+    if rebuilt.read().last().is_some() {
         // Сущности прошлого забега удалены через RunScoped.
         *store = DebrisStore::default();
     }
@@ -290,10 +296,10 @@ fn fly_debris(
             // Списки обломков участка и их сущностей идут в одном порядке.
             if let Some(shown) = store.shown.get_mut(&chunk) {
                 shown.push(entity);
-                commands.entity(entity).remove::<Flying>();
+                commands.entity(entity).try_remove::<Flying>();
             } else if !had_pieces {
                 store.shown.insert(chunk, vec![entity]);
-                commands.entity(entity).remove::<Flying>();
+                commands.entity(entity).try_remove::<Flying>();
             } else {
                 // Остальные обломки участка не в сцене: этот появится вместе с ними.
                 commands.entity(entity).despawn();
@@ -312,7 +318,7 @@ fn burn_out(mut commands: Commands, time: Res<Time>, mut burning: Query<(Entity,
         }
         if fire.remaining <= 0.0 {
             commands.entity(fire.flame).try_despawn();
-            commands.entity(entity).remove::<Burning>();
+            commands.entity(entity).try_remove::<Burning>();
         }
     }
 }
