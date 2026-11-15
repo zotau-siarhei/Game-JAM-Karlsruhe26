@@ -162,6 +162,7 @@ impl Plugin for TrainsPlugin {
                     derail_trains.in_set(GameSet::Death),
                     stream_wrecks.after(terrain::stream_chunks).in_set(GameSet::Streaming),
                     burn_fires.in_set(GameSet::Presentation),
+                    (find_wheels, roll_wheels, turn_wheels).chain().in_set(GameSet::Presentation),
                 ),
             );
     }
@@ -712,6 +713,7 @@ fn spawn_car(commands: &mut Commands, assets: &TrainAssets, models: &mut Models,
     let body_h = height - FLOOR;
     let mut entity = commands.spawn((
         Car { kind, spent: false },
+        WheelRoll::default(),
         RunScoped,
         transform,
         Visibility::default(),
@@ -818,6 +820,84 @@ fn place_cars(
         transform.rotation = Quat::from_rotation_arc(Vec3::Z, forward);
         let hidden = damage.in_tunnel(&terrain, train.line, front) && damage.in_tunnel(&terrain, train.line, back);
         *visibility = if hidden { Visibility::Hidden } else { Visibility::Inherited };
+    }
+}
+
+/// Колесо вагона: узел модели с именем `wheel_<n>_r<радиус × 10000>`, его выделяет из модели
+/// `scripts/meshy_fix/split_wheels.py`. Ось колеса — ось Z узла.
+#[derive(Component)]
+struct CarWheel {
+    car: Entity,
+    /// Поворот узла в модели.
+    base: Quat,
+    /// Радиус в единицах модели.
+    radius: f32,
+}
+
+/// Путь вагона по рельсам, м: по нему поворачиваются колёса. Сошедший вагон его не копит,
+/// и колёса у остова стоят.
+#[derive(Component, Default)]
+struct WheelRoll {
+    last: Option<Vec3>,
+    distance: f32,
+}
+
+/// Скачок вагона больше этого за кадр — перестановка, а не езда, м.
+const WHEEL_JUMP: f32 = 20.0;
+
+/// Радиус колеса в единицах модели по имени узла `wheel_<n>_r<радиус × 10000>`.
+fn wheel_radius(name: &str) -> Option<f32> {
+    let (_, r) = name.strip_prefix("wheel_")?.rsplit_once("_r")?;
+    let r = r.parse::<f32>().ok()? / 10_000.0;
+    (r > 0.0).then_some(r)
+}
+
+/// Находит колёса в загруженной модели вагона.
+fn find_wheels(
+    mut commands: Commands,
+    named: Query<(Entity, &Name, &Transform), Added<Name>>,
+    parents: Query<&ChildOf>,
+    cars: Query<(), With<Car>>,
+) {
+    for (entity, name, transform) in &named {
+        let Some(radius) = wheel_radius(name.as_str()) else {
+            continue;
+        };
+        let Some(car) = parents.iter_ancestors(entity).find(|&e| cars.contains(e)) else {
+            continue;
+        };
+        commands.entity(entity).insert(CarWheel { car, base: transform.rotation, radius });
+    }
+}
+
+/// Копит путь вагонов на рельсах: вперёд — плюс, назад — минус.
+fn roll_wheels(mut cars: Query<(&Transform, &mut WheelRoll), With<OnTrack>>) {
+    for (transform, mut roll) in &mut cars {
+        let p = transform.translation;
+        if let Some(last) = roll.last {
+            let step = p - last;
+            if step.length() < WHEEL_JUMP {
+                roll.distance += step.dot(transform.rotation * Vec3::Z);
+            }
+        }
+        roll.last = Some(p);
+    }
+}
+
+/// Поворачивает колёса на пройденный путь: колесо катится по рельсу без проскальзывания.
+fn turn_wheels(
+    cars: Query<(&WheelRoll, &GlobalTransform)>,
+    mut wheels: Query<(&CarWheel, &mut Transform, &GlobalTransform)>,
+) {
+    for (wheel, mut transform, global) in &mut wheels {
+        let Ok((roll, car)) = cars.get(wheel.car) else {
+            continue;
+        };
+        let (scale, rotation, _) = global.to_scale_rotation_translation();
+        // Катящееся колесо вращается вокруг «вверх × вперёд»: знак — с какой стороны ось узла.
+        let side = car.up().cross(*car.back());
+        let angle = side.dot(rotation * Vec3::Z) * roll.distance / (wheel.radius * scale.y);
+        transform.rotation = wheel.base * Quat::from_rotation_z(angle);
     }
 }
 
@@ -1425,6 +1505,14 @@ fn burn_fires(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn радиус_колеса_из_имени_узла() {
+        assert_eq!(super::wheel_radius("wheel_3_r468"), Some(0.0468));
+        assert_eq!(super::wheel_radius("wheel_0_r0"), None);
+        assert_eq!(super::wheel_radius("geometry_0"), None);
+        assert_eq!(super::wheel_radius("wheel_rim"), None);
+    }
+
     use super::*;
 
     #[test]

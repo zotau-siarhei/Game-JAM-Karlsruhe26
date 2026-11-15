@@ -13,6 +13,7 @@
 | Ключи поворота кисти развёрнуты на 150–180° от позы покоя | ладонь загнута к предплечью | `straight_hands.py` (Python без Blender) |
 | Кости пальцев ни к чему не прикреплены | пальцы висят на месте, ладонь уходит | `reparent_bones.py` (`Кость=Новый_родитель`) |
 | Дырка в плоской стене без открытого края | треугольная дыра во фронтоне | `patch_hole.py` (заплатка цвета стены) |
+| Колёса поезда — часть кузова | колёса не могут крутиться | `split_wheels.py` (узлы `wheel_<n>_r<радиус>`) |
 | Текстуры JPEG и 2K | Bevy собран без JPEG — модель не грузится, остаётся запасной облик | `textures_png.py` (1024, PNG) |
 
 Что прогнано:
@@ -22,7 +23,8 @@
 - `bush`: то же, затем `overlaps.py` и `normals.py`;
 - `enemy_wheel`: `wheel_seam.py`;
 - `house_small`, `house_two_story`, `house_barrack`: `stacked_faces.py`, у `house_small` затем `patch_hole.py -- … -1 -0.15 0.15 0.16 0.36`, у всех `textures_png.py`;
-- `enemy_rocket_robot`: перепривязка костей пальцев к кистям, затем `straight_hands.py`.
+- `enemy_rocket_robot`: перепривязка костей пальцев к кистям, затем `straight_hands.py`;
+- `train_loco`, `train_wagon_passenger`, `train_wagon_freight`, `train_wagon_tank`: `split_wheels.py`, по 8 колёс.
 
 Картинку из glb достать так: в бинарном куске glb — `images[0].bufferView`, сохранить байты как PNG.
 Размеры и положение моделей не меняются, `models.json` править не нужно.
