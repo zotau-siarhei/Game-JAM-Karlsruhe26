@@ -38,10 +38,6 @@ impl Plugin for HudPlugin {
 #[derive(Component, Default)]
 pub struct RunUi;
 
-/// Корень полосы здоровья.
-#[derive(Component)]
-struct HealthBar;
-
 /// Заполненная часть полосы здоровья.
 #[derive(Component)]
 struct HealthFill;
@@ -62,7 +58,6 @@ fn spawn_hud(mut commands: Commands) {
     // Полоса здоровья.
     commands
         .spawn((
-            HealthBar,
             RunUi,
             Node {
                 position_type: PositionType::Absolute,
