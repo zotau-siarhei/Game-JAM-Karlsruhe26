@@ -142,7 +142,10 @@ pub const TANK_HEALTH: f32 = 220.0;
 const TANK_SPEED: f32 = 6.0;
 /// Поворот танка, рад/с: медленный, линия прицела заметно доворачивает.
 const TANK_TURN_SPEED: f32 = 1.2;
-/// Во сколько раз танк крупнее таран-стрелка.
+/// Во сколько раз машины таран-стрелка и мортирщика крупнее своих моделей и примитивов:
+/// рядом с людьми и домами они смотрелись мелкими.
+const VEHICLE_SCALE: f32 = 1.25;
+/// Во сколько раз танк крупнее модели и примитивов врага.
 pub(crate) const TANK_SCALE: f32 = 1.6;
 /// Насколько в стороне от линии к луноходу танк заходит, м.
 const FLANK_OFFSET: f32 = 30.0;
@@ -431,8 +434,8 @@ fn spawn_enemy(
     let heading = vehicle::heading_towards(target - position);
 
     let (health, material, scale, turn) = match kind {
-        EnemyKind::RamShooter => (ENEMY_HEALTH, assets.hull_material.clone(), 1.0, ENEMY_TURN_SPEED),
-        EnemyKind::Mortar => (MORTAR_HEALTH, assets.mortar_material.clone(), 1.0, ENEMY_TURN_SPEED),
+        EnemyKind::RamShooter => (ENEMY_HEALTH, assets.hull_material.clone(), VEHICLE_SCALE, ENEMY_TURN_SPEED),
+        EnemyKind::Mortar => (MORTAR_HEALTH, assets.mortar_material.clone(), VEHICLE_SCALE, ENEMY_TURN_SPEED),
         EnemyKind::Rocketeer => (ROCKETEER_HEALTH, assets.rocketeer_material.clone(), 1.0, ENEMY_TURN_SPEED),
         EnemyKind::HeavyTank => (TANK_HEALTH, assets.dark_material.clone(), TANK_SCALE, TANK_TURN_SPEED),
     };

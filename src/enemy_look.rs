@@ -163,7 +163,7 @@ fn steer_angle(speed: f32, yaw_rate: f32, wheelbase: f32) -> f32 {
 /// Крутит колёса на пройденный путь и поворачивает передние.
 fn roll_wheels(
     time: Res<Time>,
-    vehicles: Query<&GroundVehicle>,
+    vehicles: Query<(&GroundVehicle, &Transform), Without<Wheel>>,
     mut wheels: Query<(&mut Wheel, &mut Transform, &ChildOf)>,
 ) {
     let dt = time.delta_secs();
@@ -171,10 +171,12 @@ fn roll_wheels(
         return;
     }
     for (mut wheel, mut transform, child_of) in &mut wheels {
-        let Ok(vehicle) = vehicles.get(child_of.parent()) else {
+        let Ok((vehicle, body)) = vehicles.get(child_of.parent()) else {
             continue;
         };
-        wheel.roll = (wheel.roll + vehicle.speed * dt / wheel.radius) % std::f32::consts::TAU;
+        // Радиус колеса задан в системе корпуса, а корпус бывает увеличен.
+        let radius = wheel.radius * body.scale.y;
+        wheel.roll = (wheel.roll + vehicle.speed * dt / radius) % std::f32::consts::TAU;
         if wheel.steers {
             let yaw = wheel.last_heading.map_or(0.0, |last| {
                 let turn = (vehicle.heading - last + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
