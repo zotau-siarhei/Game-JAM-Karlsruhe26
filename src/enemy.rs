@@ -13,6 +13,8 @@
 use bevy::prelude::*;
 
 use crate::boss::Boss;
+use crate::buildings::{BreakDoor, House};
+use crate::settlements::Settlements;
 use crate::bullet::FireBullet;
 use crate::combat::{Collider, Damage, Died, Health, Team};
 use crate::explosion::Explosion;
@@ -296,6 +298,8 @@ pub enum SpawnPlace {
     Edge { angle: f32 },
     /// В заданной точке: высота берётся с рельефа.
     Point(Vec3),
+    /// Из дома: выбивает дверь на стене со стороны лунохода и выезжает сквозь неё.
+    House(Entity),
 }
 
 /// Общие меши и материалы врагов: одинаковые враги рисуются одним пакетом.
@@ -356,6 +360,9 @@ fn spawn_enemies(
     assets: Res<EnemyAssets>,
     terrain: Res<Terrain>,
     rover: Query<(&Transform, &Health), With<Rover>>,
+    houses: Query<&House>,
+    settlements: Res<Settlements>,
+    mut doors: MessageWriter<BreakDoor>,
 ) {
     let Some((rover, health)) = rover.iter().next() else {
         return;
@@ -370,6 +377,16 @@ fn spawn_enemies(
                 ring_point(rover.translation, angle, distance)
             }
             SpawnPlace::Point(point) => point,
+            SpawnPlace::House(entity) => {
+                let Some(state) = houses.get(entity).ok().and_then(|h| settlements.house(h.0)) else {
+                    continue;
+                };
+                let (side, out) = state.side_facing(Vec2::new(rover.translation.x, rover.translation.z));
+                doors.write(BreakDoor { house: entity, side });
+                // Враг встаёт в проёме: стена дома выталкивает его наружу.
+                let door = state.wall_center(side) + out * 0.3;
+                Vec3::new(door.x, 0.0, door.y)
+            }
         };
         spawn_enemy(&mut commands, &mut dice, &assets, &terrain, position, rover.translation, request.kind);
     }

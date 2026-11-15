@@ -8,7 +8,9 @@ use bevy::prelude::*;
 
 use crate::combat::{Health, Team};
 use crate::boss::SpawnBoss;
+use crate::buildings::House;
 use crate::capsule::DropCapsule;
+use crate::settlements::{HouseStatus, Settlements};
 use crate::enemy::{Enemy, EnemyKind, SpawnEnemy, SpawnPlace};
 use crate::explosion::Explosion;
 use crate::rover::Rover;
@@ -44,6 +46,15 @@ pub mod balance {
 
     /// Доля врагов волны, прибывающих в капсулах.
     pub const CAPSULE_SHARE: f32 = 0.3;
+
+    /// Доля врагов волны, выезжающих из домов, если в секторе волны есть целый дом.
+    pub const HOUSE_SHARE: f32 = 0.3;
+
+    /// Дома дальше этого от лунохода врагов не выпускают, м.
+    pub const HOUSE_RANGE: f32 = 50.0;
+
+    /// Полуширина сектора волны, в котором ищется дом, рад.
+    pub const HOUSE_SECTOR: f32 = 40.0 * std::f32::consts::PI / 180.0;
 
     /// Прибывает ли враг в капсуле: `roll` — случайное число от 0 до 1.
     pub fn uses_capsule(threat: f32, roll: f32) -> bool {
@@ -234,6 +245,9 @@ fn direct_waves(
     mut spawn: MessageWriter<SpawnEnemy>,
     mut capsules: MessageWriter<DropCapsule>,
     mut bosses: MessageWriter<SpawnBoss>,
+    rover_place: Query<&Transform, With<Rover>>,
+    houses: Query<(Entity, &House, &Transform), Without<Rover>>,
+    settlements: Res<Settlements>,
 ) {
     if !rover.iter().any(|health| !health.is_dead()) {
         return;
@@ -265,7 +279,17 @@ fn direct_waves(
             *timer -= dt;
             if *timer <= 0.0 && enemies.iter().count() < balance::MAX_ALIVE {
                 if let Some((angle, kind)) = queue.pop() {
-                    if balance::uses_capsule(threat.value(), dice.range(0.0, 1.0)) {
+                    let house = rover_place.iter().next().and_then(|rover| {
+                        (dice.range(0.0, 1.0) < balance::HOUSE_SHARE)
+                            .then(|| house_in_sector(rover.translation, angle, &houses, &settlements))
+                            .flatten()
+                    });
+                    if let Some(house) = house {
+                        spawn.write(SpawnEnemy {
+                            place: SpawnPlace::House(house),
+                            kind,
+                        });
+                    } else if balance::uses_capsule(threat.value(), dice.range(0.0, 1.0)) {
                         capsules.write(DropCapsule { angle, kind });
                     } else {
                         spawn.write(SpawnEnemy {
@@ -285,6 +309,31 @@ fn direct_waves(
             }
         }
     }
+}
+
+/// Ближайший целый дом в секторе волны вокруг направления `angle` от лунохода.
+fn house_in_sector(
+    rover: Vec3,
+    angle: f32,
+    houses: &Query<(Entity, &House, &Transform), Without<Rover>>,
+    settlements: &Settlements,
+) -> Option<Entity> {
+    houses
+        .iter()
+        .filter(|(_, house, _)| {
+            settlements
+                .house(house.0)
+                .is_some_and(|s| s.status == HouseStatus::Intact && s.health > 0.0)
+        })
+        .filter_map(|(entity, _, transform)| {
+            let d = (transform.translation - rover).with_y(0.0);
+            let distance = d.length();
+            let diff = (d.z.atan2(d.x) - angle + std::f32::consts::PI).rem_euclid(TAU) - std::f32::consts::PI;
+            (distance < balance::HOUSE_RANGE && distance > 8.0 && diff.abs() < balance::HOUSE_SECTOR)
+                .then_some((entity, distance))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(entity, _)| entity)
 }
 
 /// Показывает номер начавшейся волны крупным текстом.

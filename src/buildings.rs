@@ -59,6 +59,7 @@ pub struct BuildingsPlugin;
 impl Plugin for BuildingsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SpawnedHouses>()
+            .add_message::<BreakDoor>()
             .add_systems(Startup, create_house_assets)
             .add_systems(
                 Update,
@@ -70,6 +71,7 @@ impl Plugin for BuildingsPlugin {
             .add_systems(
                 Update,
                 (
+                    break_doors,
                     blast_houses,
                     react_to_hits,
                     destroy_houses,
@@ -85,6 +87,74 @@ impl Plugin for BuildingsPlugin {
 /// Сущность дома и адрес его состояния в [`Settlements`].
 #[derive(Component, Debug, Clone, Copy)]
 pub struct House(pub HouseId);
+
+/// Просьба выбить дверь дома на стене `side`: из него выезжает враг.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct BreakDoor {
+    pub house: Entity,
+    pub side: u8,
+}
+
+/// Проём выбитой двери на стене `side` в осях дома.
+fn door_hole(half: Vec2, side: u8) -> Transform {
+    let (x, z, scale) = match side {
+        0 => (0.0, half.y + 0.05, Vec3::new(1.7, 2.1, 0.1)),
+        1 => (0.0, -half.y - 0.05, Vec3::new(1.7, 2.1, 0.1)),
+        2 => (half.x + 0.05, 0.0, Vec3::new(0.1, 2.1, 1.7)),
+        _ => (-half.x - 0.05, 0.0, Vec3::new(0.1, 2.1, 1.7)),
+    };
+    Transform::from_xyz(x, 1.05, z).with_scale(scale)
+}
+
+/// Выбивает дверь: тёмный проём, щепки, вздрагивание дома. Проём запоминается в хранилище.
+fn break_doors(
+    mut commands: Commands,
+    mut requests: MessageReader<BreakDoor>,
+    assets: Res<HouseAssets>,
+    mut settlements: ResMut<Settlements>,
+    houses: Query<(&House, &GlobalTransform)>,
+    mut damage: MessageWriter<Damage>,
+    mut debris: MessageWriter<crate::debris::SpawnDebris>,
+) {
+    for request in requests.read() {
+        let Ok((house, transform)) = houses.get(request.house) else {
+            continue;
+        };
+        let Some(state) = settlements.house_mut(house.0) else {
+            continue;
+        };
+        let first = state.broken_door.is_none();
+        state.broken_door.get_or_insert(request.side);
+        let half = state.kind.half_extents();
+        let door = state.wall_center(request.side);
+        let (_, out) = state.side_facing(door * 2.0 - state.position);
+        if first {
+            commands
+                .entity(request.house)
+                .with_child((Mesh3d(assets.cube.clone()), MeshMaterial3d(assets.hole.clone()), door_hole(half, request.side)));
+        }
+        let base = transform.translation().y;
+        let seed = request.house.to_bits() as u32;
+        for i in 0..8u32 {
+            let k = ((seed.wrapping_mul(2654435761).wrapping_add(i * 977)) % 1000) as f32 / 1000.0;
+            let side = Vec2::new(-out.y, out.x) * (k - 0.5) * 3.0;
+            let v = out * (5.0 + 4.0 * k) + side;
+            debris.write(crate::debris::SpawnDebris {
+                position: Vec3::new(door.x, base + 0.8 + k, door.y),
+                velocity: Vec3::new(v.x, 4.0 + 3.0 * k, v.y),
+                size: Vec3::new(0.12, 0.08, 0.5 + 0.3 * k),
+                color: Color::srgb(0.45, 0.3, 0.16),
+                burning: false,
+            });
+        }
+        // Удар изнутри: дом вздрагивает.
+        damage.write(Damage {
+            target: request.house,
+            amount: 0.5,
+            source_team: Team::Enemy,
+        });
+    }
+}
 
 /// Множитель урона взрыва по дому: дома хрупкие, мортира у стены сносит дом с одного попадания.
 const HOUSE_BLAST_MULTIPLIER: f32 = 4.0;
@@ -157,6 +227,8 @@ struct HouseAssets {
     ruin: Handle<StandardMaterial>,
     roofs: Vec<Handle<StandardMaterial>>,
     trim: Handle<StandardMaterial>,
+    /// Тёмный проём выбитой двери.
+    hole: Handle<StandardMaterial>,
 }
 
 fn create_house_assets(
@@ -187,6 +259,7 @@ fn create_house_assets(
         ruin: matte(&mut materials, Color::srgb(0.32, 0.29, 0.27)),
         roofs: ROOF_PALETTE.iter().map(|&c| matte(&mut materials, c)).collect(),
         trim: matte(&mut materials, TRIM_COLOR),
+        hole: matte(&mut materials, Color::srgb(0.03, 0.025, 0.02)),
     });
 }
 
@@ -332,10 +405,14 @@ fn spawn_house(
     }
     // Дверь на торце.
     parts.push((
-        cube,
+        cube.clone(),
         assets.trim.clone(),
         Transform::from_xyz(0.0, 0.9, half.y + 0.03).with_scale(Vec3::new(1.0, 1.8, 0.1)),
     ));
+
+    if let Some(side) = house.broken_door {
+        parts.push((assets.cube.clone(), assets.hole.clone(), door_hole(half, side)));
+    }
 
     let max = house.kind.max_health();
     let mut entity = commands.spawn((

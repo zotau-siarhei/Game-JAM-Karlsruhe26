@@ -132,9 +132,39 @@ pub struct HouseState {
     pub roof_color: usize,
     pub health: f32,
     pub status: HouseStatus,
+    /// Сторона, где враг выбил дверь и выехал: 0 — +Z, 1 — −Z, 2 — +X, 3 — −X в осях дома.
+    pub broken_door: Option<u8>,
 }
 
 impl HouseState {
+    /// Сторона дома, которая смотрит на точку `p` плана, и наружное направление этой стены в мире.
+    pub fn side_facing(&self, p: Vec2) -> (u8, Vec2) {
+        let footprint = self.footprint();
+        let local = footprint.to_local(p);
+        let half = self.kind.half_extents();
+        let (side, normal) = if (local.x / half.x).abs() > (local.y / half.y).abs() {
+            if local.x > 0.0 { (2, Vec2::X) } else { (3, Vec2::NEG_X) }
+        } else if local.y > 0.0 {
+            (0, Vec2::Y)
+        } else {
+            (1, Vec2::NEG_Y)
+        };
+        let world = footprint.to_world(normal) - footprint.to_world(Vec2::ZERO);
+        (side, world)
+    }
+
+    /// Середина стены `side` у земли в плане.
+    pub fn wall_center(&self, side: u8) -> Vec2 {
+        let half = self.kind.half_extents();
+        let local = match side {
+            0 => Vec2::new(0.0, half.y),
+            1 => Vec2::new(0.0, -half.y),
+            2 => Vec2::new(half.x, 0.0),
+            _ => Vec2::new(-half.x, 0.0),
+        };
+        self.footprint().to_world(local)
+    }
+
     /// Прямоугольник дома в плане.
     pub fn footprint(&self) -> Footprint {
         Footprint {
@@ -338,6 +368,7 @@ fn place_houses(
             roof_color: rng.range_u32(0, ROOF_COLORS as u32 - 1) as usize,
             health: kind.max_health(),
             status: HouseStatus::Intact,
+            broken_door: None,
         };
         let footprint = house.footprint();
         if near_start && footprint.distance(Vec2::ZERO) < START_CLEARANCE {
