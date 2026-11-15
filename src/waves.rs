@@ -6,26 +6,35 @@ use std::f32::consts::TAU;
 
 use bevy::prelude::*;
 
-use crate::combat::{Health, Team};
+use crate::combat::{Died, Health, Team};
 use crate::boss::SpawnBoss;
 use crate::buildings::House;
-use crate::capsule::DropCapsule;
+use crate::capsule::{Capsule, DropCapsule};
 use crate::settlements::{HouseStatus, Settlements};
 use crate::enemy::{Enemy, EnemyKind, SpawnEnemy, SpawnPlace};
 use crate::explosion::Explosion;
 use crate::frame::{GameSet, RunMessages};
+use crate::laser::FireLaser;
+use crate::props::Prop;
 use crate::rng::GameRng;
 use crate::rover::Rover;
 use crate::buildings::{BuildingDestroyed, DestroyCause};
 use crate::run::{RunScoped, WorldRebuilt};
+use crate::terrain::Terrain;
 
 /// Кривые баланса: всё, что зависит от угрозы.
 pub mod balance {
     /// Вес кратера в разрушениях.
     pub const CRATER_WEIGHT: f32 = 1.0;
 
-    /// Вес дома, снесённого игроком, в разрушениях.
+    /// Вес дома, снесённого игроком или провалившегося в кратер, в разрушениях.
     pub const HOUSE_WEIGHT: f32 = 4.0;
+
+    /// Вес лазерной траншеи игрока в разрушениях.
+    pub const TRENCH_WEIGHT: f32 = 0.5;
+
+    /// Вес объекта (дерева, валуна, кристалла), разрушенного игроком, в разрушениях.
+    pub const OBJECT_WEIGHT: f32 = 0.5;
 
     /// Сколько разрушений равны одной минуте забега.
     const DESTRUCTION_PER_MINUTE: f32 = 40.0;
@@ -88,6 +97,47 @@ pub mod balance {
     pub fn wave_budget(threat: f32) -> u32 {
         (4.0 + 3.0 * threat).floor() as u32
     }
+
+    /// Насколько быстрее растёт вес дорогого типа за единицу угрозы сверх [`TANK_THREAT`]
+    /// и за каждое очко его стоимости сверх одного.
+    pub const WEIGHT_GROWTH: f32 = 0.25;
+
+    /// Вес типа стоимостью `cost` при покупке волны. До [`TANK_THREAT`] все типы равновероятны,
+    /// дальше дорогие типы выпадают всё чаще: состав волн тяжелеет и после третьей минуты.
+    pub fn kind_weight(cost: u32, threat: f32) -> f32 {
+        1.0 + WEIGHT_GROWTH * cost.saturating_sub(1) as f32 * (threat - TANK_THREAT).max(0.0)
+    }
+}
+
+/// Урон врагов: все удары по луноходу в одном месте, долями его здоровья.
+///
+/// Пропорции взяты из истории: пуля и таран таран-стрелка настраивались, пока у лунохода было
+/// 100–300 здоровья, и последние игровые пропорции — при 300. Лазер танка и таран босса появились,
+/// когда здоровье уже было 1500, их доли оставлены как есть. Баланс в игре не замерен.
+pub mod enemy_damage {
+    use crate::combat::ROVER_MAX_HEALTH;
+
+    /// Пуля таран-стрелка: 4 из 300.
+    pub const BULLET: f32 = ROVER_MAX_HEALTH * (4.0 / 300.0);
+
+    /// Таран таран-стрелка, не чаще раза в 0,5 с: 12 из 300.
+    pub const RAM: f32 = ROVER_MAX_HEALTH * (12.0 / 300.0);
+
+    /// Импульс лазера тяжёлого танка: 70 из 1500.
+    pub const TANK_LASER: f32 = ROVER_MAX_HEALTH * (70.0 / 1500.0);
+
+    /// Таран босса, один удар за атаку: 90 из 1500.
+    pub const BOSS_RAM: f32 = ROVER_MAX_HEALTH * (90.0 / 1500.0);
+
+    /// Мощность снаряда мортирщика. Прямое попадание отнимает `combat::EXPLOSION_DAMAGE` × мощность
+    /// (35), но мощность задаёт и размер кратера, поэтому долей здоровья её не поднять: для этого
+    /// урон снаряда надо отделить от мощности взрыва в `mortar.rs` и `combat.rs`.
+    pub const MORTAR_POWER: f32 = 0.35;
+
+    /// Мощность снаряда залпа босса: см. [`MORTAR_POWER`].
+    pub const BOSS_SALVO_POWER: f32 = 0.6;
+
+    // Ракеты ракетчика и веера босса бьют как ракеты игрока: мощность задана в `rockets.rs`.
 }
 
 /// Подключает угрозу, директора волн и объявление волны.
@@ -103,6 +153,7 @@ impl Plugin for WavesPlugin {
                 (
                     reset_waves.in_set(GameSet::Reset),
                     (grow_threat, direct_waves).chain().in_set(GameSet::Simulation),
+                    count_broken_objects.in_set(GameSet::Death),
                     (announce_wave, fade_banners).chain().in_set(GameSet::Presentation),
                 ),
             );
@@ -147,18 +198,28 @@ fn available_kinds(threat: f32) -> Vec<(EnemyKind, u32)> {
     kinds
 }
 
-/// Состав волны: случайные покупки из доступных типов, пока хватает бюджета.
-/// `roll` выдаёт случайный номер меньше переданного числа.
-fn buy_wave(threat: f32, mut roll: impl FnMut(usize) -> usize) -> Vec<EnemyKind> {
+/// Состав волны: случайные покупки из доступных типов с весами [`balance::kind_weight`],
+/// пока хватает бюджета. `roll` выдаёт случайное число от 0 до 1.
+fn buy_wave(threat: f32, mut roll: impl FnMut() -> f32) -> Vec<EnemyKind> {
     let kinds = available_kinds(threat);
     let mut budget = balance::wave_budget(threat);
     let mut wave = Vec::new();
     loop {
         let affordable: Vec<_> = kinds.iter().filter(|(_, cost)| *cost <= budget).collect();
-        if affordable.is_empty() {
+        let Some(&&last) = affordable.last() else {
             return wave;
-        }
-        let (kind, cost) = *affordable[roll(affordable.len()) % affordable.len()];
+        };
+        let total: f32 = affordable.iter().map(|(_, cost)| balance::kind_weight(*cost, threat)).sum();
+        let mut pick = roll().clamp(0.0, 1.0) * total;
+        let (kind, cost) = affordable
+            .iter()
+            .copied()
+            .find(|(_, cost)| {
+                pick -= balance::kind_weight(*cost, threat);
+                pick < 0.0
+            })
+            .copied()
+            .unwrap_or(last);
         budget -= cost;
         wave.push(kind);
     }
@@ -212,10 +273,30 @@ fn reset_waves(mut started: MessageReader<WorldRebuilt>, mut threat: ResMut<Thre
     }
 }
 
-/// Угроза растёт со временем, с каждым кратером от оружия игрока и с каждым снесённым им домом.
+/// Длина луча лазера, м: как в `laser.rs`.
+const LASER_REACH: f32 = 40.0;
+
+/// Лазер режет рельеф на 0,4 м ниже луча (`laser.rs`); с небольшим запасом, м.
+const TRENCH_PROBE: f32 = 0.45;
+
+/// Прорезает ли луч из `origin` по `direction` траншею: рельеф на пути выше дна траншеи.
+/// Верно и до прореза, и сразу после него: дно траншеи как раз на этой высоте.
+fn beam_cuts(height: impl Fn(f32, f32) -> f32, origin: Vec3, direction: Vec3) -> bool {
+    let dir = direction.with_y(0.0).normalize_or(Vec3::NEG_Z);
+    let floor = origin.y - TRENCH_PROBE;
+    (1..=(LASER_REACH / 0.5) as usize).any(|i| {
+        let p = origin + dir * (i as f32 * 0.5);
+        height(p.x, p.z) > floor
+    })
+}
+
+/// Угроза растёт со временем и с разрушениями (требование 6.3): каждый кратер от оружия игрока,
+/// каждая лазерная траншея игрока, каждый дом, снесённый игроком или провалившийся в кратер.
 fn grow_threat(
     time: Res<Time>,
+    terrain: Res<Terrain>,
     mut explosions: MessageReader<Explosion>,
+    mut lasers: MessageReader<FireLaser>,
     mut houses: MessageReader<BuildingDestroyed>,
     mut threat: ResMut<Threat>,
 ) {
@@ -225,9 +306,24 @@ fn grow_threat(
             threat.add_destruction(balance::CRATER_WEIGHT);
         }
     }
+    for shot in lasers.read() {
+        if shot.team == Team::Player && beam_cuts(|x, z| terrain.height_at(x, z), shot.origin, shot.direction) {
+            threat.add_destruction(balance::TRENCH_WEIGHT);
+        }
+    }
     for house in houses.read() {
-        if house.cause == DestroyCause::Player {
+        if matches!(house.cause, DestroyCause::Player | DestroyCause::Collapse) {
             threat.add_destruction(balance::HOUSE_WEIGHT);
+        }
+    }
+}
+
+/// Объект (дерево, валун, кристалл), разрушенный игроком, добавляет угрозы. Стоит в
+/// `GameSet::Death`: погибший объект ещё на месте и узнаётся по компоненту.
+fn count_broken_objects(mut died: MessageReader<Died>, props: Query<(), With<Prop>>, mut threat: ResMut<Threat>) {
+    for death in died.read() {
+        if death.killer == Team::Player && props.contains(death.entity) {
+            threat.add_destruction(balance::OBJECT_WEIGHT);
         }
     }
 }
@@ -239,7 +335,8 @@ fn direct_waves(
     mut director: ResMut<Director>,
     mut dice: ResMut<GameRng>,
     rover: Query<&Health, With<Rover>>,
-    enemies: Query<(), With<Enemy>>,
+    // Капсула в полёте — враг, который вот-вот появится: тоже в пределе одновременных.
+    enemies: Query<(), Or<(With<Enemy>, With<Capsule>)>>,
     mut started: MessageWriter<WaveStarted>,
     mut spawn: MessageWriter<SpawnEnemy>,
     mut capsules: MessageWriter<DropCapsule>,
@@ -259,7 +356,7 @@ fn direct_waves(
             if *remaining > 0.0 {
                 return;
             }
-            let wave = buy_wave(threat.value(), |limit| dice.below(limit));
+            let wave = buy_wave(threat.value(), || dice.range(0.0, 1.0));
             // Волна приходит с одной-трёх сторон.
             let directions: Vec<f32> = (0..1 + dice.below(3)).map(|_| dice.range(0.0, TAU)).collect();
             let queue = wave
@@ -423,8 +520,8 @@ mod tests {
 
     #[test]
     fn mortarmen_join_after_the_threat_grows() {
-        assert!(!buy_wave(0.5, |limit| limit - 1).contains(&EnemyKind::Mortar));
-        let later = buy_wave(1.0, |limit| limit - 1);
+        assert!(!buy_wave(0.5, || 0.999).contains(&EnemyKind::Mortar));
+        let later = buy_wave(1.0, || 0.999);
         assert!(later.contains(&EnemyKind::Mortar));
         // Бюджет 7 очков: мортирщик стоит два, таран-стрелок одно.
         let cost: u32 = later.iter().map(|kind| if *kind == EnemyKind::Mortar { 2 } else { 1 }).sum();
@@ -433,15 +530,45 @@ mod tests {
 
     #[test]
     fn first_wave_is_only_ram_shooters() {
-        let wave = buy_wave(0.0, |limit| limit - 1);
+        let wave = buy_wave(0.0, || 0.999);
         assert_eq!(wave, vec![EnemyKind::RamShooter; 4]);
     }
 
     #[test]
     fn waves_grow_and_lulls_shrink_with_threat() {
-        assert!(buy_wave(2.0, |_| 0).len() > buy_wave(0.0, |_| 0).len());
+        assert!(buy_wave(2.0, || 0.0).len() > buy_wave(0.0, || 0.0).len());
         assert_eq!(balance::lull_seconds(0.0), 14.0);
         assert!(balance::lull_seconds(2.0) < balance::lull_seconds(0.0));
         assert_eq!(balance::lull_seconds(100.0), 6.0);
+    }
+
+    #[test]
+    fn expensive_kinds_grow_heavier_after_all_kinds_join() {
+        // До танков все типы равновероятны.
+        assert_eq!(balance::kind_weight(5, 2.0), 1.0);
+        assert_eq!(balance::kind_weight(1, 6.0), 1.0);
+        assert!(balance::kind_weight(5, 4.0) > balance::kind_weight(3, 4.0));
+        assert!(balance::kind_weight(5, 6.0) > balance::kind_weight(5, 4.0));
+        // Средний бросок на пятой минуте покупает больше танков, чем на третьей.
+        let mut n = 0;
+        let mut even = || {
+            n += 1;
+            (n as f32 * 0.618).fract()
+        };
+        let tanks = |wave: Vec<EnemyKind>| wave.iter().filter(|k| **k == EnemyKind::HeavyTank).count() as f32 / wave.len() as f32;
+        let third = tanks(buy_wave(3.0, &mut even));
+        let fifth = tanks(buy_wave(5.0, &mut even));
+        assert!(fifth > third, "{third} {fifth}");
+    }
+
+    #[test]
+    fn laser_trench_counts_only_when_the_beam_cuts_a_hill() {
+        let ground = |x: f32, _z: f32| if x > 10.0 { 5.0 } else { 0.0 };
+        let origin = Vec3::new(0.0, 1.5, 0.0);
+        assert!(beam_cuts(ground, origin, Vec3::X));
+        assert!(!beam_cuts(ground, origin, Vec3::NEG_X));
+        // Траншея уже прорезана на 0,4 м ниже луча: тот же выстрел всё ещё считается.
+        let cut = |x: f32, _z: f32| if x > 10.0 { 1.1 } else { 0.0 };
+        assert!(beam_cuts(cut, origin, Vec3::X));
     }
 }
