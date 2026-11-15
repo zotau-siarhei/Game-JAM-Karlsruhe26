@@ -2,8 +2,8 @@
 //! участков вокруг фокуса камеры.
 //!
 //! Как менять рельеф (кратеры): записать новые высоты и цвета в `Terrain::chunk_mut`,
-//! затем повесить `ChunkDirty` на сущности мешей изменённых участков и их соседей по краю
-//! (`VisibleChunks::entity`). Участки вне сцены помечать не нужно: их меш соберётся
+//! затем пометить на пересборку изменённые участки и их соседей по краю:
+//! `VisibleChunks::mark_dirty`. Участки вне сцены помечать не нужно: их меш соберётся
 //! из изменённых данных, когда они снова появятся.
 
 mod generator;
@@ -73,6 +73,24 @@ impl VisibleChunks {
     /// Сущность меша участка, если участок сейчас в сцене.
     pub fn entity(&self, coord: IVec2) -> Option<Entity> {
         self.entities.get(&coord).copied()
+    }
+
+    /// Помечает на пересборку меша изменённые участки и их соседей по краю: краевые нормали
+    /// соседа считаются по высотам изменённого участка. Участки вне сцены пропускаются.
+    pub fn mark_dirty(&self, commands: &mut Commands, changed: impl IntoIterator<Item = IVec2>) {
+        let mut marked: Vec<IVec2> = Vec::new();
+        for coord in changed {
+            for offset in [IVec2::ZERO, IVec2::X, IVec2::NEG_X, IVec2::Y, IVec2::NEG_Y] {
+                let c = coord + offset;
+                if marked.contains(&c) {
+                    continue;
+                }
+                marked.push(c);
+                if let Some(entity) = self.entity(c) {
+                    commands.entity(entity).try_insert(ChunkDirty);
+                }
+            }
+        }
     }
 }
 

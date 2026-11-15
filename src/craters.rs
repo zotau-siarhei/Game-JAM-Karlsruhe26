@@ -8,7 +8,7 @@ use bevy::prelude::*;
 use crate::explosion::Explosion;
 use crate::frame::GameSet;
 use crate::subsidence::TerrainChanged;
-use crate::terrain::{CRATER_EXTENT, ChunkDirty, Terrain, VisibleChunks};
+use crate::terrain::{CRATER_EXTENT, Terrain, VisibleChunks};
 
 /// Взрыв слабее этого рельеф не меняет.
 const MIN_POWER: f32 = 0.3;
@@ -44,41 +44,25 @@ pub fn dig_craters(
     visible: Res<VisibleChunks>,
     mut changes: MessageWriter<TerrainChanged>,
 ) {
-    let mut dirty: Vec<IVec2> = Vec::new();
+    let mut changed: Vec<IVec2> = Vec::new();
     for explosion in explosions.read() {
         if explosion.power < MIN_POWER {
             continue;
         }
         let r = explosion.radius;
-        let changed = terrain.apply_crater(
+        changed.extend(terrain.apply_crater(
             explosion.position,
             r,
             r * DEPTH_PER_RADIUS * explosion.power,
             r * RIM_PER_RADIUS * explosion.power,
-        );
+        ));
         changes.write(TerrainChanged {
             center: explosion.position,
             radius: r * CRATER_EXTENT,
         });
-        let changed: Vec<IVec2> = changed
-            .into_iter()
-            .chain(scorch(&mut terrain, explosion.position, r * SCORCH_REACH, explosion.power))
-            .collect();
-        for coord in changed {
-            // Соседи по краю: их краевые нормали считаются по изменённым высотам.
-            for offset in [IVec2::ZERO, IVec2::X, IVec2::NEG_X, IVec2::Y, IVec2::NEG_Y] {
-                let c = coord + offset;
-                if !dirty.contains(&c) {
-                    dirty.push(c);
-                }
-            }
-        }
+        changed.extend(scorch(&mut terrain, explosion.position, r * SCORCH_REACH, explosion.power));
     }
-    for coord in dirty {
-        if let Some(entity) = visible.entity(coord) {
-            commands.entity(entity).try_insert(ChunkDirty);
-        }
-    }
+    visible.mark_dirty(&mut commands, changed);
 }
 
 /// Затемняет цвета вершин вокруг взрыва, сохраняя оттенок рельефа: вокруг кратера остаётся
