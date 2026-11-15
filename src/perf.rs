@@ -12,10 +12,6 @@
 //! потере фокуса выключена, вертикальная синхронизация тоже, сводка пишется в лог раз
 //! в 5 с, по истечении срока игра закрывается.
 //!
-//! В прогоне раз в 5 с пишется ещё перепись: чьи `Transform` изменились за кадр и из кого
-//! состоит мир. Имена компонентов видны только в сборке с `bevy/debug` (её включает и
-//! `bevy/trace_chrome`), иначе все группы — «(other)».
-//!
 //! Отметки времени — системы между наборами `GameSet`: они сами вне наборов, иначе не встать
 //! на границу.
 
@@ -184,10 +180,7 @@ impl Plugin for PerfPlugin {
             .insert_resource(shared.clone())
             .add_systems(First, main_mark::<0>)
             .add_systems(Update, main_mark::<1>.before(GameSet::Screens))
-            .add_systems(
-                Last,
-                (main_mark::<{ MAIN_PARTS }>, transform_census).chain(),
-            )
+            .add_systems(Last, main_mark::<{ MAIN_PARTS }>)
             .add_systems(
                 Update,
                 (toggle_overlay, update_overlay, log_bench)
@@ -461,140 +454,6 @@ fn log_bench(
         info!("Bench finished");
         exit.write(AppExit::Success);
     }
-}
-
-/// Перепись в прогоне: чьи `Transform` меняются за кадр. Изменённая сущность тянет пересчёт
-/// `GlobalTransform` всего поддерева, поэтому рядом с числом — сколько узлов в поддеревьях.
-/// Сущность называется первым компонентом игры в её архетипе.
-fn transform_census(
-    world: &mut World,
-    mut changed: Local<Option<QueryState<Entity, Changed<Transform>>>>,
-    mut since: Local<f32>,
-) {
-    if !world.get_resource::<Bench>().is_some_and(|b| b.on) {
-        return;
-    }
-    let state = changed.get_or_insert_with(|| world.query_filtered::<Entity, Changed<Transform>>());
-    let dt = world.resource::<Time<Real>>().delta_secs();
-    *since += dt;
-    // Запрос идёт каждый кадр, иначе «изменён» значило бы «за всё время с прошлой переписи».
-    let entities: Vec<Entity> = state.iter(world).collect();
-    if *since < LOG_WINDOW {
-        return;
-    }
-    *since = 0.0;
-    let mut groups: std::collections::HashMap<String, (usize, usize)> = Default::default();
-    for &entity in &entities {
-        let Some(key) = census_key(world, entity) else {
-            continue;
-        };
-        let subtree = subtree_size(world, entity);
-        let group = groups.entry(key).or_default();
-        group.0 += 1;
-        group.1 += subtree;
-    }
-    let mut list: Vec<_> = groups.into_iter().collect();
-    list.sort_by(|a, b| b.1.1.cmp(&a.1.1));
-    let line: Vec<String> = list
-        .iter()
-        .take(10)
-        .map(|(k, (n, t))| format!("{k} {n}/{t}"))
-        .collect();
-    info!(
-        "  changed transforms this frame {} (entity/subtree): {}",
-        entities.len(),
-        line.join(", ")
-    );
-
-    // Весь мир: из кого он состоит и сколько мешей видно в кадре.
-    let mut all: std::collections::HashMap<String, (usize, usize)> = Default::default();
-    let mut everyone = world.query::<(Entity, Option<&ViewVisibility>, Has<Mesh3d>)>();
-    let list_all: Vec<(Entity, bool, bool)> = everyone
-        .iter(world)
-        .map(|(e, v, m)| (e, v.is_some_and(|v| v.get()), m))
-        .collect();
-    let mut visible_meshes = 0;
-    for (entity, visible, mesh) in list_all {
-        let Some(key) = census_key(world, entity) else {
-            continue;
-        };
-        let group = all.entry(key).or_default();
-        group.0 += 1;
-        if visible && mesh {
-            group.1 += 1;
-            visible_meshes += 1;
-        }
-    }
-    let mut list: Vec<_> = all.into_iter().collect();
-    list.sort_by(|a, b| b.1.0.cmp(&a.1.0));
-    let line: Vec<String> = list
-        .iter()
-        .take(14)
-        .map(|(k, (n, v))| format!("{k} {n}/{v}"))
-        .collect();
-    info!(
-        "  world (entities/visible meshes), visible meshes {visible_meshes}: {}",
-        line.join(", ")
-    );
-}
-
-/// Имя группы для переписи: первый компонент игры в архетипе или вид узла движка.
-fn census_key(world: &World, entity: Entity) -> Option<String> {
-    let e = world.get_entity(entity).ok()?;
-    let names: Vec<String> = e
-        .archetype()
-        .components()
-        .iter()
-        .filter_map(|&id| world.components().get_name(id))
-        .map(|n| n.to_string())
-        .collect();
-    let mut game: Vec<&str> = names
-        .iter()
-        .filter(|n| n.starts_with("space_guard::"))
-        .map(|n| n.trim_start_matches("space_guard::"))
-        .collect();
-    game.sort();
-    let key = (!game.is_empty())
-        .then(|| game.join("+"))
-        .or_else(|| {
-            names
-                .iter()
-                .any(|n| n.ends_with("AnimatedBy"))
-                .then(|| "(animated glTF node)".to_owned())
-        })
-        .or_else(|| {
-            names
-                .iter()
-                .any(|n| n.contains("ParticleEffect"))
-                .then(|| "(particle effect)".to_owned())
-        })
-        .or_else(|| {
-            names
-                .iter()
-                .any(|n| n.ends_with("::Mesh3d"))
-                .then(|| "(mesh part)".to_owned())
-        })
-        .or_else(|| {
-            names
-                .iter()
-                .any(|n| n.ends_with("::Node"))
-                .then(|| "(ui node)".to_owned())
-        })
-        .unwrap_or_else(|| "(other)".to_owned());
-    Some(key)
-}
-
-/// Узлов в поддереве вместе с самим узлом.
-fn subtree_size(world: &World, root: Entity) -> usize {
-    let mut count = 0;
-    let mut stack = vec![root];
-    while let Some(e) = stack.pop() {
-        count += 1;
-        if let Some(children) = world.get::<Children>(e) {
-            stack.extend(children.iter());
-        }
-    }
-    count
 }
 
 #[cfg(test)]

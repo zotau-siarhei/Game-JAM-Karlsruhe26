@@ -278,7 +278,7 @@ fn build_robot_graph(
 fn attach_robot_players(
     mut commands: Commands,
     clips: Res<RobotClips>,
-    players: Query<Entity, (With<AnimationPlayer>, Without<AnimationGraphHandle>)>,
+    players: Query<Entity, (With<AnimationPlayer>, Without<AnimationGraphHandle>, Without<crate::anim_lod::ParkedGraph>)>,
     parents: Query<&ChildOf>,
     mut walkers: Query<&mut Walker>,
 ) {

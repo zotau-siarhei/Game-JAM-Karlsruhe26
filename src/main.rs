@@ -7,6 +7,7 @@
 mod aim;
 mod airstrike;
 mod alarm;
+mod anim_lod;
 mod arsenal;
 mod audio_events;
 mod boss;
@@ -127,6 +128,8 @@ fn game_plugins(app: &mut App) {
         rng::RngPlugin,
         resident_anim::ResidentAnimPlugin,
         enemy_look::EnemyLookPlugin,
+        // Анимация вне экрана не считается, дальняя — реже.
+        anim_lod::AnimLodPlugin,
     ))
         // Посёлки, объекты поверхности и разрушение.
         .add_plugins((

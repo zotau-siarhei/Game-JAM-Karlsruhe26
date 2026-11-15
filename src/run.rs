@@ -340,6 +340,7 @@ fn fly_over_planet(
 fn menu_input(
     keys: Res<ButtonInput<KeyCode>>,
     bench: Option<Res<crate::perf::Bench>>,
+    real: Res<Time<Real>>,
     mut world: RunWorld,
     mut exit: MessageWriter<AppExit>,
 ) {
@@ -347,10 +348,10 @@ fn menu_input(
         exit.write(AppExit::Success);
         return;
     }
-    // Прогон замера начинает забег сам.
+    // Прогон замера начинает забег сам, когда мир уже поднялся, — как Enter через секунду.
     let start = keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter, KeyCode::Space])
         || world.mouse.just_pressed(MouseButton::Left)
-        || bench.is_some_and(|b| b.on);
+        || (bench.is_some_and(|b| b.on) && real.elapsed_secs() > 1.0);
     if start {
         world.start_run();
     }

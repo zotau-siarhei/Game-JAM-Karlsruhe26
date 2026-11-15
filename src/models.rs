@@ -37,7 +37,7 @@ impl Plugin for ModelsPlugin {
             .init_resource::<ShadeCache>()
             .add_systems(
                 Update,
-                (track_loading, swap_fallbacks, apply_shade)
+                (track_loading, swap_fallbacks, apply_shade, strip_shadows)
                     .chain()
                     .in_set(crate::frame::GameSet::Presentation),
             );
@@ -417,6 +417,26 @@ fn apply_shade(
             cache.original.insert(shaded.id(), original);
             cache.shaded.insert(key, shaded.clone());
             material.0 = shaded;
+        }
+    }
+}
+
+/// Мелочь без теней: у мешей под сущностью с этой меткой, и модели, и запасного облика, тени нет.
+/// Тень мелочи почти не видна, а проход теней рисует каждый её меш заново.
+#[derive(Component)]
+pub struct NoShadow;
+
+/// Новые меши под [`NoShadow`] получают `NotShadowCaster`: меши модели появляются, когда
+/// она загрузится, поэтому метка ставится на корень, а не на меши.
+fn strip_shadows(
+    mut commands: Commands,
+    meshes: Query<Entity, (Added<Mesh3d>, Without<bevy::light::NotShadowCaster>)>,
+    parents: Query<&ChildOf>,
+    marked: Query<(), With<NoShadow>>,
+) {
+    for mesh in &meshes {
+        if marked.contains(mesh) || parents.iter_ancestors(mesh).any(|e| marked.contains(e)) {
+            commands.entity(mesh).try_insert(bevy::light::NotShadowCaster);
         }
     }
 }

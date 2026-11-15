@@ -371,6 +371,8 @@ fn spawn_flock(
                         },
                         Mesh3d(assets.body.clone()),
                         MeshMaterial3d(assets.material.clone()),
+                        // Птица — мелочь: тени нет.
+                        bevy::light::NotShadowCaster,
                         Transform::from_xyz(seat.x, 0.0, seat.y)
                             .with_rotation(Quat::from_rotation_y(yaw))
                             .with_scale(Vec3::splat(BIRD_SCALE)),
@@ -381,6 +383,7 @@ fn spawn_flock(
                                 Wing(side),
                                 Mesh3d(assets.wing.clone()),
                                 MeshMaterial3d(assets.material.clone()),
+                                bevy::light::NotShadowCaster,
                                 Transform::from_xyz(side * 0.03, 0.03, -0.02).with_scale(Vec3::new(side, 1.0, 1.0)),
                             ));
                         }

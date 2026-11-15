@@ -180,7 +180,7 @@ fn attach_players(
     mut skins: ResMut<SkinMaterials>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     asset_server: Res<AssetServer>,
-    players: Query<Entity, (With<AnimationPlayer>, Without<AnimationGraphHandle>)>,
+    players: Query<Entity, (With<AnimationPlayer>, Without<AnimationGraphHandle>, Without<crate::anim_lod::ParkedGraph>)>,
     parents: Query<&ChildOf>,
     children: Query<&Children>,
     mut meshes: Query<&mut MeshMaterial3d<StandardMaterial>>,

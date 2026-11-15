@@ -784,9 +784,13 @@ fn stream_props(
             let (radius, height) = state.kind.footprint();
             let scale = transform.scale.max_element();
             if small {
-                entity.insert(Crushable {
-                    radius: radius * scale,
-                });
+                // Кусты, камни, заборы и столбы — мелочь: без тени.
+                entity.insert((
+                    Crushable {
+                        radius: radius * scale,
+                    },
+                    crate::models::NoShadow,
+                ));
             } else {
                 entity.insert(Health {
                     current: state.health.min(state.kind.max_health()),
