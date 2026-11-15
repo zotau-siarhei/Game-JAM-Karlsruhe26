@@ -151,6 +151,18 @@ pub struct Resident {
     velocity: Vec2,
 }
 
+impl Resident {
+    /// Житель в панике: такого подбирает машина Службы.
+    pub fn is_panicking(&self) -> bool {
+        matches!(self.mood, Mood::Panic(_))
+    }
+
+    /// Дом жителя.
+    pub fn home(&self) -> HouseId {
+        self.home
+    }
+}
+
 /// Рука: сторона, 1 или -1.
 #[derive(Component)]
 struct Arm(f32);
@@ -544,18 +556,19 @@ fn walk(
     }
 }
 
-/// Медленная машина — житель отскакивает вбок, быстрая — сбивает насмерть.
+/// Медленная машина — житель отскакивает вбок, быстрая — сбивает насмерть. Машина Службы
+/// жителей не сбивает: от неё они только отскакивают.
 fn dodge_vehicles(
     mut dice: ResMut<GameRng>,
     rover: Query<(&Transform, &RoverMotion), With<Rover>>,
-    vehicles: Query<(&Transform, &GroundVehicle), Without<Resident>>,
+    vehicles: Query<(&Transform, &GroundVehicle, Option<&Team>), Without<Resident>>,
     mut residents: Query<(Entity, &Transform, &mut Resident)>,
     mut damage: MessageWriter<Damage>,
 ) {
     let movers: Vec<(Vec2, Vec2, f32, Team)> = rover
         .iter()
         .map(|(t, m)| (t, crate::vehicle::forward_of(m.heading) * m.speed.signum(), m.speed.abs(), Team::Player))
-        .chain(vehicles.iter().map(|(t, v)| (t, v.forward(), v.speed.abs(), Team::Enemy)))
+        .chain(vehicles.iter().map(|(t, v, team)| (t, v.forward(), v.speed.abs(), team.copied().unwrap_or(Team::Enemy))))
         .map(|(t, f, s, team)| (Vec2::new(t.translation.x, t.translation.z), Vec2::new(f.x, f.z), s, team))
         .filter(|(_, _, s, _)| *s > DODGE_SPEED)
         .collect();
@@ -569,7 +582,7 @@ fn dodge_vehicles(
             if d.length() > 4.0 || d.dot(*forward) < -1.0 {
                 continue;
             }
-            if *speed >= LETHAL_SPEED {
+            if *speed >= LETHAL_SPEED && team.hostile_to(Team::Neutral) {
                 if d.length() < 2.2 {
                     damage.write(Damage {
                         target: entity,

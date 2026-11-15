@@ -54,12 +54,15 @@ const MEDKIT_COLOR: Color = Color::srgb(1.0, 1.0, 1.0);
 const CRATE_COLOR: Color = Color::srgb(1.0, 0.85, 0.15);
 const TRAIN_COLOR: Color = Color::srgb(0.7, 0.7, 0.72);
 const BOSS_COLOR: Color = Color::srgb(1.0, 0.1, 0.4);
+/// Служба защиты жителей: оранжевые кружки.
+const SERVICE_COLOR: Color = Color::srgb(1.0, 0.55, 0.1);
 const DANGER_COLOR: Color = Color::srgb(1.0, 0.15, 0.1);
 
 /// Вид метки: цвет, размер, форма.
 #[derive(Clone, Copy, PartialEq)]
 enum Mark {
     Enemy,
+    Service,
     Boss,
     Train,
     Crate,
@@ -71,6 +74,7 @@ impl Mark {
     fn color(self) -> Color {
         match self {
             Mark::Enemy => ENEMY_COLOR,
+            Mark::Service => SERVICE_COLOR,
             Mark::Boss => BOSS_COLOR,
             Mark::Train => TRAIN_COLOR,
             Mark::Crate => CRATE_COLOR,
@@ -82,7 +86,7 @@ impl Mark {
     /// Ширина и высота, пиксели, и круглая ли.
     fn shape(self) -> (f32, f32, bool) {
         match self {
-            Mark::Enemy => (MARKER, MARKER, true),
+            Mark::Enemy | Mark::Service => (MARKER, MARKER, true),
             Mark::Boss => (15.0, 15.0, true),
             Mark::Train => (10.0, 4.0, false),
             Mark::Crate => (6.0, 6.0, false),
@@ -251,6 +255,7 @@ fn update_markers(
     time: Res<Time>,
     rover: Query<&Transform, With<Rover>>,
     enemies: Query<(&Transform, Has<Boss>), With<Enemy>>,
+    service: Query<&Transform, With<crate::service::ServiceVehicle>>,
     medkits: Query<&Transform, With<Medkit>>,
     pickups: Query<&Transform, With<Pickup>>,
     cars: Query<(&Transform, &Visibility), With<Car>>,
@@ -270,6 +275,7 @@ fn update_markers(
         targets.extend(dangers.0.iter().map(|(p, _)| (*p, Mark::Danger)));
     }
     targets.extend(enemies.iter().filter(|(_, b)| !*b).map(|(t, _)| (flat(t), Mark::Enemy)));
+    targets.extend(service.iter().map(|t| (flat(t), Mark::Service)));
     targets.extend(cars.iter().filter(|(_, v)| **v != Visibility::Hidden).map(|(t, _)| (flat(t), Mark::Train)));
     targets.extend(pickups.iter().map(|t| (flat(t), Mark::Crate)));
     targets.extend(medkits.iter().map(|t| (flat(t), Mark::Medkit)));
