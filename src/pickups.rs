@@ -13,7 +13,7 @@ use crate::buildings::BuildingDestroyed;
 use crate::camera::GameCamera;
 use crate::combat::{Died, Health, SurvivalTime, Team};
 use crate::enemy::Enemy;
-use crate::frame::GameSet;
+use crate::frame::{GameSet, RunMessages};
 use crate::rng::GameRng;
 use crate::rockets::FireRocket;
 use crate::rover::Rover;
@@ -58,7 +58,7 @@ pub struct PickupsPlugin;
 impl Plugin for PickupsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CrateDirector>()
-            .add_message::<SpawnLoot>()
+            .add_run_message::<SpawnLoot>()
             .add_systems(Startup, create_pickup_assets)
             .add_systems(
                 Update,

@@ -12,7 +12,7 @@ use bevy::prelude::*;
 use crate::aim::AimPoint;
 use crate::arsenal::Inventory;
 use crate::combat::{Collider, Damage, Health, Team};
-use crate::frame::GameSet;
+use crate::frame::{GameSet, RunMessages};
 use crate::obstacles::Obstacle;
 use crate::rover::{self, Rover};
 use crate::run::{RunScoped, WorldRebuilt};
@@ -57,7 +57,7 @@ pub struct LaserPlugin;
 impl Plugin for LaserPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<HotEdges>()
-            .add_message::<FireLaser>()
+            .add_run_message::<FireLaser>()
             .add_systems(Startup, create_laser_assets)
             .add_systems(
                 Update,

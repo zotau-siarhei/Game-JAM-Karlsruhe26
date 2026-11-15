@@ -8,7 +8,7 @@
 use bevy::input::mouse::AccumulatedMouseScroll;
 use bevy::prelude::*;
 
-use crate::frame::GameSet;
+use crate::frame::{GameSet, RunMessages};
 use crate::run::{GameState, WorldRebuilt};
 use crate::weapons::CurrentWeapon;
 
@@ -95,7 +95,7 @@ pub struct ArsenalPlugin;
 impl Plugin for ArsenalPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Inventory>()
-            .add_message::<WeaponDenied>()
+            .add_run_message::<WeaponDenied>()
             .add_systems(Startup, spawn_panel)
             .add_systems(
                 Update,

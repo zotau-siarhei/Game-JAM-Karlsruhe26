@@ -9,7 +9,7 @@
 use bevy::prelude::*;
 
 use crate::combat::{Collider, Damage, Health, Team};
-use crate::frame::GameSet;
+use crate::frame::{GameSet, RunMessages};
 use crate::obstacles::{self, Obstacle};
 use crate::run::RunScoped;
 use crate::terrain::Terrain;
@@ -31,7 +31,7 @@ pub struct BulletPlugin;
 
 impl Plugin for BulletPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<FireBullet>()
+        app.add_run_message::<FireBullet>()
             .add_systems(Startup, create_bullet_assets)
             .add_systems(
                 Update,

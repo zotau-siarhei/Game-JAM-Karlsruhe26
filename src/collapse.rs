@@ -8,7 +8,7 @@ use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 
 use crate::debris::SpawnDebris;
-use crate::frame::GameSet;
+use crate::frame::{GameSet, RunMessages};
 use crate::run::RunScoped;
 use crate::settlements::HouseState;
 
@@ -35,7 +35,7 @@ pub struct CollapsePlugin;
 
 impl Plugin for CollapsePlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<CollapseHouse>()
+        app.add_run_message::<CollapseHouse>()
             .add_systems(Startup, create_collapse_assets)
             .add_systems(
                 Update,

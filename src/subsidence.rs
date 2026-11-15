@@ -9,7 +9,7 @@ use bevy::prelude::*;
 use crate::buildings::House;
 use crate::combat::{Damage, Health, Team};
 use crate::craters;
-use crate::frame::GameSet;
+use crate::frame::{GameSet, RunMessages};
 use crate::props::{Prop, PropKind, PropStatus, Props};
 use crate::settlements::{HouseStatus, Settlements};
 use crate::terrain::Terrain;
@@ -34,7 +34,7 @@ pub struct SubsidencePlugin;
 
 impl Plugin for SubsidencePlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<TerrainChanged>().add_systems(
+        app.add_run_message::<TerrainChanged>().add_systems(
             Update,
             (
                 // В одном кадре с кратером: дом проваливается и получает урон до применения урона.

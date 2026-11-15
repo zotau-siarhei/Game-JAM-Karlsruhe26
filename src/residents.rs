@@ -13,7 +13,7 @@ use crate::bullet::FireBullet;
 use crate::combat::{Collider, Damage, Died, Health, Team};
 use crate::enemy::Enemy;
 use crate::explosion::Explosion;
-use crate::frame::GameSet;
+use crate::frame::{GameSet, RunMessages};
 use crate::mortar::FireShell;
 use crate::obstacles::Obstacle;
 use crate::rng::GameRng;
@@ -68,7 +68,7 @@ pub struct ResidentsPlugin;
 
 impl Plugin for ResidentsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<ResidentDied>()
+        app.add_run_message::<ResidentDied>()
             .init_resource::<Danger>()
             .add_systems(Startup, create_assets)
             .add_systems(

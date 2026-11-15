@@ -12,7 +12,7 @@
 
 use bevy::prelude::*;
 
-use crate::run::GameState;
+use crate::run::{GameState, WorldRebuilt};
 
 /// Место системы в кадре.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -41,6 +41,31 @@ pub enum GameSet {
     Streaming,
     /// Камера, интерфейс, эффекты, звук: всё, что только показывает мир. Работает всегда.
     Presentation,
+}
+
+/// Регистрация сообщений игрового мира.
+pub trait RunMessages {
+    /// Как `add_message`, но непрочитанные сообщения стираются при перестройке мира.
+    ///
+    /// Читатель под `GameState::Playing` не работает на паузе, а сообщения на паузе не стареют:
+    /// без стирания взрыв или выстрел последнего кадра прошлого забега сработал бы в новом мире.
+    /// Так регистрируется всё, что относится к миру забега: взрывы, урон, выстрелы, появление
+    /// врагов. Сообщения звука и экранов регистрируются обычным `add_message`.
+    fn add_run_message<M: Message>(&mut self) -> &mut Self;
+}
+
+impl RunMessages for App {
+    fn add_run_message<M: Message>(&mut self) -> &mut Self {
+        self.add_message::<M>()
+            .add_systems(Update, forget_messages::<M>.in_set(GameSet::Reset))
+    }
+}
+
+/// Мир перестроен: сообщения прошлого мира никому не нужны.
+fn forget_messages<M: Message>(mut rebuilt: MessageReader<WorldRebuilt>, mut messages: ResMut<Messages<M>>) {
+    if rebuilt.read().last().is_some() {
+        messages.clear();
+    }
 }
 
 /// Задаёт порядок наборов и условие «только в забеге» для симуляции.

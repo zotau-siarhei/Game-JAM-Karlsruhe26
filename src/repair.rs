@@ -8,7 +8,7 @@ use std::f32::consts::TAU;
 use bevy::prelude::*;
 
 use crate::combat::Health;
-use crate::frame::GameSet;
+use crate::frame::{GameSet, RunMessages};
 use crate::rng::GameRng;
 use crate::rover::{self, Rover, SpeedFactor};
 use crate::run::{RunScoped, WorldRebuilt};
@@ -50,8 +50,8 @@ pub struct RepairPlugin;
 impl Plugin for RepairPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MedkitTimer>()
-            .add_message::<RepairChanged>()
-            .add_message::<MedkitPicked>()
+            .add_run_message::<RepairChanged>()
+            .add_run_message::<MedkitPicked>()
             .add_systems(Startup, create_assets)
             .add_systems(
                 Update,

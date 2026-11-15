@@ -11,7 +11,7 @@ use bevy::prelude::*;
 use crate::aim::{self, AimPoint};
 use crate::combat::{Health, Team};
 use crate::explosion::Explosion;
-use crate::frame::GameSet;
+use crate::frame::{GameSet, RunMessages};
 use crate::rover::Rover;
 use crate::run::RunScoped;
 use crate::terrain::Terrain;
@@ -208,7 +208,7 @@ pub struct MortarPlugin;
 impl Plugin for MortarPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Mortar>()
-            .add_message::<FireShell>()
+            .add_run_message::<FireShell>()
             .add_systems(Startup, create_assets)
             .add_systems(
                 Update,

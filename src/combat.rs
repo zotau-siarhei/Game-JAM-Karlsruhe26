@@ -14,7 +14,7 @@
 use bevy::prelude::*;
 
 use crate::explosion::Explosion;
-use crate::frame::GameSet;
+use crate::frame::{GameSet, RunMessages};
 use crate::rover::Rover;
 
 /// Здоровье лунохода.
@@ -38,8 +38,8 @@ pub struct CombatPlugin;
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SurvivalTime>()
-            .add_message::<Damage>()
-            .add_message::<Died>()
+            .add_run_message::<Damage>()
+            .add_run_message::<Died>()
             .add_systems(Startup, create_flash_material)
             .add_systems(
                 Update,

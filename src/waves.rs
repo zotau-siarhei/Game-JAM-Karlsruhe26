@@ -13,7 +13,7 @@ use crate::capsule::DropCapsule;
 use crate::settlements::{HouseStatus, Settlements};
 use crate::enemy::{Enemy, EnemyKind, SpawnEnemy, SpawnPlace};
 use crate::explosion::Explosion;
-use crate::frame::GameSet;
+use crate::frame::{GameSet, RunMessages};
 use crate::rng::GameRng;
 use crate::rover::Rover;
 use crate::buildings::{BuildingDestroyed, DestroyCause};
@@ -97,7 +97,7 @@ impl Plugin for WavesPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Threat>()
             .init_resource::<Director>()
-            .add_message::<WaveStarted>()
+            .add_run_message::<WaveStarted>()
             .add_systems(
                 Update,
                 (

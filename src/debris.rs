@@ -11,7 +11,7 @@ use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 
 use crate::explosion::Explosion;
-use crate::frame::GameSet;
+use crate::frame::{GameSet, RunMessages};
 use crate::run::{RunScoped, WorldRebuilt};
 use crate::terrain::{self, Terrain, VisibleChunks, chunk_coord_at};
 
@@ -42,7 +42,7 @@ pub struct DebrisPlugin;
 impl Plugin for DebrisPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<DebrisStore>()
-            .add_message::<SpawnDebris>()
+            .add_run_message::<SpawnDebris>()
             .add_systems(Startup, create_debris_assets)
             .add_systems(
                 Update,

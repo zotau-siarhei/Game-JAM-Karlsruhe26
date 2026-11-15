@@ -9,6 +9,7 @@
 
 use bevy::prelude::*;
 
+use crate::frame::RunMessages;
 use crate::combat::Team;
 
 /// Взрыв в точке мира.
@@ -29,7 +30,7 @@ pub struct ExplosionPlugin;
 
 impl Plugin for ExplosionPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<Explosion>()
+        app.add_run_message::<Explosion>()
             .add_systems(Update, log_explosions.in_set(crate::frame::GameSet::Presentation));
     }
 }

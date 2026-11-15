@@ -18,7 +18,7 @@ use crate::settlements::Settlements;
 use crate::bullet::FireBullet;
 use crate::combat::{Collider, Damage, Died, Health, Team};
 use crate::explosion::Explosion;
-use crate::frame::GameSet;
+use crate::frame::{GameSet, RunMessages};
 use crate::laser::FireLaser;
 use crate::mortar::{self, FireShell};
 use crate::obstacles::Obstacle;
@@ -165,7 +165,7 @@ pub struct EnemyPlugin;
 
 impl Plugin for EnemyPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<SpawnEnemy>()
+        app.add_run_message::<SpawnEnemy>()
             .add_systems(Startup, create_enemy_assets)
             .add_systems(
                 Update,

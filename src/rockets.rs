@@ -13,7 +13,7 @@ use crate::bullet::terrain_hit;
 use crate::combat::{Collider, Health, Team};
 use crate::enemy::Enemy;
 use crate::explosion::Explosion;
-use crate::frame::GameSet;
+use crate::frame::{GameSet, RunMessages};
 use crate::obstacles::{self, Obstacle};
 use crate::rover::{self, Rover};
 use crate::run::{GameState, RunScoped};
@@ -60,7 +60,7 @@ pub struct RocketsPlugin;
 
 impl Plugin for RocketsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<FireRocket>().add_systems(Startup, create_rocket_assets).add_systems(
+        app.add_run_message::<FireRocket>().add_systems(Startup, create_rocket_assets).add_systems(
             Update,
             (
                 (fire_rockets, fire_homing)

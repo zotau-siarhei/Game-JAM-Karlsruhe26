@@ -10,7 +10,7 @@ use bevy::prelude::*;
 use crate::combat::Team;
 use crate::enemy::{self, EnemyKind, SpawnEnemy, SpawnPlace};
 use crate::explosion::Explosion;
-use crate::frame::GameSet;
+use crate::frame::{GameSet, RunMessages};
 use crate::rng::GameRng;
 use crate::rover::Rover;
 use crate::run::RunScoped;
@@ -48,7 +48,7 @@ pub struct CapsulePlugin;
 
 impl Plugin for CapsulePlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<DropCapsule>()
+        app.add_run_message::<DropCapsule>()
             .add_systems(Startup, create_assets)
             .add_systems(
                 Update,

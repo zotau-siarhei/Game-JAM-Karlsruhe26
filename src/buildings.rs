@@ -10,7 +10,7 @@ use crate::collapse::CollapseHouse;
 use crate::subsidence::Collapsing;
 use crate::explosion::Explosion;
 use crate::camera::Focus;
-use crate::frame::GameSet;
+use crate::frame::{GameSet, RunMessages};
 use crate::obstacles::{Obstacle, Shape};
 use crate::run::{RunScoped, WorldRebuilt};
 use crate::settlements::{
@@ -60,9 +60,9 @@ pub struct BuildingsPlugin;
 impl Plugin for BuildingsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SpawnedHouses>()
-            .add_message::<BreakDoor>()
+            .add_run_message::<BreakDoor>()
             .add_systems(Startup, create_house_assets)
-            .add_message::<BuildingDestroyed>()
+            .add_run_message::<BuildingDestroyed>()
             .add_systems(
                 Update,
                 (

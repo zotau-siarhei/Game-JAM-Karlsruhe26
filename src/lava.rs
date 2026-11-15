@@ -22,7 +22,7 @@ use crate::combat::{Damage, Health, Team};
 use crate::craters;
 use crate::enemy::Enemy;
 use crate::explosion::Explosion;
-use crate::frame::GameSet;
+use crate::frame::{GameSet, RunMessages};
 use crate::pickups::Pickup;
 use crate::rails::TrackDamage;
 use crate::residents::Resident;
@@ -65,7 +65,7 @@ impl Plugin for LavaPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<LavaPools>()
             .init_resource::<HotSpots>()
-            .add_message::<CrustBreached>()
+            .add_run_message::<CrustBreached>()
             .add_systems(Startup, create_assets)
             .add_systems(
                 Update,

@@ -15,7 +15,7 @@ use bevy::prelude::*;
 use crate::combat::{Collider, Damage, Died, Health, Team};
 use crate::enemy::Enemy;
 use crate::explosion::Explosion;
-use crate::frame::GameSet;
+use crate::frame::{GameSet, RunMessages};
 use crate::mortar::FireShell;
 use crate::obstacles::Obstacle;
 use crate::pickups::SpawnLoot;
@@ -86,7 +86,7 @@ pub struct BossPlugin;
 
 impl Plugin for BossPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<SpawnBoss>()
+        app.add_run_message::<SpawnBoss>()
             .add_systems(Startup, create_assets)
             .add_systems(
                 Update,
