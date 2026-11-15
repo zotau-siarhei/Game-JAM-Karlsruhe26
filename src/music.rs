@@ -30,6 +30,10 @@ const DEATH_STING: &str = "death_sting";
 /// Громкость музыки без приглушения.
 const BASE_VOLUME: f32 = 0.6;
 
+/// Дольше этого акцент гибели не ждём, с: сам он звучит 2 с. Без звукового устройства его
+/// сущность никто не удалит, а музыка конца забега должна начаться.
+const STING_SECONDS: f64 = 2.5;
+
 /// Время перекрёстного затухания в секундах.
 const CROSSFADE_SECONDS: f32 = 2.0;
 
@@ -58,8 +62,6 @@ impl Plugin for MusicPlugin {
 }
 
 /// Что должно звучать.
-// `Boss` пока никто не включает: бой с боссом идёт под `Combat`.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Track {
     /// Тишина.
@@ -106,8 +108,9 @@ struct MusicPlayer {
     tracks: SoundList,
     /// Трек, на который проигрыватель уже переключился.
     current: Track,
-    /// Сущность акцента гибели, после которого начнётся музыка конца забега.
-    sting: Option<Entity>,
+    /// Сущность акцента гибели, после которого начнётся музыка конца забега, и когда он
+    /// начался по реальному времени.
+    sting: Option<(Entity, f64)>,
     /// Текущая доля громкости с учётом реплик и паузы.
     duck: f32,
 }
@@ -181,16 +184,19 @@ fn spawn_layer(commands: &mut Commands, player: &MusicPlayer, track: Track, leve
 /// Переключает треки, когда меняется [`MusicState`].
 fn switch_track(
     mut commands: Commands,
+    time: Res<Time<Real>>,
     state: Res<MusicState>,
     mut player: ResMut<MusicPlayer>,
     mut layers: Query<(Entity, &mut MusicLayer)>,
     stings: Query<(), With<AudioPlayer>>,
 ) {
-    // Акцент гибели отзвучал: начинается музыка конца забега.
-    if let Some(sting) = player.sting
-        && !stings.contains(sting)
+    // Акцент гибели отзвучал или не дождались его конца: начинается музыка конца забега.
+    let now = time.elapsed_secs_f64();
+    if let Some((sting, started)) = player.sting
+        && (!stings.contains(sting) || now - started > STING_SECONDS)
     {
         player.sting = None;
+        commands.entity(sting).try_despawn();
         if player.current == Track::GameOver {
             spawn_layer(&mut commands, &player, Track::GameOver, 1.0);
         }
@@ -200,7 +206,9 @@ fn switch_track(
         return;
     }
     player.current = state.track;
-    player.sting = None;
+    if let Some((sting, _)) = player.sting.take() {
+        commands.entity(sting).try_despawn();
+    }
 
     let sting_sound = player
         .tracks
@@ -222,7 +230,7 @@ fn switch_track(
                 },
             ))
             .id();
-        player.sting = Some(sting);
+        player.sting = Some((sting, now));
         return;
     }
 

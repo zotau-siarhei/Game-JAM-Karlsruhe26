@@ -6,27 +6,32 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 
 use crate::airstrike::Strike;
+use crate::alarm::Alarm;
 use crate::arsenal::WeaponDenied;
+use crate::boss::Boss;
 use crate::buildings::BuildingDestroyed;
 use crate::bullet::FireBullet;
 use crate::capsule::{Capsule, FALL_SECONDS, MARK_SECONDS};
 use crate::collapse::CollapseHouse;
-use crate::combat::{Damage, Died, Health, Team};
+use crate::combat::{Damage, Died, Health, SurvivalTime, Team};
 use crate::enemy::Enemy;
-use crate::laser::Beam;
-use crate::mortar::{Shell, FLIGHT_TIME};
-use crate::pickups::Popup;
-use crate::props::{Prop, PropKind};
-use crate::rockets::Rocket;
-use crate::waves::{Threat, WaveStarted};
 use crate::explosion::Explosion;
 use crate::frame::GameSet;
-use crate::hq::{HqMemory, VoiceCue, HqTone};
+use crate::hq::{HqMemory, HqTone, VoiceCue};
+use crate::laser::Beam;
+use crate::lava::CrustBreached;
+use crate::mortar::{FLIGHT_TIME, Shell};
 use crate::music::{MusicState, Track};
+use crate::pickups::Popup;
+use crate::props::{Prop, PropKind};
+use crate::records::{Records, records_path};
 use crate::repair::{MedkitPicked, RepairChanged};
+use crate::residents::ResidentDied;
+use crate::rockets::Rocket;
 use crate::rover::Rover;
-use crate::run::{GameState, RunStarted};
+use crate::run::{GameState, RunStarted, WorldRebuilt};
 use crate::sound::PlaySound;
+use crate::waves::WaveStarted;
 
 /// Доля здоровья, ниже которой урон считается критическим.
 const CRITICAL_HEALTH: f32 = 0.3;
@@ -46,12 +51,56 @@ const WHISTLE_LEAD: f32 = 0.95;
 /// За сколько секунд до удара капсулы о землю начинается гул её падения.
 const CAPSULE_FALL_LEAD: f32 = 1.2;
 
+/// Звук удара по луноходу — не чаще раза в столько секунд: лава и пулемёт бьют часто.
+const ROVER_HIT_SOUND_GAP: f32 = 0.3;
+
+/// Повод `hit` — не чаще раза в столько секунд, иначе он забивает редкие поводы.
+const HIT_CUE_GAP: f32 = 12.0;
+
+/// Сколько секунд без врагов боевая музыка ещё держится, прежде чем смениться передышкой.
+const LULL_DELAY: f32 = 6.0;
+
+/// Вес событий в объёме разрушений, от которого зависит тон штаба.
+const HOUSE_WEIGHT: f32 = 1.0;
+const RESIDENT_WEIGHT: f32 = 0.5;
+const BREACH_WEIGHT: f32 = 1.0;
+
+/// Объём разрушений, с которого штаб беспокоится, и с которого паникует.
+const WORRIED_DESTRUCTION: f32 = 3.0;
+const PANIC_DESTRUCTION: f32 = 8.0;
+
+/// Что озвучка помнит о текущем забеге. Сбрасывается по `WorldRebuilt`.
+#[derive(Resource, Default)]
+struct AudioMemory {
+    /// Свисты снарядов мортиры: сколько секунд до начала и где.
+    whistles: Vec<(f32, Vec3)>,
+    /// Гул падающих капсул: сколько секунд до начала и где.
+    falls: Vec<(f32, Vec3)>,
+    /// Сколько секунд до следующего звука удара по луноходу.
+    rover_hit_cooldown: f32,
+    /// Сколько секунд до следующего повода `hit`.
+    hit_cue_cooldown: f32,
+    /// Критический урон уже прозвучал и здоровье с тех пор не поднялось.
+    critical: bool,
+    /// Сколько секунд в мире нет врагов.
+    calm: f32,
+    /// Самая высокая ступень тревоги за забег: о росте штаб говорит только выше неё.
+    alarm_peak: u8,
+    /// Объём разрушений за забег: дома, жители, прорывы коры.
+    destruction: f32,
+    /// Лучшее время из таблицы рекордов на начало забега.
+    best_record: Option<f64>,
+    /// О новом рекорде уже сказано.
+    record_announced: bool,
+}
+
 /// Подключает озвучку игровых событий.
 pub struct AudioEventsPlugin;
 
 impl Plugin for AudioEventsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(GameState::Menu), menu_music)
+        app.init_resource::<AudioMemory>()
+            .add_systems(OnEnter(GameState::Menu), menu_music)
             .add_systems(OnExit(GameState::Menu), click)
             .add_systems(OnExit(GameState::GameOver), click)
             .add_systems(OnEnter(GameState::Paused), pause_blip)
@@ -61,7 +110,7 @@ impl Plugin for AudioEventsPlugin {
             .add_systems(
                 Update,
                 (
-                    announce_run_start.in_set(GameSet::Reset),
+                    (forget_run, announce_run_start).chain().in_set(GameSet::Reset),
                     // Читает компоненты погибшего врага: пока он ещё существует.
                     voice_enemies.in_set(GameSet::Death),
                 ),
@@ -83,54 +132,86 @@ impl Plugin for AudioEventsPlugin {
                 sound_capsules,
                 voice_weapon_denied,
                 voice_repair,
+            )
+                .in_set(GameSet::Presentation),
+        )
+        .add_systems(
+            Update,
+            (
                 voice_service,
+                voice_boss,
+                voice_alarm,
+                voice_residents,
+                voice_crust,
+                voice_record.run_if(in_state(GameState::Playing)),
                 sound_pause_menu.run_if(in_state(GameState::Paused)),
                 music_follows_enemies.run_if(in_state(GameState::Playing)),
-                tone_follows_threat,
+                tone_follows_destruction,
             )
                 .in_set(GameSet::Presentation),
         );
     }
 }
 
+/// Мир перестроен: отложенные свисты и гул капсул, счётчики и пороги прошлого забега забыты.
+fn forget_run(mut rebuilt: MessageReader<WorldRebuilt>, mut memory: ResMut<AudioMemory>) {
+    if rebuilt.read().last().is_some() {
+        *memory = AudioMemory::default();
+    }
+}
+
 /// Новый забег: штаб забывает сказанное, приветствует экипаж, звучит музыка передышки.
+/// Лучшее время читается из таблицы рекордов: его превышение — повод для штаба.
 fn announce_run_start(
     mut started: MessageReader<RunStarted>,
-    mut memory: ResMut<HqMemory>,
+    mut hq: ResMut<HqMemory>,
+    mut memory: ResMut<AudioMemory>,
     mut cues: MessageWriter<VoiceCue>,
     mut music: ResMut<MusicState>,
 ) {
     if started.read().count() == 0 {
         return;
     }
-    memory.reset();
+    hq.reset();
+    memory.best_record = records_path()
+        .map(|path| Records::load(&path))
+        .and_then(|table| table.best().map(|record| record.seconds));
     cues.write(VoiceCue::new("run_start"));
     music.track = Track::Lull;
 }
 
 /// Попадание по луноходу: звук удара, реплика, а при падении здоровья ниже порога — вопль.
+/// Звук и реплика ограничены по частоте: урон от лавы и пулемёта идёт часто.
 fn voice_rover_damage(
+    time: Res<Time>,
     mut damages: MessageReader<Damage>,
     rover: Query<(Entity, &Health), With<Rover>>,
-    mut critical: Local<bool>,
+    mut memory: ResMut<AudioMemory>,
     mut sounds: MessageWriter<PlaySound>,
     mut cues: MessageWriter<VoiceCue>,
 ) {
+    let dt = time.delta_secs();
+    memory.rover_hit_cooldown = (memory.rover_hit_cooldown - dt).max(0.0);
+    memory.hit_cue_cooldown = (memory.hit_cue_cooldown - dt).max(0.0);
     let Some((rover, health)) = rover.iter().next() else {
         damages.clear();
         return;
     };
     if health.fraction() > RECOVERED_HEALTH {
-        *critical = false;
+        memory.critical = false;
     }
     if !damages.read().any(|damage| damage.target == rover) || health.is_dead() {
         return;
     }
-    sounds.write(PlaySound::new("rover_hit"));
-    if health.fraction() < CRITICAL_HEALTH && !*critical {
-        *critical = true;
+    if memory.rover_hit_cooldown <= 0.0 {
+        memory.rover_hit_cooldown = ROVER_HIT_SOUND_GAP;
+        sounds.write(PlaySound::new("rover_hit"));
+    }
+    if health.fraction() < CRITICAL_HEALTH && !memory.critical {
+        memory.critical = true;
         cues.write(VoiceCue::new("crit"));
-    } else {
+    } else if memory.hit_cue_cooldown <= 0.0 {
+        memory.hit_cue_cooldown = HIT_CUE_GAP;
         cues.write(VoiceCue::new("hit"));
     }
 }
@@ -148,11 +229,13 @@ fn voice_rover_death(
     }
 }
 
-/// Новая волна — реплика о ней; гибель врага — звук и редкий комментарий лунохода.
+/// Новая волна — реплика о ней; гибель врага — звук и редкий комментарий лунохода, гибель
+/// босса — важная реплика.
 fn voice_enemies(
     mut waves: MessageReader<WaveStarted>,
     mut died: MessageReader<Died>,
     enemies: Query<(), With<Enemy>>,
+    bosses: Query<(), With<Boss>>,
     mut sounds: MessageWriter<PlaySound>,
     mut cues: MessageWriter<VoiceCue>,
 ) {
@@ -160,25 +243,89 @@ fn voice_enemies(
         cues.write(VoiceCue::new("wave_start"));
     }
     for message in died.read() {
-        if enemies.contains(message.entity) {
-            sounds.write(PlaySound::at("enemy_death", message.position));
+        if !enemies.contains(message.entity) {
+            continue;
+        }
+        sounds.write(PlaySound::at("enemy_death", message.position));
+        if bosses.contains(message.entity) {
+            cues.write(VoiceCue::new("boss_dead"));
+        } else {
             cues.write(VoiceCue::new("kill"));
         }
     }
 }
 
-/// Тон штаба по угрозе: вежливо, беспокойство, паника.
-fn tone_for(threat: f32) -> u8 {
-    match threat {
-        t if t < 1.0 => 1,
-        t if t < 2.5 => 2,
+/// Появился босс — важная реплика.
+fn voice_boss(bosses: Query<(), Added<Boss>>, mut cues: MessageWriter<VoiceCue>) {
+    if !bosses.is_empty() {
+        cues.write(VoiceCue::new("boss_appears"));
+    }
+}
+
+/// Тревога поднялась выше, чем была в этом забеге, — штаб об этом говорит. Спад и повторный
+/// рост до той же ступени не озвучиваются.
+fn voice_alarm(alarm: Res<Alarm>, mut memory: ResMut<AudioMemory>, mut cues: MessageWriter<VoiceCue>) {
+    let level = alarm.level();
+    if level > memory.alarm_peak {
+        memory.alarm_peak = level;
+        cues.write(VoiceCue::new("alarm_rising"));
+    }
+}
+
+/// Гибель жителя — реплика штаба и вклад в объём разрушений.
+fn voice_residents(
+    mut deaths: MessageReader<ResidentDied>,
+    mut memory: ResMut<AudioMemory>,
+    mut cues: MessageWriter<VoiceCue>,
+) {
+    let count = deaths.read().count();
+    if count > 0 {
+        memory.destruction += RESIDENT_WEIGHT * count as f32;
+        cues.write(VoiceCue::new("resident_died"));
+    }
+}
+
+/// Прорыв коры: своей реплики нет, штаб отзывается репликой о мощном взрыве. Звук извержения
+/// даёт взрыв, который лава шлёт вместе с прорывом.
+fn voice_crust(
+    mut breaches: MessageReader<CrustBreached>,
+    mut memory: ResMut<AudioMemory>,
+    mut cues: MessageWriter<VoiceCue>,
+) {
+    let count = breaches.read().count();
+    if count > 0 {
+        memory.destruction += BREACH_WEIGHT * count as f32;
+        cues.write(VoiceCue::new("big_explosion"));
+    }
+}
+
+/// Время забега превысило лучшее из таблицы рекордов — важная реплика, раз за забег.
+/// Пока таблица пуста, рекордом считать нечего.
+fn voice_record(survival: Res<SurvivalTime>, mut memory: ResMut<AudioMemory>, mut cues: MessageWriter<VoiceCue>) {
+    if memory.record_announced {
+        return;
+    }
+    if memory
+        .best_record
+        .is_some_and(|best| f64::from(survival.0) > best)
+    {
+        memory.record_announced = true;
+        cues.write(VoiceCue::new("record"));
+    }
+}
+
+/// Тон штаба по объёму разрушений: вежливо, беспокойство, паника.
+fn tone_for(destruction: f32) -> u8 {
+    match destruction {
+        d if d < WORRIED_DESTRUCTION => 1,
+        d if d < PANIC_DESTRUCTION => 2,
         _ => 3,
     }
 }
 
-/// Чем выше угроза, тем нервнее штаб.
-fn tone_follows_threat(threat: Res<Threat>, mut tone: ResMut<HqTone>) {
-    let wanted = tone_for(threat.value());
+/// Чем больше разрушено, тем нервнее штаб. Время забега на тон не влияет.
+fn tone_follows_destruction(memory: Res<AudioMemory>, mut tone: ResMut<HqTone>) {
+    let wanted = tone_for(memory.destruction);
     if tone.0 != wanted {
         tone.0 = wanted;
     }
@@ -189,18 +336,35 @@ fn menu_music(mut music: ResMut<MusicState>) {
     music.track = Track::Menu;
 }
 
-/// Пока рядом есть враги, играет боевая музыка, иначе музыка передышки.
+/// Музыка забега: пока жив босс — его тема, пока есть враги — бой. Бой сменяется передышкой
+/// только после [`LULL_DELAY`] секунд без врагов, чтобы музыка не дёргалась.
+fn music_for(boss_alive: bool, enemies: bool, calm: f32, current: Track) -> Track {
+    if boss_alive {
+        Track::Boss
+    } else if enemies || (matches!(current, Track::Combat | Track::Boss) && calm < LULL_DELAY) {
+        Track::Combat
+    } else {
+        Track::Lull
+    }
+}
+
+/// Музыка следует за врагами и боссом.
 fn music_follows_enemies(
+    time: Res<Time>,
     enemies: Query<(), With<Enemy>>,
+    bosses: Query<&Health, With<Boss>>,
     rover: Query<&Health, With<Rover>>,
+    mut memory: ResMut<AudioMemory>,
     mut music: ResMut<MusicState>,
 ) {
     let alive = rover.iter().any(|health| !health.is_dead());
-    let wanted = match (alive, enemies.is_empty(), music.track) {
-        (false, _, _) | (_, _, Track::Silence | Track::GameOver) => return,
-        (true, false, _) => Track::Combat,
-        (true, true, _) => Track::Lull,
-    };
+    if !alive || matches!(music.track, Track::Silence | Track::GameOver) {
+        return;
+    }
+    let enemies = !enemies.is_empty();
+    memory.calm = if enemies { 0.0 } else { memory.calm + time.delta_secs() };
+    let boss_alive = bosses.iter().any(|health| !health.is_dead());
+    let wanted = music_for(boss_alive, enemies, memory.calm, music.track);
     if music.track != wanted {
         music.track = wanted;
     }
@@ -218,15 +382,15 @@ fn sound_shots(mut shots: MessageReader<FireBullet>, mut sounds: MessageWriter<P
 fn sound_shells(
     time: Res<Time>,
     shells: Query<(&Transform, &Shell), Added<Shell>>,
-    mut whistles: Local<Vec<(f32, Vec3)>>,
+    mut memory: ResMut<AudioMemory>,
     mut sounds: MessageWriter<PlaySound>,
 ) {
     for (transform, shell) in &shells {
         sounds.write(PlaySound::at("mortar_fire", transform.translation));
-        whistles.push(((FLIGHT_TIME - WHISTLE_LEAD).max(0.0), shell.target()));
+        memory.whistles.push(((FLIGHT_TIME - WHISTLE_LEAD).max(0.0), shell.target()));
     }
     let dt = time.delta_secs();
-    whistles.retain_mut(|(delay, target)| {
+    memory.whistles.retain_mut(|(delay, target)| {
         *delay -= dt;
         if *delay > 0.0 {
             return true;
@@ -276,14 +440,16 @@ fn prop_death_sound(kind: PropKind) -> Option<&'static str> {
 fn sound_capsules(
     time: Res<Time>,
     capsules: Query<&Transform, Added<Capsule>>,
-    mut falls: Local<Vec<(f32, Vec3)>>,
+    mut memory: ResMut<AudioMemory>,
     mut sounds: MessageWriter<PlaySound>,
 ) {
     for transform in &capsules {
-        falls.push(((MARK_SECONDS + FALL_SECONDS - CAPSULE_FALL_LEAD).max(0.0), transform.translation));
+        memory
+            .falls
+            .push(((MARK_SECONDS + FALL_SECONDS - CAPSULE_FALL_LEAD).max(0.0), transform.translation));
     }
     let dt = time.delta_secs();
-    falls.retain_mut(|(delay, place)| {
+    memory.falls.retain_mut(|(delay, place)| {
         *delay -= dt;
         if *delay > 0.0 {
             return true;
@@ -355,27 +521,16 @@ fn explosion_sound(power: f32) -> &'static str {
     }
 }
 
-/// Взрыв — звук по мощности в месте взрыва. Первый взрыв игрока за забег и его мощные взрывы —
-/// поводы для штаба.
+/// Взрыв — звук по мощности в месте взрыва. Мощный взрыв игрока — повод для штаба. Первый
+/// кратер объясняет обучение (`src/intro.rs`): там реплика ждёт, пока штаб замолчит.
 fn sound_explosions(
-    mut started: MessageReader<RunStarted>,
     mut explosions: MessageReader<Explosion>,
-    mut cratered: Local<bool>,
     mut sounds: MessageWriter<PlaySound>,
     mut cues: MessageWriter<VoiceCue>,
 ) {
-    if started.read().count() > 0 {
-        *cratered = false;
-    }
     for explosion in explosions.read() {
         sounds.write(PlaySound::at(explosion_sound(explosion.power), explosion.position));
-        if explosion.source_team != Team::Player {
-            continue;
-        }
-        if !*cratered {
-            *cratered = true;
-            cues.write(VoiceCue::new("first_crater"));
-        } else if explosion.power > BIG_EXPLOSION_POWER {
+        if explosion.source_team == Team::Player && explosion.power > BIG_EXPLOSION_POWER {
             cues.write(VoiceCue::new("big_explosion"));
         }
     }
@@ -385,13 +540,16 @@ fn sound_explosions(
 fn sound_buildings(
     mut collapses: MessageReader<CollapseHouse>,
     mut destroyed: MessageReader<BuildingDestroyed>,
+    mut memory: ResMut<AudioMemory>,
     mut sounds: MessageWriter<PlaySound>,
     mut cues: MessageWriter<VoiceCue>,
 ) {
     for collapse in collapses.read() {
         sounds.write(PlaySound::at("building_collapse", collapse.base));
     }
-    if destroyed.read().count() > 0 {
+    let count = destroyed.read().count();
+    if count > 0 {
+        memory.destruction += HOUSE_WEIGHT * count as f32;
         cues.write(VoiceCue::new("house_destroyed"));
     }
 }
@@ -456,11 +614,57 @@ fn voice_repair(
 mod tests {
     use super::*;
 
+    use crate::sound_list::{in_group, parse_list};
+
     #[test]
-    fn hq_tone_rises_with_threat() {
+    fn hq_tone_rises_with_destruction() {
         assert_eq!(tone_for(0.0), 1);
-        assert_eq!(tone_for(1.5), 2);
-        assert_eq!(tone_for(4.0), 3);
+        assert_eq!(tone_for(WORRIED_DESTRUCTION), 2);
+        assert_eq!(tone_for(PANIC_DESTRUCTION), 3);
+    }
+
+    #[test]
+    fn combat_music_waits_before_lull() {
+        assert_eq!(music_for(false, true, 0.0, Track::Lull), Track::Combat);
+        // Последний враг погиб: бой держится ещё несколько секунд.
+        assert_eq!(music_for(false, false, LULL_DELAY - 0.1, Track::Combat), Track::Combat);
+        assert_eq!(music_for(false, false, LULL_DELAY + 0.1, Track::Combat), Track::Lull);
+        // Из передышки без врагов в бой не переходит.
+        assert_eq!(music_for(false, false, 0.5, Track::Lull), Track::Lull);
+    }
+
+    #[test]
+    fn boss_has_own_music_until_dead() {
+        assert_eq!(music_for(true, true, 0.0, Track::Combat), Track::Boss);
+        assert_eq!(music_for(false, false, 1.0, Track::Boss), Track::Combat);
+        assert_eq!(music_for(false, false, LULL_DELAY + 1.0, Track::Boss), Track::Lull);
+    }
+
+    /// Каждый повод и звук, который шлёт озвучка, есть в списках.
+    #[test]
+    fn cues_and_sounds_exist_in_lists() {
+        let cues = [
+            "run_start", "crit", "hit", "death", "wave_start", "kill", "boss_dead", "boss_appears",
+            "airstrike_call", "weapon_pickup", "big_explosion", "house_destroyed", "ammo_empty",
+            "repair_start", "repair_done", "medkit", "resident_died", "alarm_rising", "record",
+            "tut_shoot", "tut_mortar", "first_crater", "tut_repair", "tut_pickup", "tut_alarm",
+        ];
+        let sounds = [
+            "rover_hit", "enemy_death", "mg_fire", "mortar_fire", "mortar_whistle", "tree_fall",
+            "rock_break", "capsule_fall", "rocket_fire", "laser_fire", "airstrike_flyby", "pickup",
+            "hit", "explosion_small", "explosion", "explosion_big", "building_collapse", "ui_click",
+            "ui_pause", "repair",
+        ];
+        let lists = [
+            (&cues[..], include_str!("../assets/voice/lines.json")),
+            (&sounds[..], include_str!("../assets/sfx/sounds.json")),
+        ];
+        for (ids, json) in lists {
+            let entries = parse_list(json).unwrap();
+            for id in ids {
+                assert!(entries.iter().any(|entry| in_group(&entry.id, id)), "нет записей «{id}»");
+            }
+        }
     }
 
     #[test]

@@ -13,14 +13,14 @@
 //! `explosion_2`. Громкость убывает с расстоянием до слушателя — сущности с [`SoundListener`],
 //! а сторона звука совпадает со стороной экрана: событие слева от центра слышно слева.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use bevy::audio::{AudioSinkPlayback, SpatialAudioSink, SpatialListener, SpatialScale, Volume};
 use bevy::prelude::*;
 
 use crate::combat::Health;
 use crate::rover::{MAX_FORWARD_SPEED, Rover, RoverMotion};
-use crate::run::GameState;
+use crate::run::{GameState, WorldRebuilt};
 use crate::sound_list::{Dice, SoundList};
 
 /// Каталог звуков внутри `assets`.
@@ -57,6 +57,15 @@ const ENGINE_PITCH: (f32, f32) = (0.7, 0.5);
 /// Сколько экземпляров одной группы звучит одновременно, если для группы нет своего предела.
 const DEFAULT_LIMIT: usize = 4;
 
+/// Сколько звуков мира звучит одновременно всего, по всем группам. Каждый — поток mp3,
+/// без общего предела бой даёт 30–40 потоков. Звуки интерфейса в предел не входят.
+const TOTAL_LIMIT: usize = 20;
+
+/// Дольше этого экземпляр звука не живёт, с: самый длинный звук — 12 с, на замедлении
+/// времени возраст звука мира растёт медленнее вместе с ним. Без звукового устройства
+/// экземпляры никто не удаляет, кроме этого срока.
+const MAX_SOUND_AGE: f32 = 20.0;
+
 /// Свои пределы одновременных экземпляров по началу идентификатора группы.
 const LIMITS: &[(&str, usize)] = &[
     ("mg_", 6),
@@ -83,7 +92,12 @@ impl Plugin for SoundPlugin {
             .add_systems(Startup, load_sounds)
             .add_systems(
                 Update,
+                forget_world_sounds.in_set(crate::frame::GameSet::Reset),
+            )
+            .add_systems(
+                Update,
                 (
+                    expire_sounds,
                     attach_listener,
                     attach_ears,
                     play_sounds,
@@ -240,6 +254,8 @@ struct SoundInstance {
     world: bool,
     /// Случайный разброс высоты этого экземпляра, без учёта замедления времени.
     pitch: f32,
+    /// Сколько секунд звучит: для звуков мира по игровому времени, для интерфейса по реальному.
+    age: f32,
 }
 
 /// Звук игрового мира, а не интерфейса. Звуки интерфейса начинаются с `ui_`.
@@ -258,6 +274,12 @@ fn volume_at(distance: f32) -> Option<f32> {
     }
     let ratio = distance / HALF_VOLUME_DISTANCE;
     Some(1.0 / (1.0 + ratio * ratio))
+}
+
+/// Найдётся ли место новому звуку группы `group`: в ней звучит `in_group`, всего в мире —
+/// `in_world` звуков.
+fn has_room(group: &str, in_group: usize, in_world: usize) -> bool {
+    in_group < limit_for(group) && (!is_world_sound(group) || in_world < TOTAL_LIMIT)
 }
 
 /// Предел одновременных экземпляров для группы.
@@ -282,8 +304,14 @@ fn play_sounds(
         return;
     }
     let listener_position = listener.iter().next().map(GlobalTransform::translation);
-    // Сколько экземпляров каждой группы уже звучит, вместе с созданными в этом кадре.
-    let mut started: Vec<String> = Vec::new();
+    // Сколько экземпляров каждой группы и всех звуков мира уже звучит, вместе с созданными
+    // в этом кадре.
+    let mut in_group: HashMap<String, usize> = HashMap::new();
+    let mut in_world = 0;
+    for instance in &instances {
+        *in_group.entry(instance.group.clone()).or_default() += 1;
+        in_world += usize::from(instance.world);
+    }
 
     for request in requests.read() {
         let volume = match (request.position, listener_position) {
@@ -315,20 +343,16 @@ fn play_sounds(
             continue;
         };
 
-        let active = instances
-            .iter()
-            .filter(|instance| instance.group == request.id)
-            .count()
-            + started.iter().filter(|group| **group == request.id).count();
-        if active >= limit_for(&request.id) {
+        let active = in_group.get(&request.id).copied().unwrap_or(0);
+        if !has_room(&request.id, active, in_world) {
             continue;
         }
-        started.push(request.id.clone());
-
         let Some(sound) = &chosen.sound else {
             continue;
         };
         let world = is_world_sound(&request.id);
+        *in_group.entry(request.id.clone()).or_default() += 1;
+        in_world += usize::from(world);
         let pitch = dice.range(SPEED_SPREAD.0, SPEED_SPREAD.1);
         // Замедление времени растягивает звук мира.
         let speed = if world { pitch * time_stretch(&time) } else { pitch };
@@ -336,6 +360,7 @@ fn play_sounds(
             group: request.id.clone(),
             world,
             pitch,
+            age: 0.0,
         };
         let settings = PlaybackSettings {
             volume: Volume::Linear(volume),
@@ -356,6 +381,38 @@ fn play_sounds(
             )),
             None => commands.spawn((instance, AudioPlayer::new(sound.clone()), settings)),
         };
+    }
+}
+
+/// Убирает звуки старше [`MAX_SOUND_AGE`]: их не удалит звуковая подсистема, если нет
+/// устройства или звук не загрузился. Иначе они навсегда заняли бы место в пределах.
+fn expire_sounds(
+    mut commands: Commands,
+    time: Res<Time<Virtual>>,
+    real: Res<Time<Real>>,
+    mut instances: Query<(Entity, &mut SoundInstance)>,
+) {
+    for (entity, mut instance) in &mut instances {
+        instance.age += if instance.world { time.delta_secs() } else { real.delta_secs() };
+        if instance.age > MAX_SOUND_AGE {
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
+/// Мир перестроен: звуки прошлого забега, замершие на паузе, не доигрывают в новом.
+fn forget_world_sounds(
+    mut commands: Commands,
+    mut rebuilt: MessageReader<WorldRebuilt>,
+    instances: Query<(Entity, &SoundInstance)>,
+) {
+    if rebuilt.read().last().is_none() {
+        return;
+    }
+    for (entity, instance) in &instances {
+        if instance.world {
+            commands.entity(entity).despawn();
+        }
     }
 }
 
@@ -436,6 +493,15 @@ mod tests {
         assert_eq!(limit_for("tree_fall"), 3);
         assert_eq!(limit_for("rock_break"), 3);
         assert_eq!(limit_for("capsule_fall"), 3);
+    }
+
+    #[test]
+    fn world_sounds_share_a_total_limit() {
+        assert!(has_room("explosion", 0, TOTAL_LIMIT - 1));
+        assert!(!has_room("explosion", 0, TOTAL_LIMIT));
+        assert!(!has_room("explosion", limit_for("explosion"), 0));
+        // Интерфейс звучит и при полном мире.
+        assert!(has_room("ui_click", 0, TOTAL_LIMIT));
     }
 
     #[test]

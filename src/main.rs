@@ -26,6 +26,7 @@ mod frame;
 mod hq;
 mod hud;
 mod impact;
+mod intro;
 mod minimap;
 mod models;
 mod laser;
@@ -152,6 +153,7 @@ fn game_plugins(app: &mut App) {
             music::MusicPlugin,
             audio_events::AudioEventsPlugin,
             comic::ComicPlugin,
+            intro::IntroPlugin,
         ));
 }
 

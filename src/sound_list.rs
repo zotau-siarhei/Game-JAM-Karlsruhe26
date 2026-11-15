@@ -313,6 +313,19 @@ mod tests {
         }
     }
 
+    /// У вариантов одного повода штаба один приоритет: приоритет повода берётся как наибольший
+    /// из вариантов, и один вариант с повышенным выводил бы весь повод из-под ограничения частоты.
+    #[test]
+    fn voice_variants_share_priority() {
+        let entries = parse_list(include_str!("../assets/voice/lines.json")).unwrap();
+        let mut priorities: HashMap<&str, u8> = HashMap::new();
+        for entry in &entries {
+            let base = base_id(&entry.id);
+            let first = *priorities.entry(base).or_insert(entry.pri);
+            assert_eq!(first, entry.pri, "у «{}» приоритет не как у других вариантов «{base}»", entry.id);
+        }
+    }
+
     /// У каждой записи списков из репозитория звуковой файл лежит рядом со списком.
     #[test]
     fn repository_lists_have_files() {
