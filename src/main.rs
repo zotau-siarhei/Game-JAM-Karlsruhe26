@@ -24,6 +24,7 @@ mod hud;
 mod impact;
 mod minimap;
 mod laser;
+mod lava;
 mod mortar;
 mod obstacles;
 mod music;
@@ -97,6 +98,7 @@ fn main() {
             explosion_fx::ExplosionFxPlugin,
             mortar::MortarPlugin,
             craters::CratersPlugin,
+            lava::LavaPlugin,
             impact::ImpactPlugin,
         ))
         .add_plugins((

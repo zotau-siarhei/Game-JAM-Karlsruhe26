@@ -174,6 +174,7 @@ impl Plugin for EnemyPlugin {
                     drive_mortarmen,
                     drive_rocketeers,
                     drive_tanks,
+                    avoid_lava,
                     steering::steer_vehicles,
                     vehicle::move_ground_vehicles,
                     separate_enemies,
@@ -581,6 +582,7 @@ fn dip_at(terrain: &Terrain, x: f32, z: f32) -> f32 {
 /// предпочитая дно кратера и близкие к ракетчику. `None`, если скрытых точек нет.
 fn find_cover(
     terrain: &Terrain,
+    pools: &crate::lava::LavaPools,
     obstacles: &Query<(Entity, &Obstacle)>,
     dice: &mut Dice,
     me: Vec3,
@@ -592,7 +594,7 @@ fn find_cover(
         let angle = base + dice.range(-1.4, 1.4);
         let mut p = ring_point(rover, angle, dice.range(COVER_RING.0, COVER_RING.1));
         p.y = terrain.height_at(p.x, p.z);
-        if !hidden_from(terrain, obstacles.iter(), p, rover) {
+        if !hidden_from(terrain, obstacles.iter(), p, rover) || crate::lava::is_lava(pools, p) {
             continue;
         }
         let mut score = -p.distance(me) * 0.1;
@@ -611,6 +613,7 @@ fn find_cover(
 fn drive_rocketeers(
     time: Res<Time>,
     terrain: Res<Terrain>,
+    pools: Res<crate::lava::LavaPools>,
     obstacles: Query<(Entity, &Obstacle)>,
     mut dice: ResMut<Dice>,
     rover: Query<(&Transform, &Health), With<Rover>>,
@@ -637,7 +640,7 @@ fn drive_rocketeers(
                 .cover
                 .is_none_or(|c| !hidden_from(&terrain, obstacles.iter(), c, target) || c.distance(target) > COVER_RING.1 + 10.0);
             if lost {
-                robot.cover = find_cover(&terrain, &obstacles, &mut dice, me, target);
+                robot.cover = find_cover(&terrain, &pools, &obstacles, &mut dice, me, target);
                 robot.state = CoverState::Moving;
             }
         }
@@ -762,6 +765,26 @@ fn drive_tanks(
         for child in children.iter() {
             if let Ok(mut visibility) = lines.get_mut(child) {
                 *visibility = if show_line { Visibility::Visible } else { Visibility::Hidden };
+            }
+        }
+    }
+}
+
+/// Все, кроме таран-стрелков, объезжают лаву: если впереди по курсу озеро, курс уводится вбок.
+fn avoid_lava(
+    pools: Res<crate::lava::LavaPools>,
+    mut enemies: Query<(&Transform, &mut Steering), (With<Enemy>, Without<EnemyWeapons>)>,
+) {
+    for (transform, mut steering) in &mut enemies {
+        if steering.speed == 0.0 {
+            continue;
+        }
+        for turn in [0.0, 0.8, -0.8, 1.6, -1.6] {
+            let heading = steering.desired + turn;
+            let ahead = transform.translation + vehicle::forward_of(heading) * 5.0;
+            if !crate::lava::is_lava(&pools, ahead) {
+                steering.desired = heading;
+                break;
             }
         }
     }

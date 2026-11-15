@@ -323,6 +323,7 @@ fn draw_terrain(
     houses: Query<&House>,
     camera: Query<(&Camera, &GlobalTransform), With<GameCamera>>,
     state: Res<State<GameState>>,
+    lava: Res<crate::lava::LavaPools>,
 ) {
     texture.timer -= time.delta_secs();
     if texture.timer > 0.0 || *state.get() == GameState::Menu {
@@ -387,6 +388,12 @@ fn draw_terrain(
                 lz += step * 0.7;
             }
             lx += step * 0.7;
+        }
+    }
+    // Лава: оранжевые ячейки озёр.
+    for cell in lava.cells() {
+        if let Some((x, y)) = pixel_of(cell.as_vec2() - center) {
+            put(data, x, y, [255, 120, 20]);
         }
     }
     // Рамка кадра: углы экрана на плоскости под луноходом.

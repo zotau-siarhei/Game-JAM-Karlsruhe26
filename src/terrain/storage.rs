@@ -187,6 +187,11 @@ impl Terrain {
             .level(line, s, |x, z| self.generator.hills_height(x, z))
     }
 
+    /// Исходная высота вершины до всех деформаций: от неё считается глубина коры.
+    pub fn original_height(&self, vx: i32, vz: i32) -> f32 {
+        self.generator.height(vx as f32, vz as f32)
+    }
+
     /// Нетронутая высота без путей: по ней видно, где над путями гора.
     pub fn raw_height(&self, x: f32, z: f32) -> f32 {
         self.generator.raw_height(x, z)
