@@ -14,6 +14,12 @@
 //! | Искры | яркие короткие частицы с гравитацией | 0–0,6 с |
 //! | Горящие осколки | горящие обломки со шлейфом дыма, догорают на земле | 0–5 с |
 //! | Дым | крупные полупрозрачные частицы, подъём, расширение, снос ветром | 0,3–4 с |
+//!
+//! Полный эффект — пять систем частиц, поэтому одновременно их не больше [`MAX_FULL_FX`].
+//! Слабый, далёкий или сверх предела взрыв получает упрощённый эффект: огненный шар, огонь
+//! и грунт с третью частиц, без пыли, искр, дыма и кольца. Сверх [`MAX_FX`] остаётся только
+//! огненный шар, а взрыв дальше [`FX_RANGE`] от фокуса камеры не рисуется вовсе. Свет вспышки
+//! удаляется, как только она погасла.
 
 use bevy::camera::visibility::NoFrustumCulling;
 use bevy::mesh::{Indices, PrimitiveTopology};
@@ -21,6 +27,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::Face;
 use bevy_hanabi::prelude::*;
 
+use crate::camera::Focus;
 use crate::debris::SpawnDebris;
 use crate::explosion::Explosion;
 use crate::frame::GameSet;
@@ -29,6 +36,24 @@ use crate::terrain::Terrain;
 
 /// Сколько живёт корень взрыва, с: дольше всех слоёв, включая частицы пыли.
 const FX_LIFETIME: f32 = 4.5;
+/// Сколько живёт корень упрощённого эффекта, с: дыма нет, дольше всех живёт грунт.
+const LIGHT_FX_LIFETIME: f32 = 1.6;
+
+/// Сколько полных эффектов (пять систем частиц) может жить одновременно.
+const MAX_FULL_FX: usize = 8;
+/// Сколько эффектов любого вида может жить одновременно; сверх него — только огненный шар.
+const MAX_FX: usize = 24;
+/// Сколько вспышек света может гореть одновременно.
+const MAX_FLASHES: usize = 6;
+/// Взрыв слабее этого получает упрощённый эффект: гибель врага (0,25), ракета (0,45),
+/// вражеская мортира (0,35), капсула (0,5).
+const LIGHT_POWER: f32 = 0.8;
+/// Дальше этого от фокуса камеры взрыв получает упрощённый эффект, м: у края кадра и за ним.
+const FULL_RANGE: f32 = 60.0;
+/// Дальше этого от фокуса камеры эффекта нет, м: за пределом подгруженных участков.
+const FX_RANGE: f32 = 120.0;
+/// Доля частиц огня и грунта у упрощённого эффекта.
+const LIGHT_SHARE: f32 = 0.35;
 
 /// Пиковая яркость вспышки при мощности 1, лм.
 const FLASH_PEAK: f32 = 3.0e7;
@@ -121,11 +146,41 @@ impl Plugin for ExplosionFxPlugin {
     }
 }
 
+/// Насколько подробно рисуется взрыв.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FxTier {
+    /// Все слои: вспышка, шар, кольцо, пять систем частиц.
+    Full,
+    /// Вспышка, шар и две системы частиц с третью частиц.
+    Light,
+    /// Только огненный шар.
+    Minimal,
+    /// Ничего: взрыв далеко за кадром.
+    Hidden,
+}
+
+/// Подробность эффекта по мощности, расстоянию до фокуса камеры и числу живых эффектов.
+pub fn fx_tier(power: f32, distance: f32, full_alive: usize, alive: usize) -> FxTier {
+    if distance > FX_RANGE {
+        FxTier::Hidden
+    } else if alive >= MAX_FX {
+        FxTier::Minimal
+    } else if power < LIGHT_POWER || distance > FULL_RANGE || full_alive >= MAX_FULL_FX {
+        FxTier::Light
+    } else {
+        FxTier::Full
+    }
+}
+
 /// Корень взрыва: возраст и параметры, по которым анимируются слои.
 #[derive(Component)]
 struct ExplosionFx {
     /// Сколько прошло с взрыва, с.
     age: f32,
+    /// Сколько живёт корень, с.
+    life: f32,
+    /// Полный ли эффект: для предела одновременных.
+    full: bool,
     /// Центр взрыва.
     center: Vec3,
     /// Мощность взрыва.
@@ -163,6 +218,9 @@ struct ExplosionFxAssets {
     ejecta: Handle<EffectAsset>,
     sparks: Handle<EffectAsset>,
     smoke: Handle<EffectAsset>,
+    /// Огонь и грунт упрощённого эффекта.
+    light_fire: Handle<EffectAsset>,
+    light_ejecta: Handle<EffectAsset>,
 }
 
 /// Яркость вспышки в момент `age`, лм.
@@ -254,16 +312,18 @@ fn create_assets(
                 .ico(3)
                 .expect("сфера огненного шара"),
         ),
-        fire: effects.add(fire_effect()),
+        fire: effects.add(fire_effect(FIRE_PARTICLES)),
         dust: effects.add(dust_effect()),
-        ejecta: effects.add(ejecta_effect()),
+        ejecta: effects.add(ejecta_effect(EJECTA_PARTICLES)),
         sparks: effects.add(spark_effect()),
         smoke: effects.add(smoke_effect()),
+        light_fire: effects.add(fire_effect(FIRE_PARTICLES * LIGHT_SHARE)),
+        light_ejecta: effects.add(ejecta_effect(EJECTA_PARTICLES * LIGHT_SHARE)),
     });
 }
 
 /// Частицы огня: разлетаются из центра, тормозят, поднимаются и темнеют.
-fn fire_effect() -> EffectAsset {
+fn fire_effect(particles: f32) -> EffectAsset {
     let writer = ExprWriter::new();
     let power = writer.add_property("power", Value::Scalar(1.0.into()));
 
@@ -301,7 +361,7 @@ fn fire_effect() -> EffectAsset {
 
     EffectAsset::new(
         256,
-        SpawnerSettings::once(FIRE_PARTICLES.into()),
+        SpawnerSettings::once(particles.into()),
         writer.finish(),
     )
     .with_name("explosion_fire")
@@ -388,7 +448,7 @@ fn dust_effect() -> EffectAsset {
 }
 
 /// Выброшенный грунт: летит вверх конусом, падает по гравитации, бурый.
-fn ejecta_effect() -> EffectAsset {
+fn ejecta_effect(particles: f32) -> EffectAsset {
     let writer = ExprWriter::new();
     let power = writer.add_property("power", Value::Scalar(1.0.into()));
 
@@ -422,7 +482,7 @@ fn ejecta_effect() -> EffectAsset {
 
     EffectAsset::new(
         512,
-        SpawnerSettings::once(EJECTA_PARTICLES.into()),
+        SpawnerSettings::once(particles.into()),
         writer.finish(),
     )
     .with_name("explosion_ejecta")
@@ -567,26 +627,45 @@ fn unlit_material(color: Color) -> StandardMaterial {
     }
 }
 
-/// Создаёт корень взрыва со всеми слоями на каждое сообщение `Explosion`.
+/// Создаёт корень взрыва со слоями на каждое сообщение `Explosion`: подробность по [`fx_tier`].
+#[allow(clippy::too_many_arguments)]
 fn spawn_explosions(
     mut commands: Commands,
     time: Res<Time>,
+    focus: Res<Focus>,
     assets: Res<ExplosionFxAssets>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut explosions: MessageReader<Explosion>,
     mut debris: MessageWriter<SpawnDebris>,
+    roots: Query<&ExplosionFx>,
+    flashes: Query<(), With<FlashLayer>>,
 ) {
+    let mut alive = roots.iter().count();
+    let mut full_alive = roots.iter().filter(|fx| fx.full).count();
+    let mut flashes = flashes.iter().count();
     for (index, e) in explosions.read().enumerate() {
         let seed = explosion_seed(e.position, time.elapsed_secs() + index as f32);
         let mut rng = Rng::new(seed);
         let power = e.power.max(0.05);
         let scale = power.sqrt();
 
+        // Комья и осколки — часть мира, а не картинки: ложатся и вдали от камеры.
+        throw_debris(&mut debris, &mut rng, e.position, power, scale);
+
+        let tier = fx_tier(power, e.position.distance(focus.0), full_alive, alive);
+        if tier == FxTier::Hidden {
+            continue;
+        }
+        let full = tier == FxTier::Full;
+        alive += 1;
+        full_alive += usize::from(full);
         let root = commands
             .spawn((
                 ExplosionFx {
                     age: 0.0,
+                    life: if full { FX_LIFETIME } else { LIGHT_FX_LIFETIME },
+                    full,
                     center: e.position,
                     power,
                 },
@@ -597,18 +676,21 @@ fn spawn_explosions(
             .id();
 
         // Вспышка.
-        commands.spawn((
-            FlashLayer,
-            PointLight {
-                color: FLASH_COLOR,
-                intensity: flash_intensity(0.0, power),
-                range: e.radius * FLASH_RANGE * scale,
-                shadow_maps_enabled: false,
-                ..default()
-            },
-            Transform::from_xyz(0.0, FLASH_HEIGHT * scale, 0.0),
-            ChildOf(root),
-        ));
+        if tier != FxTier::Minimal && flashes < MAX_FLASHES {
+            flashes += 1;
+            commands.spawn((
+                FlashLayer,
+                PointLight {
+                    color: FLASH_COLOR,
+                    intensity: flash_intensity(0.0, power),
+                    range: e.radius * FLASH_RANGE * scale,
+                    shadow_maps_enabled: false,
+                    ..default()
+                },
+                Transform::from_xyz(0.0, FLASH_HEIGHT * scale, 0.0),
+                ChildOf(root),
+            ));
+        }
 
         // Огненный шар из нескольких сфер с общим материалом.
         let fireball = materials.add(unlit_material(Color::srgba(1.0, 0.97, 0.85, 1.0)));
@@ -647,13 +729,18 @@ fn spawn_explosions(
         // Огонь и пыль частицами, у каждого взрыва свой сид разброса.
         let properties = EffectProperties::default()
             .with_properties([("power".to_string(), Value::Scalar(scale.into()))]);
-        for (effect, salt) in [
-            (&assets.fire, 1u32),
-            (&assets.dust, 2),
-            (&assets.ejecta, 3),
-            (&assets.sparks, 4),
-            (&assets.smoke, 5),
-        ] {
+        let effects: &[(&Handle<EffectAsset>, u32)] = match tier {
+            FxTier::Full => &[
+                (&assets.fire, 1u32),
+                (&assets.dust, 2),
+                (&assets.ejecta, 3),
+                (&assets.sparks, 4),
+                (&assets.smoke, 5),
+            ],
+            FxTier::Light => &[(&assets.light_fire, 1), (&assets.light_ejecta, 3)],
+            FxTier::Minimal | FxTier::Hidden => &[],
+        };
+        for &(effect, salt) in effects {
             commands.spawn((
                 ParticleEffect {
                     prng_seed: Some(seed.wrapping_add(salt)),
@@ -665,37 +752,9 @@ fn spawn_explosions(
             ));
         }
 
-        // Комья грунта и горящие осколки: настоящие обломки, ложатся на рельеф.
-        if power >= DEBRIS_MIN_POWER {
-            let throw = |rng: &mut Rng, up: (f32, f32), side: (f32, f32)| {
-                let angle = rng.range(0.0, std::f32::consts::TAU);
-                let side = rng.range(side.0, side.1) * scale;
-                Vec3::new(angle.cos() * side, rng.range(up.0, up.1) * scale, angle.sin() * side)
-            };
-            let clods = rng.range(CLODS.0 as f32, CLODS.1 as f32 + 0.999) as u32;
-            for _ in 0..clods {
-                let s = rng.range(0.25, 0.55) * scale;
-                debris.write(SpawnDebris {
-                    position: e.position + Vec3::Y * 0.5,
-                    velocity: throw(&mut rng, (8.0, 15.0), (3.0, 9.0)),
-                    size: Vec3::new(s, s * rng.range(0.6, 0.9), s * rng.range(0.7, 1.0)),
-                    color: CLOD_COLOR,
-                    burning: false,
-                });
-            }
-            let shards = rng.range(BURNING_SHARDS.0 as f32, BURNING_SHARDS.1 as f32 + 0.999) as u32;
-            for _ in 0..shards {
-                let s = rng.range(0.15, 0.3) * scale;
-                debris.write(SpawnDebris {
-                    position: e.position + Vec3::Y * 0.8,
-                    velocity: throw(&mut rng, (10.0, 18.0), (4.0, 11.0)),
-                    size: Vec3::new(s, s * 0.5, s * 1.4),
-                    color: SHARD_COLOR,
-                    burning: true,
-                });
-            }
+        if !full {
+            continue;
         }
-
         // Кольцо ударной волны. Меш свой у каждого взрыва: вершины кладутся на рельеф.
         commands.spawn((
             ShockwaveLayer {
@@ -714,6 +773,39 @@ fn spawn_explosions(
             NoFrustumCulling,
             ChildOf(root),
         ));
+    }
+}
+
+/// Комья грунта и горящие осколки: настоящие обломки, ложатся на рельеф.
+fn throw_debris(debris: &mut MessageWriter<SpawnDebris>, rng: &mut Rng, center: Vec3, power: f32, scale: f32) {
+    if power >= DEBRIS_MIN_POWER {
+        let throw = |rng: &mut Rng, up: (f32, f32), side: (f32, f32)| {
+            let angle = rng.range(0.0, std::f32::consts::TAU);
+            let side = rng.range(side.0, side.1) * scale;
+            Vec3::new(angle.cos() * side, rng.range(up.0, up.1) * scale, angle.sin() * side)
+        };
+        let clods = rng.range(CLODS.0 as f32, CLODS.1 as f32 + 0.999) as u32;
+        for _ in 0..clods {
+            let s = rng.range(0.25, 0.55) * scale;
+            debris.write(SpawnDebris {
+                position: center + Vec3::Y * 0.5,
+                velocity: throw(rng, (8.0, 15.0), (3.0, 9.0)),
+                size: Vec3::new(s, s * rng.range(0.6, 0.9), s * rng.range(0.7, 1.0)),
+                color: CLOD_COLOR,
+                burning: false,
+            });
+        }
+        let shards = rng.range(BURNING_SHARDS.0 as f32, BURNING_SHARDS.1 as f32 + 0.999) as u32;
+        for _ in 0..shards {
+            let s = rng.range(0.15, 0.3) * scale;
+            debris.write(SpawnDebris {
+                position: center + Vec3::Y * 0.8,
+                velocity: throw(rng, (10.0, 18.0), (4.0, 11.0)),
+                size: Vec3::new(s, s * 0.5, s * 1.4),
+                color: SHARD_COLOR,
+                burning: true,
+            });
+        }
     }
 }
 
@@ -740,20 +832,25 @@ fn age_explosions(
 ) {
     for (entity, mut fx) in &mut roots {
         fx.age += time.delta_secs();
-        if fx.age >= FX_LIFETIME {
+        if fx.age >= fx.life {
             commands.entity(entity).despawn();
         }
     }
 }
 
-/// Гасит вспышку по экспоненте.
+/// Гасит вспышку по экспоненте и удаляет погасший источник света, не дожидаясь корня.
 fn animate_flash(
+    mut commands: Commands,
     roots: Query<&ExplosionFx>,
-    mut lights: Query<(&ChildOf, &mut PointLight), With<FlashLayer>>,
+    mut lights: Query<(Entity, &ChildOf, &mut PointLight), With<FlashLayer>>,
 ) {
-    for (parent, mut light) in &mut lights {
+    for (entity, parent, mut light) in &mut lights {
         if let Ok(fx) = roots.get(parent.parent()) {
-            light.intensity = flash_intensity(fx.age, fx.power);
+            if fx.age >= FLASH_TIME {
+                commands.entity(entity).despawn();
+            } else {
+                light.intensity = flash_intensity(fx.age, fx.power);
+            }
         }
     }
 }
@@ -890,6 +987,16 @@ mod tests {
         assert!((r1 - 12.0).abs() < 1e-5);
         assert!(a0 > a_mid && a_mid > a1);
         assert_eq!(a1, 0.0);
+    }
+
+    #[test]
+    fn effects_are_limited_and_simplified() {
+        assert_eq!(fx_tier(1.4, 10.0, 0, 0), FxTier::Full);
+        assert_eq!(fx_tier(0.25, 10.0, 0, 0), FxTier::Light, "гибель врага — упрощённый");
+        assert_eq!(fx_tier(1.4, FULL_RANGE + 1.0, 0, 0), FxTier::Light, "у края кадра — упрощённый");
+        assert_eq!(fx_tier(1.4, 10.0, MAX_FULL_FX, MAX_FULL_FX), FxTier::Light);
+        assert_eq!(fx_tier(1.4, 10.0, 0, MAX_FX), FxTier::Minimal);
+        assert_eq!(fx_tier(1.4, FX_RANGE + 1.0, 0, 0), FxTier::Hidden);
     }
 
     #[test]
