@@ -52,8 +52,26 @@ const LIMIT_REACH: i32 = (PROFILE_RANGE / (MAX_SLOPE * KNOT_STEP)) as i32 + 1;
 pub const TRACK_FLAT: f32 = 5.0;
 pub const TRACK_BAND: f32 = 14.0;
 
+/// Насыпь под путями: высота над уровнем путей, полуширина плоского верха и где кончается
+/// откос, м. Рельсы и вагоны стоят на её верхе.
+pub const EMBANKMENT_HEIGHT: f32 = 0.8;
+const EMBANKMENT_TOP: f32 = 2.0;
+const EMBANKMENT_FOOT: f32 = 4.5;
+
+/// Высота насыпи над уровнем путей на расстоянии `distance` от оси: плоский верх, плавный откос.
+pub fn embankment(distance: f32) -> f32 {
+    let t = ((distance - EMBANKMENT_TOP) / (EMBANKMENT_FOOT - EMBANKMENT_TOP)).clamp(0.0, 1.0);
+    EMBANKMENT_HEIGHT * (1.0 - t * t * (3.0 - 2.0 * t))
+}
+
 /// На сколько гора выше путей, чтобы под ней был туннель, м.
 pub const TUNNEL_DEPTH: f32 = 9.0;
+
+/// Туннель не короче этого, м: гребень уже прорезается выемкой.
+pub const TUNNEL_MIN_LENGTH: f32 = 30.0;
+
+/// Шаг выборок вдоль пути, по которым меряется длина туннеля, м.
+const TUNNEL_STEP: f32 = 2.0;
 
 /// Сдвиг сида для изгибов линий.
 const BEND_SEED: u32 = 6_000;
@@ -91,6 +109,8 @@ pub struct Lines {
 struct Profile {
     smoothed: HashMap<(LineId, i32), f32>,
     limited: HashMap<(LineId, i32), f32>,
+    /// Гора над путями глубже [`TUNNEL_DEPTH`] в выборках через [`TUNNEL_STEP`].
+    deep: HashMap<(LineId, i32), bool>,
 }
 
 /// Ближайшая линия к точке.
@@ -271,6 +291,52 @@ impl Lines {
         level
     }
 
+    /// Гора над осью на параметре `s` выше уровня путей больше чем на [`TUNNEL_DEPTH`].
+    fn is_deep(&self, line: LineId, s: f32, raw: &impl Fn(f32, f32) -> f32, hills: &impl Fn(f32, f32) -> f32) -> bool {
+        let axis = self.point(line, s);
+        raw(axis.x, axis.y) > self.level(line, s, hills) + TUNNEL_DEPTH
+    }
+
+    /// [`Self::is_deep`] в выборке номер `i` через [`TUNNEL_STEP`], с запоминанием.
+    fn deep_sample(&self, line: LineId, i: i32, raw: &impl Fn(f32, f32) -> f32, hills: &impl Fn(f32, f32) -> f32) -> bool {
+        if let Some(deep) = self.profile.lock().unwrap().deep.get(&(line, i)) {
+            return *deep;
+        }
+        let deep = self.is_deep(line, i as f32 * TUNNEL_STEP, raw, hills);
+        self.profile.lock().unwrap().deep.insert((line, i), deep);
+        deep
+    }
+
+    /// Проходит ли путь на параметре `s` в туннеле: гора над ним выше уровня путей больше чем на
+    /// [`TUNNEL_DEPTH`], и так подряд не меньше [`TUNNEL_MIN_LENGTH`]. Короткий гребень — выемка.
+    ///
+    /// `raw` — исходный рельеф, `hills` — его холмистая часть без гор; как и у [`Self::level`],
+    /// это одни и те же функции на всю жизнь линий: выборки запоминаются.
+    pub fn is_tunnel(&self, line: LineId, s: f32, raw: impl Fn(f32, f32) -> f32, hills: impl Fn(f32, f32) -> f32) -> bool {
+        if !self.is_deep(line, s, &raw, &hills) {
+            return false;
+        }
+        let deep = |i: i32| self.deep_sample(line, i, &raw, &hills);
+        // Ближайшая глубокая выборка рядом с `s`; от неё — глубокие подряд в обе стороны.
+        let i = (s / TUNNEL_STEP).floor() as i32;
+        let start = if deep(i) {
+            i
+        } else if deep(i + 1) {
+            i + 1
+        } else {
+            return false;
+        };
+        let need = (TUNNEL_MIN_LENGTH / TUNNEL_STEP).ceil() as i32;
+        let (mut lo, mut hi) = (start, start);
+        while hi - lo < need && deep(lo - 1) {
+            lo -= 1;
+        }
+        while hi - lo < need && deep(hi + 1) {
+            hi += 1;
+        }
+        hi - lo >= need
+    }
+
     /// Высота рельефа с поправкой путей: насыпи и выемки в полосе у оси, туннели под горами.
     ///
     /// `raw` — исходный рельеф, `hills` — его холмистая часть без гор.
@@ -281,13 +347,12 @@ impl Lines {
             return h;
         }
         let level = self.level(near.line, near.s, &hills);
-        let axis = self.point(near.line, near.s);
-        if raw(axis.x, axis.y) > level + TUNNEL_DEPTH {
+        if self.is_tunnel(near.line, near.s, &raw, &hills) {
             return h;
         }
         let t = ((near.distance - TRACK_FLAT) / (TRACK_BAND - TRACK_FLAT)).clamp(0.0, 1.0);
         let k = t * t * (3.0 - 2.0 * t);
-        level + (h - level) * k
+        level + (h - level) * k + embankment(near.distance)
     }
 }
 
@@ -361,6 +426,51 @@ mod tests {
         assert!((lines.level(line, -650.0, cliff) + 7.0).abs() < 0.01);
         assert!((lines.level(line, 650.0, cliff) - 7.0).abs() < 0.01);
         assert!(lines.level(line, 0.0, cliff).abs() < 0.5);
+    }
+
+    #[test]
+    fn short_ridge_is_cut_and_long_mountain_is_a_tunnel() {
+        // Холмов нет, уровень путей 0; поперёк линии гребень высотой 15 м. Выборки запоминаются,
+        // поэтому у каждого рельефа свои линии.
+        let lines = Lines::new(3);
+        let line = LineId {
+            family: Family::AlongX,
+            index: 0,
+        };
+        let hills = |_x: f32, _z: f32| 0.0;
+        let ridge = |width: f32| move |x: f32, _z: f32| if (x - 100.0).abs() < width * 0.5 { 15.0 } else { 0.0 };
+        // Гребень 20 м: выемка, рельеф над осью срезан до уровня путей, на нём насыпь.
+        let narrow = ridge(20.0);
+        assert!(!lines.is_tunnel(line, 100.0, narrow, hills));
+        let axis = lines.point(line, 100.0);
+        assert!((lines.corrected_height(axis.x, axis.y, narrow, hills) - EMBANKMENT_HEIGHT).abs() < 0.01);
+        // Гора 60 м: туннель, гора над осью остаётся.
+        let lines = Lines::new(3);
+        let wide = ridge(60.0);
+        for s in [75.0, 100.0, 125.0] {
+            assert!(lines.is_tunnel(line, s, wide, hills), "s = {s}");
+        }
+        assert!(!lines.is_tunnel(line, 140.0, wide, hills));
+        assert!((lines.corrected_height(axis.x, axis.y, wide, hills) - 15.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn track_runs_on_an_embankment() {
+        // Ровная земля: у оси насыпь, за откосом земля на уровне путей.
+        let lines = Lines::new(4);
+        let line = LineId {
+            family: Family::AlongX,
+            index: 0,
+        };
+        let flat = |_x: f32, _z: f32| 0.0;
+        let at = |d: f32| {
+            let p = lines.point(line, 50.0) + Vec2::Y * d;
+            lines.corrected_height(p.x, p.y, flat, flat)
+        };
+        assert!((at(0.0) - EMBANKMENT_HEIGHT).abs() < 0.05);
+        assert!((at(1.5) - EMBANKMENT_HEIGHT).abs() < 0.05);
+        assert!(at(3.2) < EMBANKMENT_HEIGHT && at(3.2) > 0.0, "откос");
+        assert!(at(6.0).abs() < 0.01);
     }
 
     #[test]

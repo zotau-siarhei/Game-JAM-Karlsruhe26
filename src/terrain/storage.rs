@@ -183,21 +183,28 @@ impl Terrain {
         self.generator.lines()
     }
 
-    /// Уровень путей на линии в параметре `s`.
+    /// Уровень путей на линии в параметре `s`: верх насыпи, на нём лежат рельсы и стоят вагоны.
     pub fn track_level(&self, line: crate::railway::LineId, s: f32) -> f32 {
         self.generator
             .lines()
             .level(line, s, |x, z| self.generator.hills_height(x, z))
+            + crate::railway::EMBANKMENT_HEIGHT
+    }
+
+    /// Проходит ли путь на линии в параметре `s` в туннеле под горой, без учёта вскрытия.
+    pub fn is_tunnel(&self, line: crate::railway::LineId, s: f32) -> bool {
+        let generator = &self.generator;
+        generator.lines().is_tunnel(
+            line,
+            s,
+            |x, z| generator.raw_height(x, z),
+            |x, z| generator.hills_height(x, z),
+        )
     }
 
     /// Исходная высота вершины до всех деформаций: от неё считается глубина коры.
     pub fn original_height(&self, vx: i32, vz: i32) -> f32 {
         self.generator.height(vx as f32, vz as f32)
-    }
-
-    /// Нетронутая высота без путей: по ней видно, где над путями гора.
-    pub fn raw_height(&self, x: f32, z: f32) -> f32 {
-        self.generator.raw_height(x, z)
     }
 
     /// Данные участка, генерирует его при первом обращении.

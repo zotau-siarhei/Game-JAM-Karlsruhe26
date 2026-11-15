@@ -6,7 +6,8 @@
 //!
 //! Вагон сбивает машины: урон и отброс в сторону от пути. Разрушенное звено впереди или гибель
 //! вагона сбрасывает состав с рельсов: вагоны становятся свободными телами с хореографией гармошки,
-//! разворотов и переворотов, локомотив и цистерны взрываются по очереди, остальные горят.
+//! разворотов и переворотов, локомотив и цистерны взрываются по очереди, все вагоны горят огнём
+//! с дымом, а погасший остов ещё дымит.
 //! Остановившийся вагон — обугленный остов-препятствие, он хранится до конца забега; остовов не
 //! больше [`MAX_WRECKS`], старые уходят первыми. Вагоны внутри невскрытого туннеля при сходе
 //! остаются в горе и исчезают.
@@ -22,6 +23,7 @@ use std::collections::HashMap;
 
 use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
+use bevy_hanabi::prelude::*;
 
 use crate::alarm::Alarm;
 use crate::camera::GameCamera;
@@ -31,6 +33,7 @@ use crate::frame::{GameSet, RunMessages};
 use crate::models::{ModelShade, Models};
 use crate::obstacles::{Obstacle, Shape};
 use crate::pickups::{SpawnLoot, crate_weapons};
+use crate::quality::Quality;
 use crate::rails::{LINK_LENGTH, TrackDamage};
 use crate::railway::{LineId, Lines};
 use crate::rng::GameRng;
@@ -90,6 +93,21 @@ const TANK_STAGGER: f32 = 0.35;
 const BLAST_GAP: f32 = 0.25;
 /// Сколько горят вагоны, с.
 const BURN_TIME: f32 = 6.0;
+/// Сколько вагон дымит после того, как огонь погас, с.
+const SMOKE_TIME: f32 = 10.0;
+/// Огонь гаснет за столько до конца горения, с.
+const FLAME_FADE: f32 = 2.0;
+/// Дым редеет за столько до конца, с.
+const SMOKE_FADE: f32 = 3.0;
+/// Сколько живёт самый долгий клуб дыма, с: эмиттер удаляется, когда последний растаял.
+const SMOKE_LIFE: f32 = 3.5;
+/// Яркость огня вагона, лм.
+const FIRE_LIGHT: f32 = 600_000.0;
+/// Частиц огня и клубов дыма горящего вагона в секунду на «Высокой».
+const FLAME_RATE: f32 = 40.0;
+const CAR_SMOKE_RATE: f32 = 10.0;
+/// Цикл эмиттеров огня и дыма, с: новая густота вступает в силу не позже чем через него.
+const EMIT_PERIOD: f32 = 0.1;
 /// Вес крушения в угрозе: только крушения от игрока.
 const WRECK_THREAT: f32 = 6.0;
 /// Яркость обугленного остова из модели: текстура почти чёрная.
@@ -137,7 +155,7 @@ impl Plugin for TrainsPlugin {
                     blast_cars.in_set(GameSet::Damage),
                     derail_trains.in_set(GameSet::Death),
                     stream_wrecks.after(terrain::stream_chunks).in_set(GameSet::Streaming),
-                    fade_fires.in_set(GameSet::Presentation),
+                    burn_fires.in_set(GameSet::Presentation),
                 ),
             );
     }
@@ -247,11 +265,16 @@ struct Wreck {
     lit: bool,
 }
 
-/// Огонь горящего вагона.
+/// Огонь горящего вагона: свет, частицы огня и дыма в дочерних эмиттерах.
 #[derive(Component)]
 struct Fire {
-    remaining: f32,
+    /// Сколько горит, с.
+    age: f32,
 }
+
+/// Эмиттер дыма горящего вагона; эмиттер без этой метки — огонь.
+#[derive(Component)]
+struct FireSmoke;
 
 /// Машину отбросило вагоном.
 #[derive(Component)]
@@ -359,12 +382,15 @@ struct TrainAssets {
     charred: Handle<StandardMaterial>,
     dark: Handle<StandardMaterial>,
     window: Handle<StandardMaterial>,
+    flames: Handle<EffectAsset>,
+    smoke: Handle<EffectAsset>,
 }
 
 fn create_assets(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut effects: ResMut<Assets<EffectAsset>>,
 ) {
     let body = |m: &mut Assets<StandardMaterial>, c: Color| {
         m.add(StandardMaterial {
@@ -389,7 +415,129 @@ fn create_assets(
             emissive: LinearRgba::rgb(1.2, 1.0, 0.4),
             ..default()
         }),
+        flames: effects.add(flames_effect()),
+        smoke: effects.add(smoke_effect()),
     });
+}
+
+/// Языки огня горящего вагона: яркие, поднимаются вверх и гаснут к тёмно-красному.
+fn flames_effect() -> EffectAsset {
+    let writer = ExprWriter::new();
+    let init_pos = SetPositionSphereModifier {
+        center: writer.lit(Vec3::ZERO).expr(),
+        radius: writer.lit(1.6).expr(),
+        dimension: ShapeDimension::Volume,
+    };
+    let init_vel = SetVelocitySphereModifier {
+        center: writer.lit(Vec3::Y * -2.0).expr(),
+        speed: writer.lit(1.0).uniform(writer.lit(2.5)).expr(),
+    };
+    let init_lifetime = SetAttributeModifier::new(Attribute::LIFETIME, writer.lit(0.4).uniform(writer.lit(0.8)).expr());
+    let init_age = SetAttributeModifier::new(Attribute::AGE, writer.lit(0.0).expr());
+    let update_rise = AccelModifier::new(writer.lit(Vec3::Y * 6.0).expr());
+    let update_drag = LinearDragModifier::new(writer.lit(2.0).expr());
+    let round = RoundModifier {
+        roundness: writer.lit(1.0).expr(),
+    };
+
+    let mut color = bevy_hanabi::Gradient::new();
+    color.add_key(0.0, Vec4::new(1.0, 0.9, 0.55, 0.0));
+    color.add_key(0.15, Vec4::new(1.0, 0.75, 0.3, 0.9));
+    color.add_key(0.6, Vec4::new(0.9, 0.3, 0.06, 0.6));
+    color.add_key(1.0, Vec4::new(0.3, 0.08, 0.02, 0.0));
+    let mut size = bevy_hanabi::Gradient::new();
+    size.add_key(0.0, Vec3::splat(0.8));
+    size.add_key(0.4, Vec3::splat(1.4));
+    size.add_key(1.0, Vec3::splat(0.3));
+
+    EffectAsset::new(128, SpawnerSettings::rate(0.0.into()), writer.finish())
+        .with_name("train_flames")
+        .with_alpha_mode(bevy_hanabi::AlphaMode::Add)
+        .init(init_pos)
+        .init(init_vel)
+        .init(init_lifetime)
+        .init(init_age)
+        .update(update_rise)
+        .update(update_drag)
+        .render(OrientModifier::new(OrientMode::FaceCameraPosition))
+        .render(round)
+        .render(ColorOverLifetimeModifier {
+            gradient: color,
+            blend: ColorBlendMode::Overwrite,
+            mask: ColorBlendMask::RGBA,
+        })
+        .render(SizeOverLifetimeModifier {
+            gradient: size,
+            screen_space_size: false,
+        })
+}
+
+/// Дым горящего и обугленного вагона: тёмные клубы, поднимаются и сносятся ветром.
+fn smoke_effect() -> EffectAsset {
+    let writer = ExprWriter::new();
+    let init_pos = SetPositionSphereModifier {
+        center: writer.lit(Vec3::ZERO).expr(),
+        radius: writer.lit(1.2).expr(),
+        dimension: ShapeDimension::Volume,
+    };
+    let init_vel = SetVelocitySphereModifier {
+        center: writer.lit(Vec3::Y * -1.0).expr(),
+        speed: writer.lit(1.0).uniform(writer.lit(2.2)).expr(),
+    };
+    let init_lifetime =
+        SetAttributeModifier::new(Attribute::LIFETIME, writer.lit(2.2).uniform(writer.lit(SMOKE_LIFE)).expr());
+    let init_age = SetAttributeModifier::new(Attribute::AGE, writer.lit(0.0).expr());
+    // Ветер в ту же сторону, что у дыма взрывов.
+    let update_wind = AccelModifier::new(writer.lit(Vec3::new(1.0, 1.8, -0.5)).expr());
+    let update_drag = LinearDragModifier::new(writer.lit(1.0).expr());
+    let round = RoundModifier {
+        roundness: writer.lit(1.0).expr(),
+    };
+
+    let mut color = bevy_hanabi::Gradient::new();
+    color.add_key(0.0, Vec4::new(0.1, 0.09, 0.08, 0.0));
+    color.add_key(0.1, Vec4::new(0.1, 0.09, 0.08, 0.6));
+    color.add_key(0.6, Vec4::new(0.25, 0.24, 0.23, 0.35));
+    color.add_key(1.0, Vec4::new(0.4, 0.4, 0.4, 0.0));
+    let mut size = bevy_hanabi::Gradient::new();
+    size.add_key(0.0, Vec3::splat(1.0));
+    size.add_key(1.0, Vec3::splat(4.5));
+
+    EffectAsset::new(64, SpawnerSettings::rate(0.0.into()), writer.finish())
+        .with_name("train_smoke")
+        .init(init_pos)
+        .init(init_vel)
+        .init(init_lifetime)
+        .init(init_age)
+        .update(update_wind)
+        .update(update_drag)
+        .render(OrientModifier::new(OrientMode::FaceCameraPosition))
+        .render(round)
+        .render(ColorOverLifetimeModifier {
+            gradient: color,
+            blend: ColorBlendMode::Overwrite,
+            mask: ColorBlendMask::RGBA,
+        })
+        .render(SizeOverLifetimeModifier {
+            gradient: size,
+            screen_space_size: false,
+        })
+}
+
+/// Эмиттер постоянного эффекта: густоту задаёт `burn_fires`, сначала он молчит.
+fn emitter(effect: &Handle<EffectAsset>) -> impl Bundle {
+    let settings = SpawnerSettings::new(0.0.into(), EMIT_PERIOD.into(), EMIT_PERIOD.into(), 0);
+    (ParticleEffect::new(effect.clone()), EffectSpawner::new(&settings))
+}
+
+/// Сила огня горящего вагона по времени горения: полная, к концу гаснет до нуля.
+fn flame_share(age: f32) -> f32 {
+    ((BURN_TIME - age) / FLAME_FADE).clamp(0.0, 1.0)
+}
+
+/// Густота дыма по времени горения: полная, пока вагон горит и тлеет, к концу редеет.
+fn smoke_share(age: f32) -> f32 {
+    ((BURN_TIME + SMOKE_TIME - age) / SMOKE_FADE).clamp(0.0, 1.0)
 }
 
 fn reset_trains(
@@ -951,6 +1099,7 @@ fn move_wrecks(
     mut commands: Commands,
     time: Res<Time>,
     terrain: Res<Terrain>,
+    assets: Res<TrainAssets>,
     mut wrecks: Query<(Entity, &Car, &mut Transform, &mut Wreck)>,
     mut explosions: MessageWriter<Explosion>,
     mut blast_wait: Local<f32>,
@@ -1012,20 +1161,26 @@ fn move_wrecks(
                 source_team: wreck.cause,
             });
         }
-        // Вагон загорается сразу после схода.
+        // Вагон загорается сразу после схода: свет, огонь и дым из кузова.
         if !wreck.lit {
             wreck.lit = true;
-            commands.entity(entity).with_child((
-                Fire { remaining: BURN_TIME },
-                PointLight {
-                    color: Color::srgb(1.0, 0.5, 0.15),
-                    intensity: 600_000.0,
-                    range: 14.0,
-                    shadow_maps_enabled: false,
-                    ..default()
-                },
-                Transform::from_xyz(0.0, car.kind.size().1 + 0.5, 0.0),
-            ));
+            let height = car.kind.size().1;
+            let fire = commands
+                .spawn((
+                    Fire { age: 0.0 },
+                    PointLight {
+                        color: Color::srgb(1.0, 0.5, 0.15),
+                        intensity: FIRE_LIGHT,
+                        range: 14.0,
+                        shadow_maps_enabled: false,
+                        ..default()
+                    },
+                    Transform::from_xyz(0.0, height + 0.5, 0.0),
+                    ChildOf(entity),
+                ))
+                .id();
+            commands.spawn((emitter(&assets.flames), Transform::from_xyz(0.0, -0.5 - height * 0.3, 0.0), ChildOf(fire)));
+            commands.spawn((FireSmoke, emitter(&assets.smoke), Transform::from_xyz(0.0, 0.5, 0.0), ChildOf(fire)));
         }
     }
     // Расталкивание вагонов и передача скорости налетающего.
@@ -1197,16 +1352,40 @@ fn knock_back(
     }
 }
 
-/// Огонь вагона мерцает и гаснет.
-fn fade_fires(mut commands: Commands, time: Res<Time>, mut fires: Query<(Entity, &mut Fire, &mut PointLight)>) {
-    for (entity, mut fire, mut light) in &mut fires {
-        fire.remaining -= time.delta_secs();
-        if fire.remaining <= 0.0 {
+/// Вагон горит [`BURN_TIME`]: свет мерцает и гаснет, огонь стихает. Затем [`SMOKE_TIME`] дымит
+/// остов; когда растаял последний клуб, огонь удаляется вместе с эмиттерами.
+fn burn_fires(
+    mut commands: Commands,
+    time: Res<Time>,
+    quality: Res<Quality>,
+    mut fires: Query<(Entity, &mut Fire, Option<&mut PointLight>, &Children)>,
+    mut spawners: Query<(&mut EffectSpawner, Has<FireSmoke>)>,
+) {
+    let share = quality.particle_share();
+    for (entity, mut fire, light, children) in &mut fires {
+        fire.age += time.delta_secs();
+        if fire.age >= BURN_TIME + SMOKE_TIME + SMOKE_LIFE {
             commands.entity(entity).despawn();
             continue;
         }
-        let flicker = 0.75 + 0.25 * (time.elapsed_secs() * 23.0 + entity.to_bits() as f32).sin();
-        light.intensity = 600_000.0 * flicker * (fire.remaining / BURN_TIME).min(1.0);
+        if let Some(mut light) = light {
+            if fire.age >= BURN_TIME {
+                commands.entity(entity).remove::<PointLight>();
+            } else {
+                let flicker = 0.75 + 0.25 * (time.elapsed_secs() * 23.0 + entity.to_bits() as f32).sin();
+                light.intensity = FIRE_LIGHT * flicker * (1.0 - fire.age / BURN_TIME);
+            }
+        }
+        for child in children.iter() {
+            let Ok((mut spawner, smoke)) = spawners.get_mut(child) else {
+                continue;
+            };
+            let rate = if smoke { CAR_SMOKE_RATE * smoke_share(fire.age) } else { FLAME_RATE * flame_share(fire.age) };
+            let count = rate * share * EMIT_PERIOD;
+            if spawner.settings.count() != count.into() {
+                spawner.settings.set_count(count.into());
+            }
+        }
     }
 }
 
@@ -1249,6 +1428,14 @@ mod tests {
         let first: Vec<Entity> = (1..=3).map(|i| Entity::from_raw_u32(i).unwrap()).collect();
         assert_eq!(evicted, first);
         assert!(store.records.values().flatten().all(|r| r.serial >= 3));
+    }
+
+    #[test]
+    fn огонь_гаснет_раньше_дыма() {
+        assert_eq!(flame_share(0.0), 1.0);
+        assert_eq!(flame_share(BURN_TIME), 0.0);
+        assert_eq!(smoke_share(BURN_TIME), 1.0, "огонь погас — остов ещё дымит");
+        assert_eq!(smoke_share(BURN_TIME + SMOKE_TIME), 0.0);
     }
 
     #[test]

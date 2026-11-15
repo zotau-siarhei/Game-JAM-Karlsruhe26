@@ -10,12 +10,14 @@
 //!
 //! На входах в туннель стоят каменные порталы с тёмным проёмом и коллайдером. Если выстрелами
 //! срыть гору над туннелем ниже уровня путей плюс 6 м, участок туннеля в 8 м вскрывается: полоса
-//! над путями опускается до их уровня с откосами, летят камни, звенья под ним — завал.
+//! над путями опускается до их уровня с откосами, летят камни, встаёт облако пыли, звенья под
+//! ним — завал. Туннель — только под горой длиной не меньше 30 м, короткий гребень прорезан выемкой.
 
 use std::collections::{HashMap, HashSet};
 
 use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
+use bevy_hanabi::prelude::*;
 
 use crate::combat::Team;
 use crate::craters;
@@ -23,7 +25,7 @@ use crate::explosion::Explosion;
 use crate::debris::SpawnDebris;
 use crate::frame::GameSet;
 use crate::obstacles::{Obstacle, Shape};
-use crate::railway::{Family, LineId, Lines, TRACK_BAND, TRACK_FLAT, TUNNEL_DEPTH};
+use crate::railway::{EMBANKMENT_HEIGHT, Family, LineId, Lines, TRACK_BAND, TRACK_FLAT, embankment};
 use crate::settlements::Footprint;
 use crate::run::{RunScoped, WorldRebuilt};
 use crate::subsidence::TerrainChanged;
@@ -70,6 +72,12 @@ const SAG_STEP: f32 = 1.0;
 /// границе участка.
 const CHUNKS_PER_FRAME: usize = 2;
 
+/// Клубов пыли при обвале свода.
+const CAVE_IN_DUST: f32 = 120.0;
+
+/// Сколько живёт облако пыли обвала, с: дольше самого долгого клуба.
+const CAVE_IN_DUST_TIME: f32 = 4.5;
+
 /// Подключает звенья путей.
 pub struct RailsPlugin;
 
@@ -85,6 +93,7 @@ impl Plugin for RailsPlugin {
                     // После кратеров этого кадра: пути рвутся и туннели вскрываются по новому рельефу.
                     (open_tunnels, break_links).chain().after(craters::dig_craters).in_set(GameSet::Damage),
                     stream_links.after(terrain::stream_chunks).in_set(GameSet::Streaming),
+                    settle_dust.in_set(GameSet::Presentation),
                 ),
             );
     }
@@ -105,9 +114,7 @@ pub struct TrackDamage {
 impl TrackDamage {
     /// Проходит ли путь на параметре `s` в невскрытом туннеле.
     pub fn in_tunnel(&self, terrain: &Terrain, line: LineId, s: f32) -> bool {
-        let p = terrain.lines().point(line, s);
-        terrain.raw_height(p.x, p.y) > terrain.track_level(line, s) + TUNNEL_DEPTH
-            && !self.opened.contains(&(line, (s / TUNNEL_SEGMENT).floor() as i32))
+        terrain.is_tunnel(line, s) && !self.opened.contains(&(line, (s / TUNNEL_SEGMENT).floor() as i32))
     }
 
     /// Разрушено ли звено, на которое приходится параметр пути `s`.
@@ -195,12 +202,21 @@ struct RailAssets {
     ballast: Handle<StandardMaterial>,
     stone: Handle<StandardMaterial>,
     dark: Handle<StandardMaterial>,
+    /// Пыль обвала свода.
+    dust: Handle<EffectAsset>,
+}
+
+/// Облако пыли обвала: удаляется, когда осядет.
+#[derive(Component)]
+struct CaveInDust {
+    left: f32,
 }
 
 fn create_rail_assets(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut effects: ResMut<Assets<EffectAsset>>,
 ) {
     commands.insert_resource(RailAssets {
         cube: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
@@ -226,7 +242,69 @@ fn create_rail_assets(
             unlit: true,
             ..default()
         }),
+        dust: effects.add(cave_in_dust_effect()),
     });
+}
+
+/// Пыль обвала свода: светлые клубы встают над выемкой, расходятся и сносятся ветром.
+fn cave_in_dust_effect() -> EffectAsset {
+    let writer = ExprWriter::new();
+    let init_pos = SetPositionSphereModifier {
+        center: writer.lit(Vec3::Y).expr(),
+        radius: writer.lit(TUNNEL_SEGMENT * 0.6).expr(),
+        dimension: ShapeDimension::Volume,
+    };
+    let init_vel = SetVelocitySphereModifier {
+        center: writer.lit(Vec3::Y * -3.0).expr(),
+        speed: writer.lit(2.0).uniform(writer.lit(7.0)).expr(),
+    };
+    let init_lifetime = SetAttributeModifier::new(Attribute::LIFETIME, writer.lit(2.0).uniform(writer.lit(4.0)).expr());
+    let init_age = SetAttributeModifier::new(Attribute::AGE, writer.lit(0.0).expr());
+    // Ветер в ту же сторону, что у дыма взрывов.
+    let update_wind = AccelModifier::new(writer.lit(Vec3::new(0.8, 0.6, -0.4)).expr());
+    let update_drag = LinearDragModifier::new(writer.lit(1.5).expr());
+    let round = RoundModifier {
+        roundness: writer.lit(1.0).expr(),
+    };
+
+    let mut color = bevy_hanabi::Gradient::new();
+    color.add_key(0.0, Vec4::new(0.62, 0.58, 0.52, 0.0));
+    color.add_key(0.1, Vec4::new(0.62, 0.58, 0.52, 0.6));
+    color.add_key(0.6, Vec4::new(0.56, 0.53, 0.48, 0.35));
+    color.add_key(1.0, Vec4::new(0.5, 0.48, 0.45, 0.0));
+    let mut size = bevy_hanabi::Gradient::new();
+    size.add_key(0.0, Vec3::splat(1.5));
+    size.add_key(1.0, Vec3::splat(6.0));
+
+    EffectAsset::new(256, SpawnerSettings::once(CAVE_IN_DUST.into()), writer.finish())
+        .with_name("tunnel_cave_in_dust")
+        .init(init_pos)
+        .init(init_vel)
+        .init(init_lifetime)
+        .init(init_age)
+        .update(update_wind)
+        .update(update_drag)
+        .render(OrientModifier::new(OrientMode::FaceCameraPosition))
+        .render(round)
+        .render(ColorOverLifetimeModifier {
+            gradient: color,
+            blend: ColorBlendMode::Overwrite,
+            mask: ColorBlendMask::RGBA,
+        })
+        .render(SizeOverLifetimeModifier {
+            gradient: size,
+            screen_space_size: false,
+        })
+}
+
+/// Удаляет осевшие облака пыли обвала.
+fn settle_dust(mut commands: Commands, time: Res<Time>, mut clouds: Query<(Entity, &mut CaveInDust)>) {
+    for (entity, mut cloud) in &mut clouds {
+        cloud.left -= time.delta_secs();
+        if cloud.left <= 0.0 {
+            commands.entity(entity).despawn();
+        }
+    }
 }
 
 fn forget_links(
@@ -410,6 +488,7 @@ fn open_tunnels(
     mut damage: ResMut<TrackDamage>,
     mut spawned: ResMut<SpawnedLinks>,
     visible: Res<VisibleChunks>,
+    assets: Res<RailAssets>,
     mut debris: MessageWriter<SpawnDebris>,
 ) {
     let areas: Vec<(Vec2, f32)> = changes.read().map(|c| (Vec2::new(c.center.x, c.center.z), c.radius)).collect();
@@ -432,7 +511,8 @@ fn open_tunnels(
                     continue;
                 }
                 damage.opened.insert((line, seg));
-                // Полоса над путями опускается до уровня путей, дальше откос к нетронутому склону.
+                // Полоса над путями опускается до уровня путей с насыпью, дальше откос к
+                // нетронутому склону.
                 let s0 = seg as f32 * TUNNEL_SEGMENT;
                 let samples = 8;
                 for k in 0..=samples * 2 {
@@ -440,7 +520,7 @@ fn open_tunnels(
                     let p = terrain.lines().point(line, s);
                     let t = terrain.lines().tangent(line, s);
                     let side = Vec2::new(-t.y, t.x);
-                    let level = terrain.track_level(line, s);
+                    let ground = terrain.track_level(line, s) - EMBANKMENT_HEIGHT;
                     let reach = TRACK_BAND;
                     let mut d = -reach;
                     while d <= reach {
@@ -448,7 +528,7 @@ fn open_tunnels(
                         let (vx, vz) = (q.x.round() as i32, q.y.round() as i32);
                         let dist = d.abs();
                         let edge = ((dist - TRACK_FLAT) / (reach - TRACK_FLAT)).clamp(0.0, 1.0);
-                        let limit = level + edge * edge * (reach - TRACK_FLAT) * 1.4;
+                        let limit = ground + embankment(dist) + edge * edge * (reach - TRACK_FLAT) * 1.4;
                         for c in terrain.edit_vertex(vx, vz, |h, color| {
                             if *h > limit {
                                 *h = limit;
@@ -490,6 +570,12 @@ fn open_tunnels(
                         burning: false,
                     });
                 }
+                commands.spawn((
+                    RunScoped,
+                    CaveInDust { left: CAVE_IN_DUST_TIME },
+                    ParticleEffect::new(assets.dust.clone()),
+                    Transform::from_translation(base),
+                ));
             }
         }
     }
