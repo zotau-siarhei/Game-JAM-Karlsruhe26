@@ -11,11 +11,14 @@ use bevy::image::Image;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
+use crate::airstrike::Strike;
 use crate::boss::Boss;
 use crate::buildings::House;
+use crate::capsule::Capsule;
 use crate::camera::GameCamera;
 use crate::enemy::Enemy;
 use crate::frame::GameSet;
+use crate::hud::RunUi;
 use crate::mortar::FireShell;
 use crate::pickups::Pickup;
 use crate::repair::Medkit;
@@ -55,6 +58,10 @@ const CRATE_COLOR: Color = Color::srgb(1.0, 0.85, 0.15);
 const TRAIN_COLOR: Color = Color::srgb(0.7, 0.7, 0.72);
 const BOSS_COLOR: Color = Color::srgb(1.0, 0.1, 0.4);
 const DANGER_COLOR: Color = Color::srgb(1.0, 0.15, 0.1);
+/// Кольцо места падения капсулы: цвет врагов.
+const CAPSULE_COLOR: Color = ENEMY_COLOR;
+/// Кольцо авиаудара игрока: жёлтое, как отметка на земле.
+const STRIKE_COLOR: Color = Color::srgb(1.0, 0.85, 0.2);
 
 /// Вид метки: цвет, размер, форма.
 #[derive(Clone, Copy, PartialEq)]
@@ -65,6 +72,10 @@ enum Mark {
     Crate,
     Medkit,
     Danger,
+    /// Место падения десантной капсулы.
+    Capsule,
+    /// Вызванный авиаудар.
+    Strike,
 }
 
 impl Mark {
@@ -75,7 +86,17 @@ impl Mark {
             Mark::Train => TRAIN_COLOR,
             Mark::Crate => CRATE_COLOR,
             Mark::Medkit => MEDKIT_COLOR,
-            Mark::Danger => Color::NONE,
+            Mark::Danger | Mark::Capsule | Mark::Strike => Color::NONE,
+        }
+    }
+
+    /// Цвет кольца: у меток-колец есть только оно.
+    fn ring(self) -> Color {
+        match self {
+            Mark::Danger => DANGER_COLOR,
+            Mark::Capsule => CAPSULE_COLOR,
+            Mark::Strike => STRIKE_COLOR,
+            _ => Color::NONE,
         }
     }
 
@@ -88,6 +109,8 @@ impl Mark {
             Mark::Crate => (6.0, 6.0, false),
             Mark::Medkit => (6.0, 6.0, false),
             Mark::Danger => (12.0, 12.0, true),
+            Mark::Capsule => (11.0, 11.0, true),
+            Mark::Strike => (16.0, 16.0, true),
         }
     }
 }
@@ -112,16 +135,12 @@ impl Plugin for MinimapPlugin {
             .add_systems(Startup, spawn_minimap)
             .add_systems(
                 Update,
-                (show_in_run, collect_dangers, update_markers, draw_terrain)
+                (collect_dangers, update_markers, draw_terrain)
                     .chain()
                     .in_set(GameSet::Presentation),
             );
     }
 }
-
-/// Корень мини-карты.
-#[derive(Component)]
-struct Minimap;
 
 /// Метка из набора с её номером.
 #[derive(Component)]
@@ -152,7 +171,8 @@ fn spawn_minimap(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
     });
     commands
         .spawn((
-            Minimap,
+            // В меню мини-карту прячет `hud`.
+            RunUi,
             Node {
                 position_type: PositionType::Absolute,
                 right: Val::Px(MARGIN),
@@ -209,20 +229,6 @@ fn spawn_minimap(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         });
 }
 
-/// Мини-карта видна только в забеге, на паузе и после гибели.
-fn show_in_run(state: Res<State<GameState>>, mut maps: Query<&mut Visibility, With<Minimap>>) {
-    let wanted = if *state.get() == GameState::Menu {
-        Visibility::Hidden
-    } else {
-        Visibility::Inherited
-    };
-    for mut visibility in &mut maps {
-        if *visibility != wanted {
-            *visibility = wanted;
-        }
-    }
-}
-
 /// Запоминает отметки падения снарядов врагов: на мини-карте они мигают красными кольцами.
 fn collect_dangers(
     time: Res<Time>,
@@ -245,12 +251,16 @@ fn collect_dangers(
     }
 }
 
-/// Раздаёт метки набора врагам, боссу, поездам, ящикам, аптечкам и отметкам опасности.
+/// Раздаёт метки набора врагам, боссу, поездам, ящикам, аптечкам, отметкам опасности,
+/// капсулам и авиаударам. Новая метка — свой запрос в параметрах и строка `targets.extend`
+/// в порядке важности.
 #[allow(clippy::too_many_arguments)]
 fn update_markers(
     time: Res<Time>,
     rover: Query<&Transform, With<Rover>>,
     enemies: Query<(&Transform, Has<Boss>), With<Enemy>>,
+    capsules: Query<&Transform, With<Capsule>>,
+    strikes: Query<&Strike>,
     medkits: Query<&Transform, With<Medkit>>,
     pickups: Query<&Transform, With<Pickup>>,
     cars: Query<(&Transform, &Visibility), With<Car>>,
@@ -268,7 +278,9 @@ fn update_markers(
     targets.extend(enemies.iter().filter(|(_, b)| *b).map(|(t, _)| (flat(t), Mark::Boss)));
     if blink {
         targets.extend(dangers.0.iter().map(|(p, _)| (*p, Mark::Danger)));
+        targets.extend(capsules.iter().map(|t| (flat(t), Mark::Capsule)));
     }
+    targets.extend(strikes.iter().map(|s| (Vec2::new(s.center.x, s.center.z), Mark::Strike)));
     targets.extend(enemies.iter().filter(|(_, b)| !*b).map(|(t, _)| (flat(t), Mark::Enemy)));
     targets.extend(cars.iter().filter(|(_, v)| **v != Visibility::Hidden).map(|(t, _)| (flat(t), Mark::Train)));
     targets.extend(pickups.iter().map(|t| (flat(t), Mark::Crate)));
@@ -294,12 +306,12 @@ fn update_markers(
             node.height = Val::Px(h);
             node.display = Display::Flex;
             node.border_radius = if round { BorderRadius::MAX } else { BorderRadius::ZERO };
-            node.border = if *mark == Mark::Danger { UiRect::all(Val::Px(2.0)) } else { UiRect::ZERO };
+            node.border = if mark.ring() != Color::NONE { UiRect::all(Val::Px(2.0)) } else { UiRect::ZERO };
         }
         if color.0 != mark.color() {
             color.0 = mark.color();
         }
-        let ring = if *mark == Mark::Danger { DANGER_COLOR } else { Color::NONE };
+        let ring = mark.ring();
         if *border != BorderColor::all(ring) {
             *border = BorderColor::all(ring);
         }

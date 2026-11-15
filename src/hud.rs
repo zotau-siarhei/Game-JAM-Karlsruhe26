@@ -1,5 +1,8 @@
 //! Интерфейс во время забега: полоса здоровья слева сверху, время выживания по центру
 //! и выбранное оружие справа сверху.
+//!
+//! Интерфейс забега прячется в меню одной системой: корню любой панели забега достаточно
+//! компонента [`RunUi`].
 
 use bevy::prelude::*;
 
@@ -26,12 +29,16 @@ impl Plugin for HudPlugin {
         app.add_systems(Startup, spawn_hud)
             .add_systems(
                 Update,
-                (update_health_bar, update_time, update_weapon, hide_in_menu).in_set(GameSet::Presentation),
+                (update_health_bar, update_time, update_weapon, hide_run_ui_in_menu).in_set(GameSet::Presentation),
             );
     }
 }
 
-/// Корень полосы здоровья: прячется в меню вместе с временем и оружием.
+/// Корень панели интерфейса забега: в меню спрятан, в забеге, на паузе и после гибели виден.
+#[derive(Component, Default)]
+pub struct RunUi;
+
+/// Корень полосы здоровья.
 #[derive(Component)]
 struct HealthBar;
 
@@ -56,6 +63,7 @@ fn spawn_hud(mut commands: Commands) {
     commands
         .spawn((
             HealthBar,
+            RunUi,
             Node {
                 position_type: PositionType::Absolute,
                 left: Val::Px(MARGIN),
@@ -96,14 +104,17 @@ fn spawn_hud(mut commands: Commands) {
 
     // Время выживания.
     commands
-        .spawn(Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(MARGIN),
-            left: Val::Px(0.0),
-            right: Val::Px(0.0),
-            justify_content: JustifyContent::Center,
-            ..default()
-        })
+        .spawn((
+            RunUi,
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(MARGIN),
+                left: Val::Px(0.0),
+                right: Val::Px(0.0),
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+        ))
         .with_children(|row| {
             row.spawn((
                 TimeText,
@@ -124,6 +135,7 @@ fn spawn_hud(mut commands: Commands) {
     // Выбранное оружие.
     commands.spawn((
         WeaponText,
+        RunUi,
         Text::new(""),
         TextFont {
             font_size: FontSize::Px(18.0),
@@ -141,11 +153,8 @@ fn spawn_hud(mut commands: Commands) {
     ));
 }
 
-/// В меню интерфейса забега нет.
-fn hide_in_menu(
-    state: Res<State<GameState>>,
-    mut parts: Query<&mut Visibility, Or<(With<HealthBar>, With<TimeText>, With<WeaponText>)>>,
-) {
+/// В меню интерфейса забега нет: прячет всё с [`RunUi`].
+fn hide_run_ui_in_menu(state: Res<State<GameState>>, mut parts: Query<&mut Visibility, With<RunUi>>) {
     let wanted = if *state.get() == GameState::Menu {
         Visibility::Hidden
     } else {

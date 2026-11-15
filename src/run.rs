@@ -20,7 +20,7 @@ use crate::combat::{Died, Health, SurvivalTime, Team, ROVER_MAX_HEALTH};
 use crate::explosion::Explosion;
 use crate::frame::GameSet;
 use crate::hud::format_time;
-use crate::records::{self, Record, Records};
+use crate::records::{self, Record, RecordPlaced, Records};
 use crate::rover::{Rover, RoverMotion};
 use crate::terrain::{ChunkMesh, RunSeed, Terrain, VisibleChunks};
 
@@ -32,6 +32,10 @@ const DEATH_BLAST: (f32, f32) = (9.0, 2.5);
 
 /// Высота центра корпуса лунохода над поверхностью при возвращении на старт, м.
 const ROVER_RIDE_HEIGHT: f32 = crate::rover::RIDE_HEIGHT * crate::rover::ROVER_SCALE;
+
+/// Сколько секунд экран конца забега не принимает клавиши, с: нажатия, начатые ещё в бою
+/// (WASD, пробел, цифры оружия), не затирают имя и не начинают новый забег.
+const GAME_OVER_INPUT_DELAY: f32 = 0.8;
 
 /// Скорость, с которой планета летит под камерой в меню, м/с.
 const MENU_FLIGHT: Vec3 = Vec3::new(5.0, 0.0, -2.5);
@@ -48,6 +52,7 @@ impl Plugin for RunPlugin {
             .insert_resource(RecordsTable::load())
             .add_message::<WorldRebuilt>()
             .add_message::<RunStarted>()
+            .add_message::<RecordPlaced>()
             .add_systems(Startup, announce_first_world)
             .add_systems(
                 Update,
@@ -126,6 +131,8 @@ struct RunResult {
     place: Option<usize>,
     /// Имя, которое игрок набирает. `None` — имя уже сохранено или результат не попал в таблицу.
     entry: Option<NameEntry>,
+    /// Сколько ещё секунд реального времени экран не принимает клавиши.
+    input_delay: f32,
 }
 
 /// Ввод имени из трёх символов: буква или цифра встаёт в ячейку под курсором и двигает его.
@@ -397,7 +404,7 @@ fn show_menu(mut commands: Commands, records: Res<RecordsTable>) {
             }
             screen.spawn(screen_line("", 10.0, Color::NONE));
             screen.spawn(screen_line("WASD - DRIVE     MOUSE - AIM     LEFT BUTTON - FIRE", 20.0, HINT_COLOR));
-            screen.spawn(screen_line("1, 2, WHEEL - WEAPON     SPACE - REPAIR", 20.0, HINT_COLOR));
+            screen.spawn(screen_line("1-6, WHEEL - WEAPON     HOLD SPACE - REPAIR     ESC - PAUSE", 20.0, HINT_COLOR));
             screen.spawn(screen_line("", 10.0, Color::NONE));
             screen.spawn(screen_line("ENTER, SPACE OR CLICK - START", 32.0, Color::WHITE));
             screen.spawn(screen_line("ESC - QUIT", 20.0, HINT_COLOR));
@@ -456,14 +463,26 @@ fn hold_dead_rover(
     }
 }
 
-/// Итог забега: если время достойно таблицы, игрок вводит имя.
-fn prepare_result(survival: Res<SurvivalTime>, records: Res<RecordsTable>, mut result: ResMut<RunResult>) {
+/// Итог забега: если время достойно таблицы, игрок вводит имя, а наружу уходит [`RecordPlaced`].
+fn prepare_result(
+    survival: Res<SurvivalTime>,
+    records: Res<RecordsTable>,
+    mut result: ResMut<RunResult>,
+    mut placed: MessageWriter<RecordPlaced>,
+) {
     let place = records.table.place_for(f64::from(survival.0));
     *result = RunResult {
         seconds: survival.0,
         place,
         entry: place.map(|_| NameEntry::new(&records.table.last_name)),
+        input_delay: GAME_OVER_INPUT_DELAY,
     };
+    if let Some(place) = place {
+        placed.write(RecordPlaced {
+            place,
+            seconds: survival.0,
+        });
+    }
 }
 
 /// Строка о месте в таблице.
@@ -534,13 +553,20 @@ fn draw_game_over(
 }
 
 /// Конец забега. Пока вводится имя: буквы, цифры, Backspace, Enter сохраняет результат.
-/// После этого Enter начинает новый забег, Esc возвращает в меню.
+/// После этого Enter начинает новый забег, Esc возвращает в меню. Первые
+/// [`GAME_OVER_INPUT_DELAY`] секунд клавиши не принимаются.
 fn game_over_input(
+    time: Res<Time<Real>>,
     keys: Res<ButtonInput<KeyCode>>,
     mut result: ResMut<RunResult>,
     mut records: ResMut<RecordsTable>,
     mut world: RunWorld,
 ) {
+    if result.input_delay > 0.0 {
+        // Без отметки об изменении: экран перерисовывается только по вводу.
+        result.bypass_change_detection().input_delay -= time.delta_secs();
+        return;
+    }
     let enter = keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter]);
     let escape = keys.just_pressed(KeyCode::Escape);
 
