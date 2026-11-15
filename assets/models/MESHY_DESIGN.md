@@ -117,12 +117,12 @@ full body, A-pose, plain light grey background`. Image to 3D: Smart Topology 600
 | `enemy_rocket_robot` | 5934 | `A humanoid combat robot soldier, enemy for a top-down action game, semi-realistic sci-fi hard-surface 3D game asset: human proportions, dark graphite armor plates over a grey mechanical frame, amber-yellow warning markings, a single glowing amber visor slit on the head, a boxy four-tube rocket launcher pod mounted on its right shoulder, sturdy mechanical legs with feet, full body, standing in A-pose, front view, plain light grey background, no text, no logos, no red` |
 
 - Корпуса смотрят носом на −X (`rotation_y` = −π/2). Колёсные арки измерены по профилю модели, оси, колея и
-  радиус колёс записаны в `src/enemy_look.rs` (`RAMMER_WHEELS`, `MORTAR_WHEELS`): при замене модели их надо
+  радиус колёс записаны в `src/enemy_look.rs` (`RAMMER_WHEELS`, `MORTAR_WHEELS`) до масштаба врага (`RAMMER_SCALE`, `MORTAR_SCALE` в `src/enemy.rs`): при замене модели их надо
   перемерить.
 - Колесо: ось вдоль Z, диаметр 0,95, ступица на +Z; в `models.json` масштаб до диаметра 1 м и ось по X, размер
   колеса задаёт `enemy_look`.
 - Робот: Image с Pose = A-Pose → Image to 3D (Smart Topology 6000, Pose A-Pose) → Rig → Humanoid, рост 2 м → клипы
-  `Idle_02`, `Walking`, `Running`, как у жителей. Перёд +Z, ступни на y = 0, в игре 2,2 м.
+  `Idle_02`, `Walking`, `Running`, как у жителей. Перёд +Z, ступни на y = 0, в игре 2,6 м (модель 2,2 м × `ROBOT_SCALE`).
 
 Тяжёлый танк по частям (башня поворачивается, ленты бегут — `src/tank_look.rs`). Образец целого:
 `A heavy armored battle tank with a big laser cannon, enemy vehicle for a top-down action game, semi-realistic hard-surface 3D game asset: wide low dark graphite armored hull, a large angular turret with one long thick energy laser cannon pointing straight forward and aligned with the hull, a glowing amber lens at the muzzle, two wide tracks with dark steel treads, amber-yellow warning markings and small amber sensor lights, rugged military look, single vehicle, centered, 3/4 view from above, plain light grey background, no text, no logos, no red`.

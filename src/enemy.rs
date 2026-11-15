@@ -142,11 +142,14 @@ pub const TANK_HEALTH: f32 = 220.0;
 const TANK_SPEED: f32 = 6.0;
 /// Поворот танка, рад/с: медленный, линия прицела заметно доворачивает.
 const TANK_TURN_SPEED: f32 = 1.2;
-/// Во сколько раз машины таран-стрелка и мортирщика крупнее своих моделей и примитивов:
-/// рядом с людьми и домами они смотрелись мелкими.
-const VEHICLE_SCALE: f32 = 1.25;
-/// Во сколько раз танк крупнее модели и примитивов врага.
-pub(crate) const TANK_SCALE: f32 = 1.6;
+/// Масштаб врагов относительно базового корпуса `HULL_SIZE`: корпус, модель, колёса, коллайдер
+/// и посадка растягиваются вместе. Подобран к луноходу (около 3,6 × 3,0 м, высота 2,5 м)
+/// и жителям (рост 1,7 м): бронебагги длиной 3,4 м чуть ниже лунохода, транспортёр мортиры
+/// 3,9 м, робот ростом 2,6 м, тяжёлый танк 4,4 × 3,7 м — крупнее лунохода, босс крупнее всех.
+const RAMMER_SCALE: f32 = 1.4;
+const MORTAR_SCALE: f32 = 1.5;
+pub(crate) const ROBOT_SCALE: f32 = 1.2;
+pub(crate) const TANK_SCALE: f32 = 2.1;
 /// Насколько в стороне от линии к луноходу танк заходит, м.
 const FLANK_OFFSET: f32 = 30.0;
 /// На каком расстоянии от лунохода точка фланга, м: в дальности выстрела.
@@ -434,9 +437,9 @@ fn spawn_enemy(
     let heading = vehicle::heading_towards(target - position);
 
     let (health, material, scale, turn) = match kind {
-        EnemyKind::RamShooter => (ENEMY_HEALTH, assets.hull_material.clone(), VEHICLE_SCALE, ENEMY_TURN_SPEED),
-        EnemyKind::Mortar => (MORTAR_HEALTH, assets.mortar_material.clone(), VEHICLE_SCALE, ENEMY_TURN_SPEED),
-        EnemyKind::Rocketeer => (ROCKETEER_HEALTH, assets.rocketeer_material.clone(), 1.0, ENEMY_TURN_SPEED),
+        EnemyKind::RamShooter => (ENEMY_HEALTH, assets.hull_material.clone(), RAMMER_SCALE, ENEMY_TURN_SPEED),
+        EnemyKind::Mortar => (MORTAR_HEALTH, assets.mortar_material.clone(), MORTAR_SCALE, ENEMY_TURN_SPEED),
+        EnemyKind::Rocketeer => (ROCKETEER_HEALTH, assets.rocketeer_material.clone(), ROBOT_SCALE, ENEMY_TURN_SPEED),
         EnemyKind::HeavyTank => (TANK_HEALTH, assets.dark_material.clone(), TANK_SCALE, TANK_TURN_SPEED),
     };
     position.y += RIDE_HEIGHT * (scale - 1.0);

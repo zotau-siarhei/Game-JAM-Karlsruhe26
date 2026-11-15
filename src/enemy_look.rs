@@ -13,6 +13,7 @@ use std::time::Duration;
 use bevy::gltf::Gltf;
 use bevy::prelude::*;
 
+use crate::enemy::ROBOT_SCALE;
 use crate::frame::GameSet;
 use crate::models::Models;
 use crate::vehicle::GroundVehicle;
@@ -32,9 +33,10 @@ const IDLE_CLIP: &str = "Idle_02";
 const WALK_CLIP: &str = "Walking";
 const RUN_CLIP: &str = "Running";
 /// Скорость тела в клипах ходьбы и бега при темпе 1, м/с: скорость ступни в фазе опоры по скелету
-/// модели (1,41 и 5,38 в единицах модели), умноженная на масштаб модели 1,1 из `models.json`.
-const CLIP_WALK_SPEED: f32 = 1.55;
-const CLIP_RUN_SPEED: f32 = 5.9;
+/// модели (1,41 и 5,38 в единицах модели), умноженная на масштаб модели 1,1 из `models.json`
+/// и масштаб робота `ROBOT_SCALE`.
+const CLIP_WALK_SPEED: f32 = 1.41 * 1.1 * ROBOT_SCALE;
+const CLIP_RUN_SPEED: f32 = 5.38 * 1.1 * ROBOT_SCALE;
 /// Ниже этой скорости робот стоит, выше второй — бежит, м/с.
 const STAND_SPEED: f32 = 0.4;
 const RUN_FROM: f32 = 3.5;
@@ -59,7 +61,7 @@ impl Plugin for EnemyLookPlugin {
     }
 }
 
-/// Колёса машины в системе координат корпуса: нос смотрит на -Z.
+/// Колёса машины в системе координат корпуса (до масштаба врага): нос смотрит на -Z.
 pub struct WheelLayout {
     /// Радиус колеса, м.
     pub radius: f32,
@@ -89,6 +91,8 @@ pub const MORTAR_WHEELS: WheelLayout = WheelLayout {
 #[derive(Component)]
 pub struct Wheel {
     radius: f32,
+    /// Колёсная база в системе корпуса, м.
+    wheelbase: f32,
     steers: bool,
     /// Колесо слева: модель развёрнута ступицей наружу.
     left: bool,
@@ -109,6 +113,8 @@ pub fn spawn_wheels(
     ground_y: f32,
     fallback: (Handle<Mesh>, Handle<StandardMaterial>),
 ) {
+    let along = layout.axles.iter().map(|&(z, _)| z);
+    let wheelbase = along.clone().fold(f32::MIN, f32::max) - along.fold(f32::MAX, f32::min);
     for &(along, steers) in layout.axles {
         for side in [-1.0, 1.0] {
             let left = side < 0.0;
@@ -116,6 +122,7 @@ pub fn spawn_wheels(
                 .spawn((
                     Wheel {
                         radius: layout.radius,
+                        wheelbase,
                         steers,
                         left,
                         roll: 0.0,
@@ -184,8 +191,7 @@ fn roll_wheels(
                 turn / dt
             });
             wheel.last_heading = Some(vehicle.heading);
-            // База — расстояние от передней оси до задней, у обеих машин около 1,4–1,7 м.
-            let target = steer_angle(vehicle.speed, yaw, 1.5);
+            let target = steer_angle(vehicle.speed, yaw, wheel.wheelbase * body.scale.y);
             wheel.steer += (target - wheel.steer) * (STEER_SMOOTHING * dt).min(1.0);
         }
         transform.rotation = wheel_rotation(wheel.steer, wheel.roll, wheel.left);
