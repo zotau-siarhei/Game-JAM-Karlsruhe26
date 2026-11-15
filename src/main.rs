@@ -59,8 +59,15 @@ use camera::CameraPlugin;
 use rover::RoverPlugin;
 use terrain::{RunSeed, TerrainPlugin};
 
-/// Цвет неба над планетой.
-const SKY_COLOR: Color = Color::srgb(0.02, 0.02, 0.06);
+/// Цвет неба над планетой: дневное голубое.
+const SKY_COLOR: Color = Color::srgb(0.45, 0.70, 0.95);
+
+/// Цвет солнца: тёплый дневной свет.
+const SUN_COLOR: Color = Color::srgb(1.0, 0.94, 0.82);
+
+/// Откуда светит солнце: около 50° над горизонтом и сбоку от камеры, чтобы склоны холмов
+/// и стенки кратеров различались по яркости.
+const SUN_POSITION: Vec3 = Vec3::new(6.0, 8.0, 3.0);
 
 fn main() {
     App::new()
@@ -131,22 +138,13 @@ fn main() {
         .run();
 }
 
-/// Создаёт солнце: невысокое, чтобы склоны холмов различались по яркости.
-/// Тени облегчены ради плавности: карта 1024, два каскада, только вблизи камеры.
+/// Создаёт солнце. Тени — карту, каскады и дальность — задаёт ступень качества в `quality`.
 fn spawn_light(mut commands: Commands) {
-    commands.insert_resource(bevy::light::DirectionalLightShadowMap { size: 1024 });
     commands.spawn((
         DirectionalLight {
-            shadow_maps_enabled: true,
+            color: SUN_COLOR,
             ..default()
         },
-        bevy::light::CascadeShadowConfigBuilder {
-            num_cascades: 2,
-            first_cascade_far_bound: 30.0,
-            maximum_distance: 70.0,
-            ..default()
-        }
-        .build(),
-        Transform::from_xyz(6.0, 8.0, 3.0).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::from_translation(SUN_POSITION).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 }

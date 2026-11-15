@@ -120,7 +120,8 @@ fn switch_quality(keys: Res<ButtonInput<KeyCode>>, mut quality: ResMut<Quality>)
     }
 }
 
-/// Применяет ступень к камере, солнцу и карте теней.
+/// Применяет ступень к камере, солнцу и карте теней. Тени настраиваются только здесь:
+/// солнце создаётся в `main.rs` без них и получает их в первом же кадре.
 fn apply_quality(
     mut commands: Commands,
     quality: Res<Quality>,
