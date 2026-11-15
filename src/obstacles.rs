@@ -96,7 +96,7 @@ impl Shape {
     }
 
     /// Радиус описанной окружности и её центр: для быстрого отсева.
-    fn bounds(&self) -> (Vec2, f32) {
+    pub fn bounds(&self) -> (Vec2, f32) {
         match *self {
             Shape::Circle { center, radius } => (center, radius),
             Shape::Rect(rect) => (rect.center, rect.half.length()),

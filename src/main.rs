@@ -7,6 +7,7 @@ mod airstrike;
 mod alarm;
 mod arsenal;
 mod audio_events;
+mod boss;
 mod buildings;
 mod bullet;
 mod camera;
@@ -101,6 +102,7 @@ fn main() {
             minimap::MinimapPlugin,
             bullet::BulletPlugin,
             enemy::EnemyPlugin,
+            boss::BossPlugin,
             waves::WavesPlugin,
             alarm::AlarmPlugin,
             capsule::CapsulePlugin,

@@ -7,6 +7,7 @@ use std::f32::consts::TAU;
 use bevy::prelude::*;
 
 use crate::combat::{Health, Team};
+use crate::boss::SpawnBoss;
 use crate::capsule::DropCapsule;
 use crate::enemy::{Enemy, EnemyKind, SpawnEnemy, SpawnPlace};
 use crate::explosion::Explosion;
@@ -51,6 +52,9 @@ pub mod balance {
 
     /// С какой угрозы в волнах появляются мортирщики.
     pub const MORTAR_THREAT: f32 = 0.8;
+
+    /// Каждая какая волна завершается боссом.
+    pub const BOSS_EVERY: u32 = 4;
 
     /// С какой угрозы появляются ракетчики.
     pub const ROCKETEER_THREAT: f32 = 1.6;
@@ -229,6 +233,7 @@ fn direct_waves(
     mut started: MessageWriter<WaveStarted>,
     mut spawn: MessageWriter<SpawnEnemy>,
     mut capsules: MessageWriter<DropCapsule>,
+    mut bosses: MessageWriter<SpawnBoss>,
 ) {
     if !rover.iter().any(|health| !health.is_dead()) {
         return;
@@ -272,6 +277,10 @@ fn direct_waves(
                 }
             }
             if queue.is_empty() {
+                // Каждая четвёртая волна завершается боссом.
+                if director.wave % balance::BOSS_EVERY == 0 {
+                    bosses.write(SpawnBoss);
+                }
                 director.phase = Phase::Lull(balance::lull_seconds(threat.value()));
             }
         }

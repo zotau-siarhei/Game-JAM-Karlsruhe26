@@ -57,6 +57,7 @@ pub struct PickupsPlugin;
 impl Plugin for PickupsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CrateDirector>()
+            .add_message::<SpawnLoot>()
             .add_systems(Startup, create_pickup_assets)
             .add_systems(
                 Update,
@@ -65,6 +66,7 @@ impl Plugin for PickupsPlugin {
                     remember_ruins,
                     (drop_crates, arm_enemies, enemy_rockets).run_if(in_state(GameState::Playing)),
                     drop_loot,
+                    spawn_loot,
                     descend,
                     collect,
                     float_popups,
@@ -446,6 +448,31 @@ fn drop_loot(
             Mesh3d(assets.cube.clone()),
             MeshMaterial3d(glow_of(&assets, carried.weapon)),
             Transform::from_translation(transform.translation()).with_scale(Vec3::new(0.7, 0.7, 0.7)),
+            Visibility::default(),
+        ));
+    }
+}
+
+/// Просьба положить светящийся трофей с оружием: так босс оставляет ящики после гибели.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct SpawnLoot {
+    pub position: Vec3,
+    pub weapon: CurrentWeapon,
+}
+
+fn spawn_loot(mut commands: Commands, mut requests: MessageReader<SpawnLoot>, assets: Res<PickupAssets>) {
+    for r in requests.read() {
+        commands.spawn((
+            Pickup {
+                weapon: r.weapon,
+                amount: spec(r.weapon).per_crate,
+                expires: None,
+            },
+            RunScoped,
+            NotShadowCaster,
+            Mesh3d(assets.cube.clone()),
+            MeshMaterial3d(glow_of(&assets, r.weapon)),
+            Transform::from_translation(r.position),
             Visibility::default(),
         ));
     }

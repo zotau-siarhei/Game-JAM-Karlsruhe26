@@ -12,6 +12,7 @@
 
 use bevy::prelude::*;
 
+use crate::boss::Boss;
 use crate::bullet::FireBullet;
 use crate::combat::{Collider, Damage, Died, Health, Team};
 use crate::explosion::Explosion;
@@ -930,7 +931,7 @@ fn shoot_rover(
 fn remove_far_enemies(
     mut commands: Commands,
     rover: Query<&Transform, With<Rover>>,
-    enemies: Query<(Entity, &Transform), With<Enemy>>,
+    enemies: Query<(Entity, &Transform), (With<Enemy>, Without<Boss>)>,
 ) {
     let Some(rover) = rover.iter().next() else {
         return;
@@ -946,7 +947,7 @@ fn remove_far_enemies(
 fn remove_dead_enemies(
     mut commands: Commands,
     mut died: MessageReader<Died>,
-    enemies: Query<&Transform, With<Enemy>>,
+    enemies: Query<&Transform, (With<Enemy>, Without<Boss>)>,
     mut explosions: MessageWriter<Explosion>,
 ) {
     for message in died.read() {
