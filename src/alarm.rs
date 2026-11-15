@@ -1,5 +1,5 @@
 //! Тревога: насколько встревожены жители. Растёт от каждого разрушенного дома, кто бы его ни
-//! разрушил, и спадает в затишье. Управляет только Службой защиты жителей, волны от неё не
+//! разрушил, от гибели жителей и машин Службы и спадает в затишье. Управляет только Службой защиты жителей, волны от неё не
 //! зависят: волнами управляет угроза из `src/waves.rs`.
 //!
 //! Пять ступеней по 10 очков. Ступень — сколько десятков очков начато: 6 очков — первая ступень.
@@ -10,6 +10,7 @@ use bevy::ui::UiTransform;
 
 use crate::buildings::BuildingDestroyed;
 use crate::frame::GameSet;
+use crate::residents::ResidentDied;
 use crate::run::{GameState, WorldRebuilt};
 
 /// Числа тревоги.
@@ -22,6 +23,10 @@ pub mod balance {
     pub const MAX_POINTS: f32 = LEVELS as f32 * POINTS_PER_LEVEL;
     /// Очков за разрушенный дом.
     pub const HOUSE_POINTS: f32 = 6.0;
+    /// Очков за погибшего жителя: и сбитого, и погибшего в разрушенном доме.
+    pub const RESIDENT_POINTS: f32 = 2.0;
+    /// Очков за уничтоженную машину Службы защиты жителей.
+    pub const SERVICE_VEHICLE_POINTS: f32 = 3.0;
     /// Спад: столько очков…
     pub const DECAY_POINTS: f32 = 5.0;
     /// …за столько секунд без новых очков.
@@ -63,7 +68,7 @@ impl Plugin for AlarmPlugin {
                 (
                     reset_alarm.in_set(GameSet::Reset),
                     decay_alarm.in_set(GameSet::Simulation),
-                    raise_on_destruction.in_set(GameSet::Death),
+                    (raise_on_destruction, raise_on_resident_deaths).in_set(GameSet::Death),
                     show_alarm.in_set(GameSet::Presentation),
                 ),
             );
@@ -133,6 +138,13 @@ fn reset_alarm(mut started: MessageReader<WorldRebuilt>, mut alarm: ResMut<Alarm
 fn raise_on_destruction(mut destroyed: MessageReader<BuildingDestroyed>, mut alarm: ResMut<Alarm>) {
     for _ in destroyed.read() {
         alarm.add(balance::HOUSE_POINTS);
+    }
+}
+
+/// Каждый погибший житель поднимает тревогу.
+fn raise_on_resident_deaths(mut deaths: MessageReader<ResidentDied>, mut alarm: ResMut<Alarm>) {
+    for _ in deaths.read() {
+        alarm.add(balance::RESIDENT_POINTS);
     }
 }
 
@@ -292,6 +304,21 @@ mod tests {
             }
         }
         assert_eq!(levels, vec![3, 2, 1, 0]);
+    }
+
+    #[test]
+    fn resident_deaths_raise_alarm() {
+        let mut app = App::new();
+        app.add_message::<ResidentDied>()
+            .init_resource::<Alarm>()
+            .add_systems(Update, raise_on_resident_deaths);
+        for _ in 0..3 {
+            app.world_mut().write_message(ResidentDied { position: Vec3::ZERO });
+        }
+        app.update();
+        let alarm = app.world().resource::<Alarm>();
+        assert_eq!(alarm.points, 3.0 * balance::RESIDENT_POINTS);
+        assert_eq!(alarm.level(), 1);
     }
 
     #[test]
