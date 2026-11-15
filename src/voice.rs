@@ -13,6 +13,8 @@
 
 use bevy::prelude::*;
 
+use crate::frame::GameSet;
+use crate::run::WorldRebuilt;
 use crate::sound_list::{SoundEntry, SoundList};
 
 /// Каталог реплик внутри `assets`.
@@ -20,6 +22,19 @@ const VOICE_DIR: &str = "voice";
 
 /// Файл со списком реплик внутри [`VOICE_DIR`].
 const LIST_FILE: &str = "lines.json";
+
+/// Сколько секунд реплика без проигрывателя считается звучащей при пустом тексте. Проигрывателя
+/// нет, пока грузится звук, и всегда, если нет звукового устройства.
+const SILENT_BASE_SECONDS: f64 = 1.5;
+
+/// Прибавка к этому сроку на каждый символ текста реплики, с.
+const SILENT_SECONDS_PER_CHAR: f64 = 0.06;
+
+/// Дольше этого реплика без проигрывателя не живёт, с.
+const SILENT_MAX_SECONDS: f64 = 10.0;
+
+/// Дольше этого не живёт никакая реплика: самая длинная звучит 10 с.
+const LINE_MAX_SECONDS: f64 = 15.0;
 
 /// Подключает загрузку реплик и их воспроизведение по сообщению [`PlayVoice`].
 pub struct VoicePlugin;
@@ -29,7 +44,8 @@ impl Plugin for VoicePlugin {
         app.init_resource::<VoiceLines>()
             .add_message::<PlayVoice>()
             .add_systems(Startup, load_voice_lines)
-            .add_systems(Update, play_voice.in_set(crate::frame::GameSet::Presentation));
+            .add_systems(Update, silence_on_rebuild.in_set(GameSet::Reset))
+            .add_systems(Update, (play_voice, expire_lines).chain().in_set(GameSet::Presentation));
     }
 }
 
@@ -65,10 +81,29 @@ impl VoiceLines {
 }
 
 /// Метка сущности, которая сейчас проигрывает реплику. Пока такая сущность есть, штаб говорит.
+///
+/// Обычно сущность удаляет звуковая подсистема, когда звук кончился. Без звукового устройства
+/// проигрыватель не появляется, и реплику удаляет [`expire_lines`] по сроку из длины текста.
 #[derive(Component)]
 pub struct VoicePlayback {
     /// Идентификатор звучащей реплики.
     pub id: String,
+    /// Когда реплика отправлена, по реальному времени.
+    started: f64,
+    /// Сколько секунд реплика без проигрывателя считается звучащей.
+    silent_seconds: f64,
+}
+
+/// Сколько секунд считать звучащей реплику с текстом `text`, если проигрывателя нет.
+fn silent_seconds(text: &str) -> f64 {
+    (SILENT_BASE_SECONDS + SILENT_SECONDS_PER_CHAR * text.chars().count() as f64)
+        .min(SILENT_MAX_SECONDS)
+}
+
+/// Кончилась ли реплика по сроку: без проигрывателя — по длине текста, с ним — только по
+/// общему пределу, остальное решает звуковая подсистема.
+fn line_expired(age: f64, silent_seconds: f64, has_sink: bool) -> bool {
+    age > LINE_MAX_SECONDS || (!has_sink && age > silent_seconds)
 }
 
 /// Читает список реплик и ставит на загрузку те звуки, файлы которых уже есть.
@@ -81,6 +116,7 @@ fn play_voice(
     mut commands: Commands,
     mut requests: MessageReader<PlayVoice>,
     voice: Res<VoiceLines>,
+    time: Res<Time<Real>>,
     playing: Query<Entity, With<VoicePlayback>>,
 ) {
     let Some(PlayVoice(id)) = requests.read().last() else {
@@ -100,8 +136,61 @@ fn play_voice(
     }
     info!("Штаб ({}): {}", loaded.entry.event, loaded.entry.text);
     commands.spawn((
-        VoicePlayback { id: id.clone() },
+        VoicePlayback {
+            id: id.clone(),
+            started: time.elapsed_secs_f64(),
+            silent_seconds: silent_seconds(&loaded.entry.text),
+        },
         AudioPlayer::new(sound.clone()),
         PlaybackSettings::DESPAWN,
     ));
+}
+
+/// Убирает реплики, которые звуковая подсистема не удалит: без устройства, с незагрузившимся звуком.
+fn expire_lines(
+    mut commands: Commands,
+    time: Res<Time<Real>>,
+    playing: Query<(Entity, &VoicePlayback, Has<AudioSink>)>,
+) {
+    let now = time.elapsed_secs_f64();
+    for (entity, playback, has_sink) in &playing {
+        if line_expired(now - playback.started, playback.silent_seconds, has_sink) {
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
+/// Мир перестроен: реплика прошлого забега обрывается, чтобы не заглушить приветствие нового.
+fn silence_on_rebuild(
+    mut commands: Commands,
+    mut rebuilt: MessageReader<WorldRebuilt>,
+    playing: Query<Entity, With<VoicePlayback>>,
+) {
+    if rebuilt.read().last().is_none() {
+        return;
+    }
+    for entity in &playing {
+        commands.entity(entity).despawn();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn line_without_device_ends_by_text_length() {
+        let short = silent_seconds("Bruh.");
+        let long = silent_seconds("Every house you flatten raises the alarm. The residents have opinions.");
+        assert!(short >= SILENT_BASE_SECONDS && short < long);
+        assert!(silent_seconds(&"a".repeat(1000)) <= SILENT_MAX_SECONDS);
+        assert!(!line_expired(short - 0.1, short, false));
+        assert!(line_expired(short + 0.1, short, false));
+    }
+
+    #[test]
+    fn playing_line_is_left_to_the_audio_system() {
+        assert!(!line_expired(SILENT_MAX_SECONDS + 1.0, 2.0, true));
+        assert!(line_expired(LINE_MAX_SECONDS + 0.1, 2.0, true));
+    }
 }
