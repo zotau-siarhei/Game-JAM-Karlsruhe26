@@ -83,6 +83,7 @@ impl Plugin for AudioEventsPlugin {
                 sound_capsules,
                 voice_weapon_denied,
                 voice_repair,
+                voice_service,
                 sound_pause_menu.run_if(in_state(GameState::Paused)),
                 music_follows_enemies.run_if(in_state(GameState::Playing)),
                 tone_follows_threat,
@@ -392,6 +393,13 @@ fn sound_buildings(
     }
     if destroyed.read().count() > 0 {
         cues.write(VoiceCue::new("house_destroyed"));
+    }
+}
+
+/// Служба защиты жителей приехала по тревоге — штаб предупреждает.
+fn voice_service(mut arrived: MessageReader<crate::service::ServiceArrived>, mut cues: MessageWriter<VoiceCue>) {
+    if arrived.read().count() > 0 {
+        cues.write(VoiceCue::new("service_arrives"));
     }
 }
 

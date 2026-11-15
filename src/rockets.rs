@@ -451,7 +451,7 @@ fn fly_rockets(
         }
         let team = rocket.team;
         let struck = targets.iter().any(|(_, t, c, tm, h)| {
-            *tm != team && !h.is_dead() && {
+            team.hostile_to(*tm) && !h.is_dead() && {
                 let p = t.translation();
                 let along = to - from;
                 let k = ((p - from).dot(along) / along.length_squared().max(1e-6)).clamp(0.0, 1.0);

@@ -115,7 +115,7 @@ fn spawn_bullets(
         };
         let material = match shot.team {
             Team::Player => assets.player.clone(),
-            Team::Enemy | Team::Neutral => assets.enemy.clone(),
+            Team::Enemy | Team::Service | Team::Neutral => assets.enemy.clone(),
         };
         commands.spawn((
             RunScoped,
@@ -198,7 +198,7 @@ fn move_bullets(
 
         let hit = targets
             .iter()
-            .filter(|(_, _, _, team, health)| **team != bullet.team && !health.is_dead())
+            .filter(|(_, _, _, team, health)| bullet.team.hostile_to(**team) && !health.is_dead())
             .filter(|(_, target, collider, _, _)| segment_hits(from, to, target.translation(), collider.radius))
             .min_by(|left, right| {
                 let left = left.1.translation().distance_squared(from);
@@ -226,7 +226,7 @@ fn move_bullets(
         if let (true, Some(assets)) = (into_ground, assets.as_ref()) {
             let material = match bullet.team {
                 Team::Player => assets.player.clone(),
-                Team::Enemy | Team::Neutral => assets.enemy.clone(),
+                Team::Enemy | Team::Service | Team::Neutral => assets.enemy.clone(),
             };
             commands.spawn((
                 RunScoped,

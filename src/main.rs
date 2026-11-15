@@ -46,6 +46,7 @@ mod rockets;
 mod rover;
 mod rover_look;
 mod run;
+mod service;
 mod settlements;
 mod sound;
 mod subsidence;
@@ -137,6 +138,7 @@ fn game_plugins(app: &mut App) {
             boss::BossPlugin,
             waves::WavesPlugin,
             alarm::AlarmPlugin,
+            service::ServicePlugin,
             capsule::CapsulePlugin,
             weapons::WeaponsPlugin,
             run::RunPlugin,
