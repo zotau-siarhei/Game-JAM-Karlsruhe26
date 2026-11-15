@@ -52,6 +52,12 @@ pub mod balance {
     /// С какой угрозы в волнах появляются мортирщики.
     pub const MORTAR_THREAT: f32 = 0.8;
 
+    /// С какой угрозы появляются ракетчики.
+    pub const ROCKETEER_THREAT: f32 = 1.6;
+
+    /// С какой угрозы появляются тяжёлые танки.
+    pub const TANK_THREAT: f32 = 2.5;
+
     /// Угроза: минуты забега плюс разрушения.
     pub fn threat(seconds: f32, destruction: f32) -> f32 {
         seconds / 60.0 + destruction / DESTRUCTION_PER_MINUTE
@@ -117,6 +123,12 @@ fn available_kinds(threat: f32) -> Vec<(EnemyKind, u32)> {
     let mut kinds = vec![(EnemyKind::RamShooter, 1)];
     if threat >= balance::MORTAR_THREAT {
         kinds.push((EnemyKind::Mortar, 2));
+    }
+    if threat >= balance::ROCKETEER_THREAT {
+        kinds.push((EnemyKind::Rocketeer, 3));
+    }
+    if threat >= balance::TANK_THREAT {
+        kinds.push((EnemyKind::HeavyTank, 5));
     }
     kinds
 }

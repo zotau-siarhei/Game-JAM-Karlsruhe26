@@ -56,12 +56,14 @@ pub struct LaserPlugin;
 impl Plugin for LaserPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<HotEdges>()
+            .add_message::<FireLaser>()
             .add_systems(Startup, create_laser_assets)
             .add_systems(
                 Update,
                 (
                     reset_hot_edges,
                     fire_laser.run_if(in_state(GameState::Playing)),
+                    apply_laser_shots,
                     fade_beams,
                     cool_edges,
                 )
@@ -90,6 +92,7 @@ struct HotEdges {
 struct LaserAssets {
     beam: Handle<Mesh>,
     beam_material: Handle<StandardMaterial>,
+    enemy_beam_material: Handle<StandardMaterial>,
 }
 
 fn create_laser_assets(
@@ -102,6 +105,12 @@ fn create_laser_assets(
         beam_material: materials.add(StandardMaterial {
             base_color: Color::srgb(0.6, 0.95, 1.0),
             emissive: LinearRgba::rgb(4.0, 14.0, 20.0),
+            unlit: true,
+            ..default()
+        }),
+        enemy_beam_material: materials.add(StandardMaterial {
+            base_color: Color::srgb(1.0, 0.4, 0.3),
+            emissive: LinearRgba::rgb(20.0, 4.0, 2.0),
             unlit: true,
             ..default()
         }),
@@ -176,25 +185,27 @@ fn mark_dirty(commands: &mut Commands, visible: &VisibleChunks, chunks: impl Int
     }
 }
 
-/// Импульс лазера.
-#[allow(clippy::too_many_arguments)]
+/// Просьба выстрелить импульсом лазера: так стреляет и игрок, и тяжёлый танк врагов.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct FireLaser {
+    /// Начало луча.
+    pub origin: Vec3,
+    /// Куда идёт луч: берётся только направление в плане.
+    pub direction: Vec3,
+    pub team: Team,
+    pub damage: f32,
+}
+
+/// Импульс лазера игрока по левой кнопке мыши.
 fn fire_laser(
-    mut commands: Commands,
     time: Res<Time>,
     mouse: Res<ButtonInput<MouseButton>>,
     weapon: Res<CurrentWeapon>,
     aim: Res<AimPoint>,
-    assets: Res<LaserAssets>,
     mut inventory: ResMut<Inventory>,
-    mut terrain: ResMut<Terrain>,
-    visible: Res<VisibleChunks>,
-    mut hot: ResMut<HotEdges>,
     mut cooldown: Local<f32>,
     rover: Single<(&Transform, &Health), With<Rover>>,
-    targets: Query<(Entity, &GlobalTransform, &Collider, &Team, &Health), Without<Rover>>,
-    obstacles: Query<(Entity, &Obstacle), With<Health>>,
-    mut damage: MessageWriter<Damage>,
-    mut changed: MessageWriter<TerrainChanged>,
+    mut shots: MessageWriter<FireLaser>,
 ) {
     *cooldown = (*cooldown - time.delta_secs()).max(0.0);
     let (rover, health) = *rover;
@@ -207,74 +218,108 @@ fn fire_laser(
     }
     *cooldown = RELOAD;
     inventory.spend(CurrentWeapon::Laser);
+    let origin = rover.translation + Vec3::Y * BEAM_HEIGHT;
+    shots.write(FireLaser {
+        origin,
+        direction: aim.position - origin,
+        team: Team::Player,
+        damage: BEAM_DAMAGE,
+    });
+}
 
-    let start = rover.translation + Vec3::Y * BEAM_HEIGHT;
-    let dir = (aim.position - start).with_y(0.0).normalize_or(Vec3::NEG_Z);
-    let end = start + dir * BEAM_LENGTH;
-    let (a, b) = (Vec2::new(start.x, start.z), Vec2::new(end.x, end.z));
+/// Импульс: урон всем чужим на отрезке, траншея в рельефе, гаснущий луч.
+#[allow(clippy::too_many_arguments)]
+fn apply_laser_shots(
+    mut commands: Commands,
+    mut shots: MessageReader<FireLaser>,
+    assets: Res<LaserAssets>,
+    mut terrain: ResMut<Terrain>,
+    visible: Res<VisibleChunks>,
+    mut hot: ResMut<HotEdges>,
+    targets: Query<(Entity, &GlobalTransform, &Collider, &Team, &Health)>,
+    obstacles: Query<(Entity, &Obstacle), With<Health>>,
+    mut damage: MessageWriter<Damage>,
+    mut changed: MessageWriter<TerrainChanged>,
+) {
+    for shot in shots.read() {
+        let start = shot.origin;
+        let dir = shot.direction.with_y(0.0).normalize_or(Vec3::NEG_Z);
+        let end = start + dir * BEAM_LENGTH;
+        let (a, b) = (Vec2::new(start.x, start.z), Vec2::new(end.x, end.z));
 
-    // Урон всем на отрезке, кроме лунохода.
-    for (entity, transform, collider, team, target_health) in &targets {
-        if *team == Team::Player || target_health.is_dead() {
-            continue;
+        // Урон всем на отрезке, кроме своих.
+        for (entity, transform, collider, team, target_health) in &targets {
+            if *team == shot.team || target_health.is_dead() {
+                continue;
+            }
+            let p = transform.translation();
+            if flat_distance(Vec2::new(p.x, p.z), a, b) <= collider.radius {
+                damage.write(Damage {
+                    target: entity,
+                    amount: shot.damage,
+                    source_team: shot.team,
+                });
+            }
         }
-        let p = transform.translation();
-        if flat_distance(Vec2::new(p.x, p.z), a, b) <= collider.radius {
-            damage.write(Damage {
-                target: entity,
-                amount: BEAM_DAMAGE,
-                source_team: Team::Player,
+        let steps = (BEAM_LENGTH / 0.5) as usize;
+        for (entity, obstacle) in &obstacles {
+            let hit = (0..=steps).any(|s| {
+                let p = start.lerp(end, s as f32 / steps as f32);
+                p.y <= obstacle.top && obstacle.shape.contains(Vec2::new(p.x, p.z))
+            });
+            if hit {
+                damage.write(Damage {
+                    target: entity,
+                    amount: shot.damage,
+                    source_team: shot.team,
+                });
+            }
+        }
+
+        // Траншея.
+        let (chunks, cut) = cut_trench(&mut terrain, a, b, start.y);
+        if !cut.is_empty() {
+            mark_dirty(&mut commands, &visible, chunks);
+            hot.vertices.extend(cut.into_iter().map(|v| (v, 0.0)));
+            let mid = (start + end) * 0.5;
+            changed.write(TerrainChanged {
+                center: mid,
+                radius: BEAM_LENGTH * 0.5 + TRENCH_HALF_WIDTH,
             });
         }
-    }
-    let steps = (BEAM_LENGTH / 0.5) as usize;
-    for (entity, obstacle) in &obstacles {
-        let hit = (0..=steps).any(|s| {
-            let p = start.lerp(end, s as f32 / steps as f32);
-            p.y <= obstacle.top && obstacle.shape.contains(Vec2::new(p.x, p.z))
-        });
-        if hit {
-            damage.write(Damage {
-                target: entity,
-                amount: BEAM_DAMAGE,
-                source_team: Team::Player,
-            });
-        }
-    }
 
-    // Траншея.
-    let (chunks, cut) = cut_trench(&mut terrain, a, b, start.y);
-    if !cut.is_empty() {
-        mark_dirty(&mut commands, &visible, chunks);
-        hot.vertices.extend(cut.into_iter().map(|v| (v, 0.0)));
-        let mid = (start + end) * 0.5;
-        changed.write(TerrainChanged {
-            center: mid,
-            radius: BEAM_LENGTH * 0.5 + TRENCH_HALF_WIDTH,
-        });
+        // Луч: у врагов красный.
+        let material = if shot.team == Team::Player {
+            assets.beam_material.clone()
+        } else {
+            assets.enemy_beam_material.clone()
+        };
+        let color = if shot.team == Team::Player {
+            Color::srgb(0.6, 0.9, 1.0)
+        } else {
+            Color::srgb(1.0, 0.35, 0.25)
+        };
+        commands.spawn((
+            Beam {
+                remaining: BEAM_SECONDS,
+                thickness: 0.18,
+            },
+            RunScoped,
+            NotShadowCaster,
+            Mesh3d(assets.beam.clone()),
+            MeshMaterial3d(material),
+            Transform::from_translation((start + end) * 0.5)
+                .with_rotation(Quat::from_rotation_arc(Vec3::Y, dir))
+                .with_scale(Vec3::new(0.18, BEAM_LENGTH, 0.18)),
+            PointLight {
+                color,
+                intensity: 2_000_000.0,
+                range: 25.0,
+                shadow_maps_enabled: false,
+                ..default()
+            },
+        ));
     }
-
-    // Луч.
-    commands.spawn((
-        Beam {
-            remaining: BEAM_SECONDS,
-            thickness: 0.18,
-        },
-        RunScoped,
-        NotShadowCaster,
-        Mesh3d(assets.beam.clone()),
-        MeshMaterial3d(assets.beam_material.clone()),
-        Transform::from_translation((start + end) * 0.5)
-            .with_rotation(Quat::from_rotation_arc(Vec3::Y, dir))
-            .with_scale(Vec3::new(0.18, BEAM_LENGTH, 0.18)),
-        PointLight {
-            color: Color::srgb(0.6, 0.9, 1.0),
-            intensity: 2_000_000.0,
-            range: 25.0,
-            shadow_maps_enabled: false,
-            ..default()
-        },
-    ));
 }
 
 /// Луч тоньшает и гаснет.
