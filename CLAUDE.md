@@ -91,6 +91,7 @@
 ```sh
 cargo run                                   # запуск
 cargo run --features bevy/dynamic_linking   # быстрая пересборка при разработке
+cargo run -- --immortal                     # проверка волн: луноход не теряет здоровья
 cargo check                                 # проверка компиляции
 cargo test                                  # тесты
 ```

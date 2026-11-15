@@ -91,6 +91,8 @@ fn main() {
     App::new()
         .insert_resource(ClearColor(SKY_COLOR))
         .insert_resource(RunSeed::from_clock())
+        // Проверка волн без гибели: `cargo run -- --immortal`.
+        .insert_resource(combat::Immortal::from_args(std::env::args()))
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Space Guard".into(),

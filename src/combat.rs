@@ -38,6 +38,7 @@ pub struct CombatPlugin;
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SurvivalTime>()
+            .init_resource::<Immortal>()
             .add_run_message::<Damage>()
             .add_run_message::<Died>()
             .add_run_message::<Heal>()
@@ -305,20 +306,37 @@ fn explosion_damage(
 ///
 /// Единственная система набора `GameSet::ApplyDamage`: до неё — все, кто пишет [`Damage`] в этом
 /// кадре, после неё — читатели [`Died`].
+/// Режим проверки: луноход не теряет здоровья, можно пройти все волны.
+/// Включается параметром запуска: `cargo run -- --immortal`.
+#[derive(Resource, Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Immortal(pub bool);
+
+impl Immortal {
+    /// По параметрам запуска: `--immortal` или `--god`.
+    pub fn from_args(args: impl IntoIterator<Item = String>) -> Self {
+        Self(args.into_iter().any(|a| a == "--immortal" || a == "--god"))
+    }
+}
+
 fn apply_damage(
     mut commands: Commands,
+    immortal: Option<Res<Immortal>>,
     mut damages: MessageReader<Damage>,
     mut died: MessageWriter<Died>,
-    mut targets: Query<(&mut Health, Option<&GlobalTransform>)>,
+    mut targets: Query<(&mut Health, Option<&GlobalTransform>, Has<Rover>)>,
 ) {
+    let immortal = immortal.is_some_and(|i| i.0);
     for damage in damages.read() {
-        let Ok((mut health, transform)) = targets.get_mut(damage.target) else {
+        let Ok((mut health, transform, rover)) = targets.get_mut(damage.target) else {
             continue;
         };
         if health.is_dead() || damage.amount <= 0.0 {
             continue;
         }
-        health.damage(damage.amount);
+        // Бессмертный луноход вспыхивает от попаданий, но здоровья не теряет.
+        if !(rover && immortal) {
+            health.damage(damage.amount);
+        }
         if health.is_dead() {
             died.write(Died {
                 entity: damage.target,
@@ -388,6 +406,14 @@ fn count_survival_time(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn бессмертие_включается_параметром_запуска() {
+        let args = |list: &[&str]| list.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+        assert!(super::Immortal::from_args(args(&["space_guard", "--immortal"])).0);
+        assert!(super::Immortal::from_args(args(&["space_guard", "--god"])).0);
+        assert!(!super::Immortal::from_args(args(&["space_guard"])).0);
+    }
+
     use super::*;
 
     #[test]
