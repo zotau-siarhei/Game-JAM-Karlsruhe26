@@ -655,11 +655,12 @@ fn create_prop_assets(
     commands.insert_resource(PropAssets { looks, stump, flame });
 }
 
-/// Модель объекта из `models.json`: ель — `tree_1`, валун — `boulder`, кварц — `crystal`.
-/// Остальные деревья и мелочь — из примитивов.
+/// Модель объекта из `models.json`: четыре дерева по вариантам (лиственное, ель, тополь, сосна),
+/// куст, валун, кварц. Камни помельче, заборы и столбы — из примитивов.
 fn prop_model(kind: PropKind, variant: usize) -> Option<&'static str> {
     match kind {
-        PropKind::Tree if variant == 1 => Some("tree_1"),
+        PropKind::Tree => Some(["tree_oak", "tree_spruce", "tree_poplar", "tree_pine"][variant % 4]),
+        PropKind::Bush => Some("bush"),
         PropKind::Boulder => Some("boulder"),
         PropKind::Crystal => Some("crystal"),
         _ => None,

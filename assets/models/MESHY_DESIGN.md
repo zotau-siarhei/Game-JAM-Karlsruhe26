@@ -34,7 +34,6 @@ Negative prompt (если поле есть): `realistic, gritty, dark, rusty, b
 | `rover_body` | 15000 | `cute retro moon rover inspired by a 1970s lunar rover: round tub-shaped body like a bathtub with a hinged solar-panel lid on top, turquoise and white paint, a short camera mast with two big friendly round glass eyes, two springy antennas, a small rotating turret ring on top (empty, weapon attached separately), body only, no wheels or tracks` + суффикс |
 | `rover_track` | 1500 (×2) | `one chunky cartoon tank track pod for a small rover: rounded rubber tread loop around four visible road wheels, turquoise side cover with white rim, side view length 2x height` + суффикс |
 | `enemy_rammer` | 5000 | `small aggressive alien buggy with a heavy front ram bumper and one stubby gun, purple body with yellow details, big chunky wheels, angry headlights like eyes` + суффикс |
-| `tree_1` | 1500 | `alien tree: short thick trunk, crown made of 2-3 round blobs in a strange color (violet, teal or orange), cartoon` + суффикс |
 | `boulder` | 1500 | `round lumpy cartoon boulder, grey-violet stone, a few flat facets` + суффикс |
 | `crystal` | 1500 | `cluster of tall glowing crystal prisms, cyan, emissive look` + суффикс |
 | `house_small` | 4000 | `small cozy alien cottage: pastel walls, saturated colored round-ish roof (blue, yellow or violet, not red), round door and round windows` + суффикс |
@@ -81,6 +80,25 @@ Negative prompt (если поле есть): `realistic, gritty, dark, rusty, b
 | `weapon_mg` / `weapon_mortar` / `weapon_rockets` / `weapon_laser` | ~1500 | `Weapon attachment for the turret of a cute cartoon moon rover: twin machine gun` / `short fat mortar tube` / `rocket launcher box` / `sci-fi laser emitter` + `turquoise and white housing ... flat round mounting plate` | ствол на −X, у ракет на +X; мортира смотрит вверх |
 
 `service_car` не делали: машины Службы защиты в коде пока нет.
+
+### Деревья и кусты (2026-11-15)
+В одном стиле с людьми, без мультяшного суффикса. Image (Nano Banana Pro, 3:4, 2 картинки) →
+Image to 3D: Smart Topology, Poly Count 3000 (куст 1500), Pose None. Настройки Image to 3D на странице
+картинок каждый раз сбрасываются на High Detail — выставлять заново. Общий хвост промпта:
+`semi-realistic 3D game asset, natural earthy colors, whole tree visible from the base to the top, centered,
+3/4 view from slightly above, plain light grey background, no ground, no grass, no shadow, no text`.
+
+| id | треуг. | промпт (начало) | высота в игре |
+|---|---|---|---|
+| `tree_oak` | 2846 | `A single realistic deciduous broadleaf tree (oak): thick brown trunk with visible roots flare, a full rounded crown of natural green leaves made of several clumps` | 6 м |
+| `tree_spruce` | 2326 | `A single realistic Norway spruce tree: conical shape with layered drooping dark green branches` | 6 м |
+| `tree_poplar` | 2548 | `A single realistic Lombardy poplar tree: straight brown-grey trunk, tall narrow columnar crown` | 7 м |
+| `tree_pine` | 2669 | `A single realistic Scots pine tree: tall straight orange-brown trunk bare in the lower half, a dense flat-topped dark green needle crown` | 6,5 м |
+| `bush` | 1175 | `A single realistic leafy green shrub bush: wide rounded dense bush` | 1,1 м |
+
+Кроны сделаны пластинами листвы, изнанка пластин светлая — сверху почти не видна. Второй куст вышел
+стопкой белых пластин, его не взяли. Модели в файле по центру, высота ≈ 0,95: `scale` = высота / 0,952,
+`offset_y` = 0,476 × `scale`.
 
 ### Жители-люди (2026-11-15)
 Решение пользователя: жители — как настоящие люди (`residents`, раздел 7). Мультяшный `resident` удалён.

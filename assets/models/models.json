@@ -49,11 +49,43 @@
       "budget": 4000
     },
     {
-      "id": "tree_1",
-      "file": "tree_1.glb",
-      "scale": 2.632,
+      "id": "tree_oak",
+      "file": "tree_oak.glb",
+      "scale": 6.303,
       "rotation_y": 0.0,
-      "offset_y": 2.5,
+      "offset_y": 3.0,
+      "budget": 3000
+    },
+    {
+      "id": "tree_spruce",
+      "file": "tree_spruce.glb",
+      "scale": 6.303,
+      "rotation_y": 0.0,
+      "offset_y": 3.0,
+      "budget": 3000
+    },
+    {
+      "id": "tree_poplar",
+      "file": "tree_poplar.glb",
+      "scale": 7.353,
+      "rotation_y": 0.0,
+      "offset_y": 3.5,
+      "budget": 3000
+    },
+    {
+      "id": "tree_pine",
+      "file": "tree_pine.glb",
+      "scale": 6.828,
+      "rotation_y": 0.0,
+      "offset_y": 3.25,
+      "budget": 3000
+    },
+    {
+      "id": "bush",
+      "file": "bush.glb",
+      "scale": 1.8,
+      "rotation_y": 0.0,
+      "offset_y": 0.563,
       "budget": 1500
     },
     {
