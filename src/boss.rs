@@ -25,7 +25,7 @@ use crate::rover::Rover;
 use crate::run::RunScoped;
 use crate::terrain::Terrain;
 use crate::vehicle::{self, GroundVehicle};
-use crate::waves::Threat;
+use crate::waves::{Threat, enemy_damage};
 use crate::weapons::CurrentWeapon;
 
 /// Сколько висит предупреждение до высадки, с.
@@ -61,14 +61,15 @@ const PREPARE_TIME: f32 = 1.0;
 /// Залп мортиры: снарядов, разброс отметок вокруг лунохода, мощность снаряда.
 const SALVO_SHELLS: usize = 8;
 const SALVO_SPREAD: (f32, f32) = (2.0, 11.0);
-const SALVO_POWER: f32 = 0.6;
 /// Веер ракет: число ракет и полуширина веера, рад.
 const FAN_ROCKETS: usize = 10;
 const FAN_HALF_ANGLE: f32 = 0.7;
-/// Таран: скорость, длительность, урон лунохода при ударе.
+/// Таран: скорость и длительность. Урон — `waves::enemy_damage::BOSS_RAM`.
 const RAM_SPEED: f32 = 18.0;
 const RAM_TIME: f32 = 3.0;
-const RAM_DAMAGE: f32 = 90.0;
+/// Запас к сумме радиусов босса и лунохода, при котором таран засчитывается, м. Расталкивание
+/// (`enemy::separate_enemies`) держит босса ровно на сумме радиусов, удар должен быть дальше неё.
+const RAM_REACH: f32 = 1.5;
 
 /// Сколько длится гибель до большого взрыва, с, и число малых взрывов по корпусу.
 const DYING_TIME: f32 = 1.5;
@@ -184,14 +185,21 @@ pub fn boss_health(threat: f32) -> f32 {
     BASE_HEALTH * (1.0 + 0.4 * threat.max(0.0))
 }
 
-/// Показывает предупреждение и запоминает место высадки.
+/// Показывает предупреждение и запоминает место высадки. Пока прежний босс жив или летит,
+/// новый не приходит: босс на поле всегда один.
 fn start_warning(
     mut commands: Commands,
     mut requests: MessageReader<SpawnBoss>,
     mut dice: ResMut<GameRng>,
     rover: Single<&Transform, With<Rover>>,
+    present: Query<(), Or<(With<Boss>, With<BossWarning>)>>,
 ) {
+    let mut busy = !present.is_empty();
     for _ in requests.read() {
+        if busy {
+            continue;
+        }
+        busy = true;
         let angle = dice.range(0.0, TAU);
         let landing = rover.translation + Vec3::new(angle.cos(), 0.0, angle.sin()) * LANDING_DISTANCE;
         commands
@@ -355,18 +363,23 @@ fn fall(
     }
 }
 
+/// Достаёт ли таран луноход радиуса `rover_radius` на расстоянии `distance` по горизонтали.
+fn ram_hits(distance: f32, rover_radius: f32) -> bool {
+    distance < RADIUS + rover_radius + RAM_REACH
+}
+
 /// Цикл боя: шаг к луноходу, подготовка, атака.
 #[allow(clippy::too_many_arguments)]
 fn fight(
     time: Res<Time>,
     mut dice: ResMut<GameRng>,
-    rover: Single<(Entity, &Transform, &Health), (With<Rover>, Without<Boss>)>,
+    rover: Single<(Entity, &Transform, &Health, &Collider), (With<Rover>, Without<Boss>)>,
     mut bosses: Query<(&Transform, &mut GroundVehicle, &mut Boss)>,
     mut shells: MessageWriter<FireShell>,
     mut rockets: MessageWriter<FireRocket>,
     mut damage: MessageWriter<Damage>,
 ) {
-    let (rover_entity, rover, rover_health) = *rover;
+    let (rover_entity, rover, rover_health, rover_collider) = *rover;
     let dt = time.delta_secs();
     for (transform, mut vehicle, mut boss) in &mut bosses {
         let me = transform.translation;
@@ -405,7 +418,7 @@ fn fight(
                                 origin: muzzle,
                                 target: rover.translation + Vec3::new(angle.cos(), 0.0, angle.sin()) * distance,
                                 team: Team::Enemy,
-                                power: SALVO_POWER,
+                                power: enemy_damage::BOSS_SALVO_POWER,
                             });
                         }
                     }
@@ -432,11 +445,11 @@ fn fight(
             BossPhase::Ramming(left) => {
                 vehicle.heading = vehicle::steer(vehicle.heading, boss.ram_heading, TURN_SPEED * 2.0 * dt);
                 vehicle.speed = RAM_SPEED;
-                if !boss.ram_hit && !rover_health.is_dead() && to_rover.length() < RADIUS + 2.0 {
+                if !boss.ram_hit && !rover_health.is_dead() && ram_hits(to_rover.length(), rover_collider.radius) {
                     boss.ram_hit = true;
                     damage.write(Damage {
                         target: rover_entity,
-                        amount: RAM_DAMAGE,
+                        amount: enemy_damage::BOSS_RAM,
                         source_team: Team::Enemy,
                     });
                 }
@@ -599,6 +612,16 @@ fn update_health_bar(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn таран_достаёт_дальше_расталкивания() {
+        // Расталкивание держит босса на сумме радиусов, с луноходом это около 6,6 м.
+        let rover_radius = crate::combat::ROVER_COLLIDER_RADIUS * crate::rover::ROVER_SCALE;
+        let pushed_apart = RADIUS + rover_radius;
+        assert!(ram_hits(pushed_apart, rover_radius));
+        assert!(ram_hits(pushed_apart + 1.0, rover_radius));
+        assert!(!ram_hits(pushed_apart + 5.0, rover_radius));
+    }
 
     #[test]
     fn здоровье_босса_растёт_с_угрозой() {

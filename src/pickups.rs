@@ -1,21 +1,18 @@
 //! Подбираемые предметы: ящики с оружием на парашютах и трофеи, выпавшие из врагов.
 //!
 //! Предмет подбирается проездом. Ящики падают раз в несколько секунд в кольце вокруг лунохода,
-//! чаще у мест разрушений. Содержимое открывается по времени забега. Часть врагов носит ракеты,
-//! стреляет ими и роняет их при гибели.
+//! чаще у мест разрушений. Содержимое открывается по времени забега. Враг роняет при гибели
+//! оружие, которое носит по своему типу (`CarriedWeapon` ставит `enemy.rs`).
 
 use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 
 use crate::arsenal::{Inventory, spec};
-use crate::bullet::has_line_of_sight;
 use crate::buildings::BuildingDestroyed;
 use crate::camera::GameCamera;
-use crate::combat::{Died, Health, SurvivalTime, Team};
-use crate::enemy::Enemy;
+use crate::combat::{Died, Health, SurvivalTime};
 use crate::frame::{GameSet, RunMessages};
 use crate::rng::GameRng;
-use crate::rockets::FireRocket;
 use crate::rover::Rover;
 use crate::run::{RunScoped, WorldRebuilt};
 use crate::subsidence::TerrainChanged;
@@ -47,11 +44,6 @@ const RUIN_MEMORY: usize = 30;
 const LOOT_SECONDS: f32 = 20.0;
 const LOOT_BLINK: f32 = 5.0;
 
-/// Доля врагов с ракетами, перезарядка их ракет и дальность стрельбы.
-const ROCKET_CARRIER_CHANCE: f32 = 0.2;
-const ENEMY_ROCKET_RELOAD: f32 = 3.0;
-const ENEMY_ROCKET_RANGE: f32 = 35.0;
-
 /// Подключает подбираемые предметы.
 pub struct PickupsPlugin;
 
@@ -64,7 +56,7 @@ impl Plugin for PickupsPlugin {
                 Update,
                 (
                     reset_crates.in_set(GameSet::Reset),
-                    (remember_ruins, drop_crates, arm_enemies, enemy_rockets, spawn_loot, descend, collect)
+                    (remember_ruins, drop_crates, spawn_loot, descend, collect)
                         .chain()
                         .in_set(GameSet::Simulation),
                     // Враг ещё существует: трофей берёт оружие с него.
@@ -99,7 +91,6 @@ struct Crate;
 #[derive(Component)]
 pub struct CarriedWeapon {
     pub weapon: CurrentWeapon,
-    cooldown: f32,
 }
 
 /// Всплывающая надпись подбора.
@@ -377,48 +368,6 @@ fn float_popups(
             node.top = Val::Px(screen.y - 40.0 - popup.elapsed * 50.0);
         }
         color.0.set_alpha(1.0 - popup.elapsed);
-    }
-}
-
-/// Часть новых врагов получает ракеты.
-fn arm_enemies(mut commands: Commands, mut dice: ResMut<GameRng>, enemies: Query<Entity, Added<Enemy>>) {
-    for enemy in &enemies {
-        if dice.range(0.0, 1.0) < ROCKET_CARRIER_CHANCE {
-            commands.entity(enemy).try_insert(CarriedWeapon {
-                weapon: CurrentWeapon::Rockets,
-                cooldown: ENEMY_ROCKET_RELOAD,
-            });
-        }
-    }
-}
-
-/// Враги с ракетами стреляют по луноходу при прямой видимости.
-fn enemy_rockets(
-    time: Res<Time>,
-    terrain: Res<Terrain>,
-    mut carriers: Query<(&GlobalTransform, &mut CarriedWeapon, &Health), With<Enemy>>,
-    rover: Single<&Transform, With<Rover>>,
-    mut rockets: MessageWriter<FireRocket>,
-) {
-    for (transform, mut carried, health) in &mut carriers {
-        if health.is_dead() || carried.weapon != CurrentWeapon::Rockets {
-            continue;
-        }
-        carried.cooldown -= time.delta_secs();
-        let from = transform.translation() + Vec3::Y * 0.9;
-        let target = rover.translation;
-        if carried.cooldown > 0.0
-            || from.distance(target) > ENEMY_ROCKET_RANGE
-            || !has_line_of_sight(&terrain, from, target + Vec3::Y * 0.5)
-        {
-            continue;
-        }
-        carried.cooldown = ENEMY_ROCKET_RELOAD;
-        rockets.write(FireRocket {
-            origin: from,
-            target,
-            team: Team::Enemy,
-        });
     }
 }
 

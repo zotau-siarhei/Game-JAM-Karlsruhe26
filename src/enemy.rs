@@ -22,6 +22,7 @@ use crate::frame::{GameSet, RunMessages};
 use crate::laser::FireLaser;
 use crate::mortar::{self, FireShell};
 use crate::obstacles::Obstacle;
+use crate::pickups::CarriedWeapon;
 use crate::rng::GameRng;
 use crate::rockets::FireRocket;
 use crate::rover::{Rover, RoverMotion};
@@ -30,6 +31,8 @@ use crate::sound_list::Dice;
 use crate::steering::{self, Steering};
 use crate::terrain::Terrain;
 use crate::vehicle::{self, GroundVehicle};
+use crate::waves::enemy_damage;
+use crate::weapons::CurrentWeapon;
 
 /// Здоровье таран-стрелка.
 const ENEMY_HEALTH: f32 = 30.0;
@@ -58,9 +61,6 @@ const SPAWN_RING: (f32, f32) = (45.0, 55.0);
 /// Враги дальше этого расстояния от лунохода убираются, м.
 const DESPAWN_DISTANCE: f32 = 120.0;
 
-/// Урон тарана.
-const RAM_DAMAGE: f32 = 12.0;
-
 /// Один враг таранит не чаще раза в столько секунд.
 const RAM_INTERVAL: f32 = 0.5;
 
@@ -81,9 +81,6 @@ const RELOAD: f32 = 1.5;
 
 /// Разброс пуль по горизонтали в каждую сторону, рад.
 const SPREAD: f32 = 4.0 * std::f32::consts::PI / 180.0;
-
-/// Урон пули врага.
-const BULLET_DAMAGE: f32 = 4.0;
 
 /// Высота дула над центром корпуса, м.
 const MUZZLE_HEIGHT: f32 = 0.5;
@@ -108,10 +105,6 @@ const MORTAR_BAND: (f32, f32) = (22.0, 34.0);
 
 /// Перезарядка мортиры врага, с.
 const MORTAR_RELOAD: f32 = 3.0;
-
-/// Мощность взрыва вражеского снаряда: прямое попадание отнимает 35 здоровья
-/// (`combat::EXPLOSION_DAMAGE` × мощность).
-const MORTAR_POWER: f32 = 0.35;
 
 /// Разброс точки прицеливания мортирщика, м.
 const MORTAR_SCATTER: f32 = 3.0;
@@ -150,14 +143,16 @@ const TANK_TURN_SPEED: f32 = 1.2;
 const TANK_SCALE: f32 = 1.6;
 /// Насколько в стороне от линии к луноходу танк заходит, м.
 const FLANK_OFFSET: f32 = 30.0;
+/// На каком расстоянии от лунохода точка фланга, м: в дальности выстрела.
+const FLANK_DISTANCE: f32 = TANK_FIRE_RANGE * 0.7;
+/// Насколько курс корпуса может отличаться от направления на луноход, чтобы прицеливание шло, рад.
+const TANK_AIM_TOLERANCE: f32 = 0.08;
 /// С какого расстояния танк стреляет, м: чуть меньше длины луча.
 const TANK_FIRE_RANGE: f32 = 36.0;
 /// Сколько видна линия прицела перед выстрелом, с.
 const TANK_AIM_TIME: f32 = 1.0;
 /// Перезарядка танка, с.
 const TANK_RELOAD: f32 = 4.0;
-/// Урон импульса танка.
-const TANK_LASER_DAMAGE: f32 = 70.0;
 /// Цвет танка.
 const TANK_COLOR: Color = Color::srgb(0.32, 0.36, 0.3);
 
@@ -246,6 +241,21 @@ struct HeavyTank {
     reload: f32,
     /// Сторона захода: 1 или -1.
     side: f32,
+    /// Точка фланга: угол вокруг лунохода, рад. Выбирается при начале захода и держится до него,
+    /// иначе точка уезжает вместе с танком и он кружит, не доходя до неё.
+    flank: Option<f32>,
+}
+
+/// Угол точки фланга вокруг лунохода в `rover` для танка в `me`, заходящего со стороны `side`:
+/// на [`FLANK_OFFSET`] вбок от линии «луноход — танк» на расстоянии [`FLANK_DISTANCE`].
+fn flank_angle(me: Vec3, rover: Vec3, side: f32) -> f32 {
+    let bearing = (me.z - rover.z).atan2(me.x - rover.x);
+    bearing + side * FLANK_OFFSET.atan2(FLANK_DISTANCE)
+}
+
+/// Угол между курсами, по кратчайшей дуге, рад.
+fn heading_error(heading: f32, target: f32) -> f32 {
+    ((target - heading + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI).abs()
 }
 
 /// Линия прицела танка: тонкий красный луч, виден только во время прицеливания.
@@ -397,6 +407,16 @@ fn spawn_enemies(
     }
 }
 
+/// Оружие, которое носит враг типа `kind`: им он стреляет, его и роняет.
+fn carried_weapon(kind: EnemyKind) -> CurrentWeapon {
+    match kind {
+        EnemyKind::RamShooter => CurrentWeapon::MachineGun,
+        EnemyKind::Mortar => CurrentWeapon::Mortar,
+        EnemyKind::Rocketeer => CurrentWeapon::Rockets,
+        EnemyKind::HeavyTank => CurrentWeapon::Laser,
+    }
+}
+
 /// Создаёт врага типа `kind` в точке `position` носом к точке `target`.
 fn spawn_enemy(
     commands: &mut Commands,
@@ -419,6 +439,10 @@ fn spawn_enemy(
     position.y += RIDE_HEIGHT * (scale - 1.0);
     let mut enemy = commands.spawn((
         Enemy,
+        // Враг носит своё оружие и роняет его при гибели (`pickups::drop_loot`).
+        CarriedWeapon {
+            weapon: carried_weapon(kind),
+        },
         RunScoped,
         Health::new(health),
         Team::Enemy,
@@ -453,6 +477,7 @@ fn spawn_enemy(
             state: TankState::Flank,
             reload: dice.range(1.0, TANK_RELOAD),
             side: if dice.range(0.0, 1.0) < 0.5 { 1.0 } else { -1.0 },
+            flank: None,
         }),
     };
     enemy.with_children(|parent| {
@@ -514,25 +539,29 @@ fn spawn_enemy(
 }
 
 /// Направляет врагов на луноход; объезд препятствий — в `steering`. Когда луноход погиб, враги встают.
+///
+/// Вплотную к луноходу таран-стрелок не жмёт газ, а стоит носом к нему и таранит: иначе
+/// `steering` принял бы упор в луноход за застревание и отъехал назад.
 fn chase_rover(
-    rover: Query<(&Transform, &Health), With<Rover>>,
+    rover: Query<(&Transform, &Collider, &Health), With<Rover>>,
     mut enemies: Query<
-        (&Transform, &mut Steering),
+        (&Transform, &Collider, &mut Steering),
         (With<Enemy>, Without<Mortarman>, Without<Rocketeer>, Without<HeavyTank>),
     >,
 ) {
     let target = rover
         .iter()
         .next()
-        .filter(|(_, health)| !health.is_dead())
-        .map(|(transform, _)| transform.translation);
-    for (transform, mut steering) in &mut enemies {
-        let Some(target) = target else {
+        .filter(|(_, _, health)| !health.is_dead())
+        .map(|(transform, collider, _)| (transform.translation, collider.radius));
+    for (transform, collider, mut steering) in &mut enemies {
+        let Some((target, rover_radius)) = target else {
             steering.speed = 0.0;
             continue;
         };
         steering.desired = vehicle::heading_towards(target - transform.translation);
-        steering.speed = ENEMY_SPEED;
+        let touching = is_ramming(transform.translation, target, collider.radius + rover_radius);
+        steering.speed = if touching { 0.0 } else { ENEMY_SPEED };
     }
 }
 
@@ -644,8 +673,13 @@ fn drive_rocketeers(
                 .cover
                 .is_none_or(|c| !hidden_from(&terrain, obstacles.iter(), c, target) || c.distance(target) > COVER_RING.1 + 10.0);
             if lost {
-                robot.cover = find_cover(&terrain, &pools, &obstacles, &mut dice, me, target);
-                robot.state = CoverState::Moving;
+                let found = find_cover(&terrain, &pools, &obstacles, &mut dice, me, target);
+                // Укрытия не было и нет: ракетчик продолжает начатое на открытом месте, иначе
+                // перепроверка раз в 0,5 с не дала бы ему досидеть и выглянуть.
+                if found.is_some() || robot.cover.is_some() {
+                    robot.state = CoverState::Moving;
+                }
+                robot.cover = found;
             }
         }
         // Укрытия нет — подъезжает на дальность выстрела и стреляет оттуда.
@@ -677,9 +711,10 @@ fn drive_rocketeers(
             CoverState::Peeking(spot) => {
                 let muzzle = me + Vec3::Y * LAUNCHER_HEIGHT;
                 let to = (spot - me).with_y(0.0);
+                // Ракета только при прямой видимости: иначе она летит в дом или холм.
                 let sees = steering::has_los(&terrain, obstacles.iter(), muzzle, target + Vec3::Y * 0.5);
                 if sees || to.length() < 1.0 {
-                    if sees || robot.cover.is_none() {
+                    if sees {
                         rockets.write(FireRocket {
                             origin: muzzle,
                             target,
@@ -728,8 +763,9 @@ fn drive_tanks(
         match tank.state {
             TankState::Flank => {
                 // Точка сбоку от линии «луноход — танк»: танк не едет в лоб.
-                let side = to_rover.normalize_or(Vec3::X).cross(Vec3::Y) * tank.side;
-                let goal = target - to_rover.normalize_or(Vec3::X) * (TANK_FIRE_RANGE * 0.7) + side * FLANK_OFFSET;
+                let side = tank.side;
+                let angle = *tank.flank.get_or_insert_with(|| flank_angle(me, target, side));
+                let goal = ring_point(target, angle, FLANK_DISTANCE);
                 let to_goal = (goal - me).with_y(0.0);
                 let in_range = to_rover.length() < TANK_FIRE_RANGE;
                 let muzzle = me + Vec3::Y * 1.2;
@@ -741,6 +777,7 @@ fn drive_tanks(
                 } else if to_goal.length() < 3.0 {
                     // Дошёл до точки фланга: заходит с другой стороны.
                     tank.side = -tank.side;
+                    tank.flank = None;
                 } else {
                     steering.desired = vehicle::heading_towards(to_goal);
                     steering.speed = TANK_SPEED;
@@ -749,19 +786,30 @@ fn drive_tanks(
             TankState::Aiming(left) => {
                 show_line = true;
                 steering.speed = 0.0;
-                steering.desired = vehicle::heading_towards(to_rover);
-                let left = left - dt;
-                if left > 0.0 {
-                    tank.state = TankState::Aiming(left);
+                let face = vehicle::heading_towards(to_rover);
+                steering.desired = face;
+                // Секунда прицеливания идёт, только пока корпус и линия прицела смотрят на луноход:
+                // луч бьёт по курсу корпуса, медленный танк сначала доворачивает.
+                let aimed = heading_error(vehicle.heading, face) < TANK_AIM_TOLERANCE;
+                let left = if aimed { left - dt } else { left };
+                if to_rover.length() > TANK_FIRE_RANGE * 1.2 {
+                    // Луноход ушёл из дальности: снова заход.
+                    tank.state = TankState::Flank;
+                    show_line = false;
+                } else if left > 0.0 || !aimed {
+                    tank.state = TankState::Aiming(left.max(0.0));
                 } else {
                     lasers.write(FireLaser {
                         origin: me + Vec3::Y * (HULL_SIZE.y * 0.5 + 0.2) * TANK_SCALE,
                         direction: vehicle.forward(),
                         team: Team::Enemy,
-                        damage: TANK_LASER_DAMAGE,
+                        damage: enemy_damage::TANK_LASER,
                     });
                     tank.reload = TANK_RELOAD;
                     tank.state = TankState::Flank;
+                    // После выстрела — новый заход с другой стороны.
+                    tank.side = -tank.side;
+                    tank.flank = None;
                     show_line = false;
                 }
             }
@@ -829,7 +877,7 @@ fn fire_mortarmen(
             origin: transform.translation + Vec3::Y * 1.4,
             target: lead_target(rover.translation, velocity) + scatter,
             team: Team::Enemy,
-            power: MORTAR_POWER,
+            power: enemy_damage::MORTAR_POWER,
         });
     }
 }
@@ -897,7 +945,7 @@ fn ram_rover(
             weapons.ram_cooldown = RAM_INTERVAL;
             damage.write(Damage {
                 target,
-                amount: RAM_DAMAGE,
+                amount: enemy_damage::RAM,
                 source_team: Team::Enemy,
             });
         }
@@ -965,17 +1013,18 @@ fn shoot_rover(
                 origin: muzzle,
                 direction: spread * (target - muzzle),
                 team: Team::Enemy,
-                damage: BULLET_DAMAGE,
+                damage: enemy_damage::BULLET,
             });
         }
     }
 }
 
-/// Убирает врагов, от которых луноход уехал далеко.
+/// Убирает врагов, от которых луноход уехал далеко, и босса тоже: иначе убегающий игрок копил бы
+/// боссов. Полоса здоровья босса исчезает вместе с ним.
 fn remove_far_enemies(
     mut commands: Commands,
     rover: Query<&Transform, With<Rover>>,
-    enemies: Query<(Entity, &Transform), (With<Enemy>, Without<Boss>)>,
+    enemies: Query<(Entity, &Transform), With<Enemy>>,
 ) {
     let Some(rover) = rover.iter().next() else {
         return;
@@ -1087,6 +1136,35 @@ mod tests {
         // Машины в одной точке всё равно расходятся.
         let push = overlap_push(Vec3::ZERO, Vec3::ZERO, 2.4).unwrap();
         assert!((push.length() - 2.4).abs() < 1e-4);
+    }
+
+    #[test]
+    fn enemy_drops_the_weapon_it_fights_with() {
+        assert_eq!(carried_weapon(EnemyKind::Mortar), CurrentWeapon::Mortar);
+        assert_eq!(carried_weapon(EnemyKind::Rocketeer), CurrentWeapon::Rockets);
+        assert_eq!(carried_weapon(EnemyKind::HeavyTank), CurrentWeapon::Laser);
+        assert_eq!(carried_weapon(EnemyKind::RamShooter), CurrentWeapon::MachineGun);
+    }
+
+    #[test]
+    fn flank_point_is_reachable_and_in_range() {
+        let rover = Vec3::new(10.0, 0.0, -5.0);
+        let me = rover + Vec3::new(50.0, 0.0, 0.0);
+        for side in [1.0, -1.0] {
+            let goal = ring_point(rover, flank_angle(me, rover, side), FLANK_DISTANCE);
+            // С точки фланга танк достаёт луноход.
+            assert!(goal.distance(rover) < TANK_FIRE_RANGE);
+            // Точка сбоку от линии «луноход — танк», а не на ней.
+            let off_line = (goal - rover).cross(me - rover).length() / (me - rover).length();
+            assert!(off_line > FLANK_OFFSET * 0.5, "{off_line}");
+        }
+    }
+
+    #[test]
+    fn tank_aims_only_when_the_hull_faces_the_rover() {
+        assert!(heading_error(0.0, 0.05) < TANK_AIM_TOLERANCE);
+        assert!(heading_error(3.1, -3.1) < TANK_AIM_TOLERANCE);
+        assert!(heading_error(0.0, 0.3) > TANK_AIM_TOLERANCE);
     }
 
     #[test]
