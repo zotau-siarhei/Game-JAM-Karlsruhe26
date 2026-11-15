@@ -39,7 +39,7 @@ if [[ -x "$(built_binary "$root")" && $force -eq 0 ]]; then
     exit 0
 fi
 
-mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1"; }
+mtime() { if [[ "$(uname)" == "Darwin" ]]; then stat -f %m "$1"; else stat -c %Y "$1"; fi; }
 
 if [[ -z "$source" ]]; then
     best=0
