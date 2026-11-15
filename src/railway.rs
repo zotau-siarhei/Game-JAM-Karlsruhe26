@@ -3,7 +3,15 @@
 //! Мир пересекают параллельные линии вдоль X (`z ≈ k·L`), без пересечений. Каждая линия
 //! плавно отклоняется от своей оси по шуму, поэтому точку и касательную пути можно вычислить для
 //! любого куска мира без хранения линии. Уровень путей — рельеф холмов вдоль линии, сглаженный
-//! скользящим средним; горы в профиль не входят, под ними путь уходит в туннель.
+//! скользящим средним и ограниченный по уклону; горы в профиль не входят, под ними путь уходит
+//! в туннель.
+//!
+//! Профиль считается по узлам с шагом [`KNOT_STEP`]: сглаженный уровень в узле, затем
+//! ограничение уклона между узлами, затем гладкая кривая через узлы. Уровни узлов
+//! запоминаются, поэтому повторный запрос уровня шум не считает.
+
+use std::collections::HashMap;
+use std::sync::Mutex;
 
 use bevy::prelude::*;
 use noise::{NoiseFn, Perlin};
@@ -21,9 +29,24 @@ const WIGGLE_WAVELENGTH: f32 = 90.0;
 /// Сдвиг линии от узла сетки в обе стороны, м.
 const OFFSET_RANGE: f32 = 40.0;
 
-/// Ширина треугольного окна сглаживания профиля и число точек в нём.
+/// Ширина треугольного окна сглаживания профиля и шаг выборок рельефа в нём, м. Шаг заметно
+/// мельче холма (45 м): редкие выборки не усредняют холмы, а пропускают их в профиль.
 const PROFILE_WINDOW: f32 = 240.0;
-const PROFILE_SAMPLES: usize = 17;
+const PROFILE_SAMPLE_STEP: f32 = 5.0;
+
+/// Шаг узлов профиля, м.
+const KNOT_STEP: f32 = 20.0;
+
+/// Наибольший уклон профиля. Предел — 3 %; запас оставлен на погрешность счёта.
+pub const MAX_SLOPE: f32 = 0.028;
+
+/// Наибольший перепад сглаженного уровня вдоль линии, м: холмы не выше и не ниже 7 м.
+/// От него зависит, на сколько узлов в обе стороны смотрит ограничение уклона.
+pub const PROFILE_RANGE: f32 = 14.0;
+
+/// На сколько узлов в каждую сторону смотрит ограничение уклона: дальше узел повлиять не может,
+/// потому что предельный уклон на таком расстоянии набирает весь перепад [`PROFILE_RANGE`].
+const LIMIT_REACH: i32 = (PROFILE_RANGE / (MAX_SLOPE * KNOT_STEP)) as i32 + 1;
 
 /// Полоса, где рельеф равен уровню путей, и полоса перехода к рельефу, м.
 pub const TRACK_FLAT: f32 = 5.0;
@@ -59,6 +82,15 @@ pub struct LineId {
 pub struct Lines {
     seed: u32,
     bend: Perlin,
+    /// Запомненные уровни узлов профиля: сглаженные и ограниченные по уклону.
+    profile: Mutex<Profile>,
+}
+
+/// Уровни узлов профиля по линии и номеру узла.
+#[derive(Default)]
+struct Profile {
+    smoothed: HashMap<(LineId, i32), f32>,
+    limited: HashMap<(LineId, i32), f32>,
 }
 
 /// Ближайшая линия к точке.
@@ -83,6 +115,7 @@ impl Lines {
         Self {
             seed,
             bend: Perlin::new(seed.wrapping_add(BEND_SEED)),
+            profile: Mutex::default(),
         }
     }
 
@@ -174,22 +207,68 @@ impl Lines {
         found
     }
 
-    /// Уровень путей на параметре `s`: высота холмов вдоль оси, сглаженная треугольным окном.
+    /// Уровень путей на параметре `s`: высота холмов вдоль оси, сглаженная и ограниченная
+    /// по уклону не круче [`MAX_SLOPE`].
     ///
-    /// Треугольное окно гасит короткие холмы намного сильнее прямоугольного, поэтому уклон
-    /// профиля остаётся пологим без последовательного ограничения.
+    /// Кривая между узлами — равномерный квадратичный B-сплайн: его наклон в любой точке лежит
+    /// между наклонами двух соседних отрезков между узлами, поэтому предел уклона узлов
+    /// выполняется и между ними, а на узлах нет изломов.
+    ///
+    /// `hills` — холмистая часть рельефа; на всю жизнь линий она должна быть одной и той же
+    /// функцией, потому что уровни узлов запоминаются.
     pub fn level(&self, line: LineId, s: f32, hills: impl Fn(f32, f32) -> f32) -> f32 {
-        let step = PROFILE_WINDOW / (PROFILE_SAMPLES - 1) as f32;
+        // Отрезок сплайна с опорой на три узла идёт от середины до середины между ними.
+        let x = s / KNOT_STEP + 0.5;
+        let knot = x.floor();
+        let t = x - knot;
+        let knot = knot as i32;
+        let before = self.limited_knot(line, knot - 1, &hills);
+        let here = self.limited_knot(line, knot, &hills);
+        let after = self.limited_knot(line, knot + 1, &hills);
+        0.5 * (1.0 - t) * (1.0 - t) * before + (0.5 + t * (1.0 - t)) * here + 0.5 * t * t * after
+    }
+
+    /// Сглаженный уровень в узле: холмы вдоль оси под треугольным окном.
+    fn smoothed_knot(&self, line: LineId, knot: i32, hills: &impl Fn(f32, f32) -> f32) -> f32 {
+        if let Some(level) = self.profile.lock().unwrap().smoothed.get(&(line, knot)) {
+            return *level;
+        }
+        let s = knot as f32 * KNOT_STEP;
+        let half = (PROFILE_WINDOW * 0.5 / PROFILE_SAMPLE_STEP) as i32;
         let (mut sum, mut weights) = (0.0, 0.0);
-        for i in 0..PROFILE_SAMPLES {
-            let u = i as f32 / (PROFILE_SAMPLES - 1) as f32 * 2.0 - 1.0;
-            let w = 1.0 - u.abs() + 1e-3;
-            let q = s - PROFILE_WINDOW * 0.5 + i as f32 * step;
-            let p = self.point(line, q);
+        for i in -half..=half {
+            let w = 1.0 - i.abs() as f32 / (half + 1) as f32;
+            let p = self.point(line, s + i as f32 * PROFILE_SAMPLE_STEP);
             sum += hills(p.x, p.y) * w;
             weights += w;
         }
-        sum / weights
+        let level = sum / weights;
+        self.profile.lock().unwrap().smoothed.insert((line, knot), level);
+        level
+    }
+
+    /// Уровень узла с ограничением уклона: середина между двумя огибающими сглаженного профиля.
+    ///
+    /// Нижняя огибающая — самая высокая кривая не выше профиля, у которой уклон между узлами
+    /// не больше предела; верхняя — самая низкая не ниже профиля. У обеих и у их середины уклон
+    /// ограничен. Где профиль и так пологий, огибающие с ним совпадают; крутой склон срезается
+    /// поровну сверху и снизу: полувыемка и полунасыпь. Значение узла зависит только от
+    /// соседей, а не от того, с какой стороны к нему подошли.
+    fn limited_knot(&self, line: LineId, knot: i32, hills: &impl Fn(f32, f32) -> f32) -> f32 {
+        if let Some(level) = self.profile.lock().unwrap().limited.get(&(line, knot)) {
+            return *level;
+        }
+        let rise = MAX_SLOPE * KNOT_STEP;
+        let (mut lower, mut upper) = (f32::MAX, f32::MIN);
+        for other in knot - LIMIT_REACH..=knot + LIMIT_REACH {
+            let level = self.smoothed_knot(line, other, hills);
+            let reach = rise * (other - knot).abs() as f32;
+            lower = lower.min(level + reach);
+            upper = upper.max(level - reach);
+        }
+        let level = 0.5 * (lower + upper);
+        self.profile.lock().unwrap().limited.insert((line, knot), level);
+        level
     }
 
     /// Высота рельефа с поправкой путей: насыпи и выемки в полосе у оси, туннели под горами.
@@ -258,6 +337,43 @@ mod tests {
                 s += 4.0;
             }
             assert!(worst <= 0.03, "сид {seed}: уклон {worst}");
+        }
+    }
+
+    #[test]
+    fn profile_slope_is_limited_even_on_a_cliff() {
+        // Обрыв во весь перепад холмов: сглаживание его не спасает, уклон держит ограничение.
+        let lines = Lines::new(3);
+        let line = LineId {
+            family: Family::AlongX,
+            index: 0,
+        };
+        let cliff = |x: f32, _z: f32| if x > 0.0 { 7.0 } else { -7.0 };
+        let mut worst: f32 = 0.0;
+        let mut s = -700.0;
+        while s < 700.0 {
+            let rise = lines.level(line, s + 1.0, cliff) - lines.level(line, s, cliff);
+            worst = worst.max(rise.abs());
+            s += 1.0;
+        }
+        assert!(worst <= 0.03, "уклон {worst}");
+        // Вдали от обрыва профиль лежит на рельефе, у обрыва — посередине.
+        assert!((lines.level(line, -650.0, cliff) + 7.0).abs() < 0.01);
+        assert!((lines.level(line, 650.0, cliff) - 7.0).abs() < 0.01);
+        assert!(lines.level(line, 0.0, cliff).abs() < 0.5);
+    }
+
+    #[test]
+    fn gentle_profile_is_not_changed_by_the_slope_limit() {
+        // Уклон 1 % вдвое положе предела: уровень идёт по рельефу.
+        let lines = Lines::new(3);
+        let line = LineId {
+            family: Family::AlongX,
+            index: 0,
+        };
+        let ramp = |x: f32, _z: f32| x * 0.01;
+        for s in [-333.0, -10.0, 0.0, 47.5, 410.0] {
+            assert!((lines.level(line, s, ramp) - s * 0.01).abs() < 0.01, "s = {s}");
         }
     }
 }

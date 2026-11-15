@@ -14,6 +14,9 @@ const HILLS_PERSISTENCE: f64 = 0.45;
 /// Амплитуда холмов, м.
 const HILLS_AMPLITUDE: f32 = 7.0;
 
+// Ограничение уклона путей рассчитано на перепад холмов не больше `PROFILE_RANGE`.
+const _: () = assert!(2.0 * HILLS_AMPLITUDE <= crate::railway::PROFILE_RANGE);
+
 /// Частота крупной составляющей для гор, 1/м.
 const MOUNTAINS_FREQUENCY: f64 = 1.0 / 260.0;
 
