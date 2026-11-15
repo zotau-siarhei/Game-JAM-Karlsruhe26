@@ -28,6 +28,7 @@ use crate::camera::GameCamera;
 use crate::combat::{Collider, Damage, Died, Health, ROVER_MAX_HEALTH, Team, blast_damage};
 use crate::explosion::Explosion;
 use crate::frame::{GameSet, RunMessages};
+use crate::models::{ModelShade, Models};
 use crate::obstacles::{Obstacle, Shape};
 use crate::pickups::{SpawnLoot, crate_weapons};
 use crate::rails::{LINK_LENGTH, TrackDamage};
@@ -91,6 +92,10 @@ const BLAST_GAP: f32 = 0.25;
 const BURN_TIME: f32 = 6.0;
 /// Вес крушения в угрозе: только крушения от игрока.
 const WRECK_THREAT: f32 = 6.0;
+/// Яркость обугленного остова из модели: текстура почти чёрная.
+const CHARRED_SHADE: f32 = 0.1;
+/// Модель вагона опущена на столько: колёса на рельсах, а начало вагона — над ними, м.
+const MODEL_DROP: f32 = 0.3;
 /// Очков тревоги за пассажирский вагон, уничтоженный игроком: как за дом.
 const PASSENGER_ALARM: f32 = 6.0;
 /// Больше остовов забег не хранит: старые исчезают первыми.
@@ -181,6 +186,16 @@ impl CarKind {
 
     fn index(self) -> usize {
         self as usize
+    }
+
+    /// Id модели в `models.json`.
+    fn model(self) -> &'static str {
+        match self {
+            CarKind::Locomotive => "train_loco",
+            CarKind::Passenger => "train_wagon_passenger",
+            CarKind::Freight => "train_wagon_freight",
+            CarKind::Tank => "train_wagon_tank",
+        }
     }
 }
 
@@ -410,6 +425,7 @@ fn run_schedule(
     damage: Res<TrackDamage>,
     store: Res<WreckStore>,
     assets: Res<TrainAssets>,
+    mut models: Models,
     mut incoming: MessageWriter<TrainIncoming>,
     trains: Query<(), With<Train>>,
     rover: Single<&Transform, With<Rover>>,
@@ -462,7 +478,7 @@ fn run_schedule(
         for (entity, ..) in &warnings {
             commands.entity(entity).despawn();
         }
-        spawn_train(&mut commands, &assets, &mut dice, line, s, dir);
+        spawn_train(&mut commands, &assets, &mut models, &mut dice, line, s, dir);
         return;
     }
     let near = terrain.lines().nearest(p);
@@ -493,7 +509,15 @@ fn run_schedule(
 }
 
 /// Создаёт состав: локомотив и вагоны со случайными долями видов.
-fn spawn_train(commands: &mut Commands, assets: &TrainAssets, dice: &mut Dice, line: LineId, head: f32, dir: f32) {
+fn spawn_train(
+    commands: &mut Commands,
+    assets: &TrainAssets,
+    models: &mut Models,
+    dice: &mut Dice,
+    line: LineId,
+    head: f32,
+    dir: f32,
+) {
     let wagons = WAGONS.0 + dice.below(WAGONS.1 - WAGONS.0 + 1);
     let weights = [dice.range(0.2, 1.0), dice.range(0.2, 1.0), dice.range(0.2, 1.0)];
     let total: f32 = weights.iter().sum();
@@ -513,7 +537,7 @@ fn spawn_train(commands: &mut Commands, assets: &TrainAssets, dice: &mut Dice, l
                 CarKind::Tank
             }
         };
-        let car = spawn_car(commands, assets, kind, Transform::default());
+        let car = spawn_car(commands, assets, models, kind, Transform::default());
         commands.entity(car).insert((
             OnTrack { train, offset },
             Health::new(kind.health()),
@@ -528,8 +552,8 @@ fn spawn_train(commands: &mut Commands, assets: &TrainAssets, dice: &mut Dice, l
     commands.entity(train).insert(Train { line, head, dir, cars });
 }
 
-/// Кузов вагона с деталями. Колёсные тележки и окна — дочерние кубы.
-fn spawn_car(commands: &mut Commands, assets: &TrainAssets, kind: CarKind, transform: Transform) -> Entity {
+/// Вагон: модель из `models.json`, запасной облик — кузов с деталями из кубов. Перёд вагона — +Z.
+fn spawn_car(commands: &mut Commands, assets: &TrainAssets, models: &mut Models, kind: CarKind, transform: Transform) -> Entity {
     let (length, height) = kind.size();
     let body_h = height - FLOOR;
     let mut entity = commands.spawn((
@@ -538,47 +562,49 @@ fn spawn_car(commands: &mut Commands, assets: &TrainAssets, kind: CarKind, trans
         transform,
         Visibility::default(),
     ));
-    entity.with_children(|car| {
-        let body = match kind {
-            // Цистерна — горизонтальный цилиндр на раме.
-            CarKind::Tank => (assets.cylinder.clone(), Transform::from_xyz(0.0, FLOOR + body_h * 0.5, 0.0)
-                .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2))
-                .with_scale(Vec3::new(CAR_WIDTH, length - 0.6, body_h))),
-            _ => (assets.cube.clone(), Transform::from_xyz(0.0, FLOOR + body_h * 0.5, 0.0)
-                .with_scale(Vec3::new(CAR_WIDTH, body_h, length))),
-        };
-        car.spawn((Mesh3d(body.0), MeshMaterial3d(assets.bodies[kind.index()].clone()), body.1));
-        // Рама и тележки.
-        car.spawn((
-            Mesh3d(assets.cube.clone()),
-            MeshMaterial3d(assets.dark.clone()),
-            Transform::from_xyz(0.0, FLOOR * 0.5, 0.0).with_scale(Vec3::new(CAR_WIDTH * 0.8, FLOOR, length * 0.9)),
-        ));
-        match kind {
-            CarKind::Locomotive => {
-                // Кабина повыше спереди и труба.
-                car.spawn((
-                    Mesh3d(assets.cube.clone()),
-                    MeshMaterial3d(assets.window.clone()),
-                    NotShadowCaster,
-                    Transform::from_xyz(0.0, height - 0.9, length * 0.5 - 1.5).with_scale(Vec3::new(CAR_WIDTH + 0.05, 0.8, 1.6)),
-                ));
-                car.spawn((
-                    Mesh3d(assets.cylinder.clone()),
-                    MeshMaterial3d(assets.dark.clone()),
-                    Transform::from_xyz(0.0, height + 0.4, -length * 0.2).with_scale(Vec3::new(0.7, 1.0, 0.7)),
-                ));
+    entity.with_children(|parent| {
+        models.spawn_visual(parent, kind.model(), Transform::from_xyz(0.0, -MODEL_DROP, 0.0), |car| {
+            let body = match kind {
+                // Цистерна — горизонтальный цилиндр на раме.
+                CarKind::Tank => (assets.cylinder.clone(), Transform::from_xyz(0.0, FLOOR + body_h * 0.5, 0.0)
+                    .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2))
+                    .with_scale(Vec3::new(CAR_WIDTH, length - 0.6, body_h))),
+                _ => (assets.cube.clone(), Transform::from_xyz(0.0, FLOOR + body_h * 0.5, 0.0)
+                    .with_scale(Vec3::new(CAR_WIDTH, body_h, length))),
+            };
+            car.spawn((Mesh3d(body.0), MeshMaterial3d(assets.bodies[kind.index()].clone()), body.1));
+            // Рама и тележки.
+            car.spawn((
+                Mesh3d(assets.cube.clone()),
+                MeshMaterial3d(assets.dark.clone()),
+                Transform::from_xyz(0.0, FLOOR * 0.5, 0.0).with_scale(Vec3::new(CAR_WIDTH * 0.8, FLOOR, length * 0.9)),
+            ));
+            match kind {
+                CarKind::Locomotive => {
+                    // Кабина повыше спереди и труба.
+                    car.spawn((
+                        Mesh3d(assets.cube.clone()),
+                        MeshMaterial3d(assets.window.clone()),
+                        NotShadowCaster,
+                        Transform::from_xyz(0.0, height - 0.9, length * 0.5 - 1.5).with_scale(Vec3::new(CAR_WIDTH + 0.05, 0.8, 1.6)),
+                    ));
+                    car.spawn((
+                        Mesh3d(assets.cylinder.clone()),
+                        MeshMaterial3d(assets.dark.clone()),
+                        Transform::from_xyz(0.0, height + 0.4, -length * 0.2).with_scale(Vec3::new(0.7, 1.0, 0.7)),
+                    ));
+                }
+                CarKind::Passenger => {
+                    car.spawn((
+                        Mesh3d(assets.cube.clone()),
+                        MeshMaterial3d(assets.window.clone()),
+                        NotShadowCaster,
+                        Transform::from_xyz(0.0, FLOOR + body_h * 0.62, 0.0).with_scale(Vec3::new(CAR_WIDTH + 0.05, 0.7, length - 1.5)),
+                    ));
+                }
+                _ => {}
             }
-            CarKind::Passenger => {
-                car.spawn((
-                    Mesh3d(assets.cube.clone()),
-                    MeshMaterial3d(assets.window.clone()),
-                    NotShadowCaster,
-                    Transform::from_xyz(0.0, FLOOR + body_h * 0.62, 0.0).with_scale(Vec3::new(CAR_WIDTH + 0.05, 0.7, length - 1.5)),
-                ));
-            }
-            _ => {}
-        }
+        });
     });
     entity.id()
 }
@@ -1093,6 +1119,7 @@ fn settle_wrecks(
         commands
             .entity(entity)
             .remove::<(Wreck, Health, Team, Collider)>()
+            .insert(ModelShade(CHARRED_SHADE))
             .insert(Obstacle {
                 shape: Shape::Rect(car_footprint(transform, car.kind)),
                 top,
@@ -1105,6 +1132,7 @@ fn stream_wrecks(
     mut commands: Commands,
     visible: Res<VisibleChunks>,
     assets: Res<TrainAssets>,
+    mut models: Models,
     mut store: ResMut<WreckStore>,
 ) {
     if !visible.is_changed() || store.is_empty() {
@@ -1126,9 +1154,10 @@ fn stream_wrecks(
         }
         let mut entities = Vec::new();
         for record in records {
-            let e = spawn_car(&mut commands, &assets, record.kind, record.transform);
+            let e = spawn_car(&mut commands, &assets, &mut models, record.kind, record.transform);
             let top = corners(&record.transform, record.kind).iter().map(|c| c.y).fold(f32::MIN, f32::max);
             commands.entity(e).insert((
+                ModelShade(CHARRED_SHADE),
                 Car {
                     kind: record.kind,
                     spent: true,

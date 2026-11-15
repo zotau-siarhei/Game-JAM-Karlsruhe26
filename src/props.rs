@@ -14,6 +14,7 @@ use noise::{NoiseFn, Perlin};
 
 use crate::camera::Focus;
 use crate::frame::GameSet;
+use crate::models::Models;
 use crate::obstacles::{Obstacle, Shape};
 use crate::rover::Rover;
 use crate::run::{RunScoped, WorldRebuilt};
@@ -654,6 +655,43 @@ fn create_prop_assets(
     commands.insert_resource(PropAssets { looks, stump, flame });
 }
 
+/// Модель объекта из `models.json`: ель — `tree_1`, валун — `boulder`, кварц — `crystal`.
+/// Остальные деревья и мелочь — из примитивов.
+fn prop_model(kind: PropKind, variant: usize) -> Option<&'static str> {
+    match kind {
+        PropKind::Tree if variant == 1 => Some("tree_1"),
+        PropKind::Boulder => Some("boulder"),
+        PropKind::Crystal => Some("crystal"),
+        _ => None,
+    }
+}
+
+/// Ставит облик объекта детьми `parent`: модель, пока она грузится или без неё — примитивы.
+fn spawn_prop_look(
+    parent: &mut ChildSpawnerCommands,
+    models: &mut Models,
+    parts: &[Part],
+    model: Option<&str>,
+    small: bool,
+) {
+    let bundle = |p: &Part| (Mesh3d(p.mesh.clone()), MeshMaterial3d(p.material.clone()), p.transform);
+    match model {
+        Some(id) => models.spawn_visual(parent, id, Transform::IDENTITY, |spare| {
+            for p in parts {
+                spare.spawn(bundle(p));
+            }
+        }),
+        None => {
+            for p in parts {
+                let mut child = parent.spawn(bundle(p));
+                if small {
+                    child.insert(NotShadowCaster);
+                }
+            }
+        }
+    }
+}
+
 /// Создаёт объекты участков, которые появились в сцене, и убирает объекты выгруженных.
 ///
 /// Новые участки создаются не все сразу: за кадр не больше [`SPAWN_PER_FRAME`] объектов,
@@ -669,6 +707,7 @@ fn stream_props(
     focus: Res<Focus>,
     chunks: Query<&crate::terrain::ChunkMesh>,
     assets: Res<PropAssets>,
+    mut models: Models,
 ) {
     if props.seed.is_none() || settlements.seed().is_none() {
         return;
@@ -720,9 +759,9 @@ fn stream_props(
                             Visibility::default(),
                         ))
                         .with_children(|parent| {
-                            for p in assets.looks.get(&(state.kind, state.variant)).into_iter().flatten() {
-                                parent.spawn((Mesh3d(p.mesh.clone()), MeshMaterial3d(p.material.clone()), p.transform));
-                            }
+                            let parts = assets.looks.get(&(state.kind, state.variant)).map_or(&[][..], |p| p);
+                            let model = prop_model(state.kind, state.variant);
+                            spawn_prop_look(parent, &mut models, parts, model, false);
                         })
                         .id();
                     entities.push(entity);
@@ -766,16 +805,8 @@ fn stream_props(
             }
             let entity = entity
                 .with_children(|parent| {
-                    for p in parts {
-                        let mut child = parent.spawn((
-                            Mesh3d(p.mesh.clone()),
-                            MeshMaterial3d(p.material.clone()),
-                            p.transform,
-                        ));
-                        if small {
-                            child.insert(NotShadowCaster);
-                        }
-                    }
+                    let model = prop_model(state.kind, state.variant);
+                    spawn_prop_look(parent, &mut models, parts, model, small);
                 })
                 .id();
             entities.push(entity);

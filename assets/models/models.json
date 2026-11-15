@@ -59,25 +59,25 @@
     {
       "id": "boulder",
       "file": "boulder.glb",
-      "scale": 0.947,
+      "scale": 1.5,
       "rotation_y": 0.0,
-      "offset_y": 0.9,
+      "offset_y": 1.424,
       "budget": 1500
     },
     {
       "id": "crystal",
       "file": "crystal.glb",
-      "scale": 0.737,
+      "scale": 1.3,
       "rotation_y": 0.0,
-      "offset_y": 0.656,
+      "offset_y": 1.158,
       "budget": 1500
     },
     {
       "id": "crystal_2",
       "file": "crystal_2.glb",
-      "scale": 0.737,
+      "scale": 1.3,
       "rotation_y": 0.0,
-      "offset_y": 0.7,
+      "offset_y": 1.238,
       "budget": 1500
     },
     {
@@ -87,6 +87,126 @@
       "rotation_y": 0.0,
       "offset_y": 1.023,
       "budget": 5000
+    },
+    {
+      "id": "enemy_tank_hull",
+      "file": "enemy_tank_hull.glb",
+      "scale": 1.6,
+      "rotation_y": -1.5708,
+      "offset_y": 0.5,
+      "budget": 3500
+    },
+    {
+      "id": "enemy_tank_turret",
+      "file": "enemy_tank_turret.glb",
+      "scale": 0.95,
+      "rotation_y": -1.5708,
+      "offset_y": 0.268,
+      "budget": 1500
+    },
+    {
+      "id": "enemy_tank_track",
+      "file": "enemy_tank_track.glb",
+      "scale": 1.9,
+      "rotation_y": 1.5708,
+      "offset_y": 0.0,
+      "budget": 2000
+    },
+    {
+      "id": "train_loco",
+      "file": "train_loco.glb",
+      "scale": 12.53,
+      "rotation_y": 1.5708,
+      "offset_y": 2.0,
+      "budget": 4000
+    },
+    {
+      "id": "train_wagon_passenger",
+      "file": "train_wagon_passenger.glb",
+      "scale": 11.48,
+      "rotation_y": 1.5708,
+      "offset_y": 1.69,
+      "budget": 4000
+    },
+    {
+      "id": "train_wagon_freight",
+      "file": "train_wagon_freight.glb",
+      "scale": 10.53,
+      "rotation_y": 1.5708,
+      "offset_y": 1.42,
+      "budget": 4000
+    },
+    {
+      "id": "train_wagon_tank",
+      "file": "train_wagon_tank.glb",
+      "scale": 9.39,
+      "rotation_y": 1.5708,
+      "offset_y": 1.51,
+      "budget": 4000
+    },
+    {
+      "id": "house_two_story",
+      "file": "house_two_story.glb",
+      "scale": 7.3,
+      "rotation_y": 0.0,
+      "offset_y": 3.48,
+      "budget": 4000
+    },
+    {
+      "id": "house_barrack",
+      "file": "house_barrack.glb",
+      "scale": 12.6,
+      "rotation_y": 1.5708,
+      "offset_y": 1.83,
+      "budget": 4000
+    },
+    {
+      "id": "boss_body",
+      "file": "boss_body.glb",
+      "scale": 7.0,
+      "rotation_y": 3.14159,
+      "offset_y": 1.2,
+      "budget": 8000
+    },
+    {
+      "id": "boss_leg",
+      "file": "boss_leg.glb",
+      "scale": 4.0,
+      "rotation_y": 0.0,
+      "offset_y": 0.0,
+      "budget": 1500
+    },
+    {
+      "id": "weapon_mg",
+      "file": "weapon_mg.glb",
+      "scale": 0.6,
+      "rotation_y": -1.5708,
+      "offset_y": 0.165,
+      "budget": 1500
+    },
+    {
+      "id": "weapon_mortar",
+      "file": "weapon_mortar.glb",
+      "scale": 0.6,
+      "rotation_y": -1.5708,
+      "offset_y": 0.28,
+      "budget": 1500
+    },
+    {
+      "id": "weapon_rockets",
+      "file": "weapon_rockets.glb",
+      "scale": 0.6,
+      "rotation_y": 1.5708,
+      "offset_y": 0.231,
+      "budget": 1500
+    },
+    {
+      "id": "weapon_laser",
+      "file": "weapon_laser.glb",
+      "scale": 0.6,
+      "rotation_y": -1.5708,
+      "offset_y": 0.163,
+      "budget": 1500
     }
   ]
 }

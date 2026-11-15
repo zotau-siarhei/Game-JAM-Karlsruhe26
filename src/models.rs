@@ -8,8 +8,14 @@
 //! Запасной облик виден, пока модель грузится, и остаётся, если записи или файла нет либо файл
 //! не загрузился. Файл читается при первом запросе, а не при старте: модель, которую никто
 //! не запросил, не занимает память.
+//!
+//! [`ModelShade`] затемняет все меши под сущностью, сохраняя текстуры: закопчённый дом, обугленный
+//! остов вагона. Части модели появляются не сразу, поэтому затемнение доходит до них, когда
+//! сцена разложилась.
 
 use std::collections::HashMap;
+
+use crate::combat::FlashedMesh;
 
 use bevy::asset::io::file::FileAssetReader;
 use bevy::asset::{LoadState, RecursiveDependencyLoadState};
@@ -28,9 +34,10 @@ pub struct ModelsPlugin;
 impl Plugin for ModelsPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(ModelBank::load(MODELS_DIR, MODELS_LIST))
+            .init_resource::<ShadeCache>()
             .add_systems(
                 Update,
-                (track_loading, swap_fallbacks)
+                (track_loading, swap_fallbacks, apply_shade)
                     .chain()
                     .in_set(crate::frame::GameSet::Presentation),
             );
@@ -194,6 +201,14 @@ pub struct Models<'w> {
 }
 
 impl Models<'_> {
+    /// Есть ли у `id` файл модели: тогда объект показывается моделью, а не примитивами.
+    pub fn has(&self, id: &str) -> bool {
+        self.bank
+            .models
+            .get(id)
+            .is_some_and(|model| !matches!(model.state, ModelState::Missing | ModelState::Failed))
+    }
+
     /// Вешает на объект облик `id`: модель из списка или запасной облик из примитивов.
     ///
     /// `ground` — низ объекта в системе родителя: от него отсчитываются смещение, поворот
@@ -338,9 +353,98 @@ fn swap_fallbacks(
     }
 }
 
+/// Затемнение всех мешей под сущностью: 1 — как есть, 0 — чёрный. Текстуры остаются.
+#[derive(Component, Clone, Copy)]
+pub struct ModelShade(pub f32);
+
+/// Затемнённые копии материалов и их исходники.
+#[derive(Resource, Default)]
+struct ShadeCache {
+    /// (исходный материал, ступень затемнения) → копия.
+    shaded: HashMap<(AssetId<StandardMaterial>, u32), Handle<StandardMaterial>>,
+    /// Копия → исходный материал: повторное затемнение считается от исходника.
+    original: HashMap<AssetId<StandardMaterial>, Handle<StandardMaterial>>,
+}
+
+/// Ступень затемнения для ключа кэша: сотые доли.
+fn shade_step(shade: f32) -> u32 {
+    (shade.clamp(0.0, 1.0) * 100.0).round() as u32
+}
+
+/// Подменяет материалы мешей под [`ModelShade`] затемнёнными копиями. Меш во вспышке попадания
+/// не трогается: вспышка вернёт ему материал, и затемнение ляжет в следующем кадре.
+fn apply_shade(
+    mut cache: ResMut<ShadeCache>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    roots: Query<(Entity, &ModelShade)>,
+    children: Query<&Children>,
+    mut parts: Query<&mut MeshMaterial3d<StandardMaterial>, Without<FlashedMesh>>,
+) {
+    for (root, shade) in &roots {
+        let step = shade_step(shade.0);
+        for part in children.iter_descendants(root) {
+            let Ok(mut material) = parts.get_mut(part) else {
+                continue;
+            };
+            let original = cache
+                .original
+                .get(&material.0.id())
+                .cloned()
+                .unwrap_or_else(|| material.0.clone());
+            let key = (original.id(), step);
+            if let Some(shaded) = cache.shaded.get(&key) {
+                if material.0 != *shaded {
+                    material.0 = shaded.clone();
+                }
+                continue;
+            }
+            let Some(mut copy) = materials.get(&original).cloned() else {
+                continue;
+            };
+            let k = step as f32 / 100.0;
+            let c = copy.base_color.to_linear();
+            copy.base_color = Color::LinearRgba(LinearRgba::new(c.red * k, c.green * k, c.blue * k, c.alpha));
+            copy.emissive = copy.emissive * k;
+            let shaded = materials.add(copy);
+            cache.original.insert(shaded.id(), original);
+            cache.shaded.insert(key, shaded.clone());
+            material.0 = shaded;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shade_is_counted_from_the_original() {
+        let mut app = App::new();
+        app.init_resource::<Assets<StandardMaterial>>()
+            .init_resource::<ShadeCache>()
+            .add_systems(Update, apply_shade);
+        let original = app
+            .world_mut()
+            .resource_mut::<Assets<StandardMaterial>>()
+            .add(StandardMaterial {
+                base_color: Color::LinearRgba(LinearRgba::rgb(1.0, 0.5, 0.2)),
+                ..default()
+            });
+        let root = app.world_mut().spawn(ModelShade(0.5)).id();
+        let part = app.world_mut().spawn((MeshMaterial3d(original.clone()), ChildOf(root))).id();
+        let color = |app: &App| {
+            let handle = &app.world().get::<MeshMaterial3d<StandardMaterial>>(part).unwrap().0;
+            app.world().resource::<Assets<StandardMaterial>>().get(handle).unwrap().base_color.to_linear()
+        };
+        app.update();
+        assert!((color(&app).red - 0.5).abs() < 1e-4);
+        // Сильнее затемнение — снова от исходного цвета, а не поверх прошлого.
+        app.world_mut().entity_mut(root).insert(ModelShade(0.2));
+        app.update();
+        assert!((color(&app).red - 0.2).abs() < 1e-4);
+        app.update();
+        assert!((color(&app).red - 0.2).abs() < 1e-4);
+    }
 
     #[test]
     fn list_is_parsed() {

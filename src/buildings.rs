@@ -9,6 +9,7 @@ use crate::combat::{Damage, Died, Health, Team, blast_damage};
 use crate::collapse::CollapseHouse;
 use crate::subsidence::Collapsing;
 use crate::explosion::Explosion;
+use crate::models::{ModelShade, Models};
 use crate::camera::Focus;
 use crate::frame::{GameSet, RunMessages};
 use crate::obstacles::{Obstacle, Shape};
@@ -273,6 +274,7 @@ fn stream_houses(
     terrain: Res<Terrain>,
     visible: Res<VisibleChunks>,
     assets: Res<HouseAssets>,
+    mut models: Models,
     focus: Res<Focus>,
 ) {
     if settlements.seed().is_none() || !visible.is_changed() {
@@ -314,7 +316,7 @@ fn stream_houses(
                 let entity = if house.status == HouseStatus::Destroyed {
                     spawn_ruin(&mut commands, &assets, &terrain, id, house)
                 } else {
-                    spawn_house(&mut commands, &assets, &terrain, id, house)
+                    spawn_house(&mut commands, &assets, &mut models, &terrain, id, house)
                 };
                 spawned.0.insert(id, entity);
             }
@@ -322,10 +324,41 @@ fn stream_houses(
     }
 }
 
-/// Создаёт сущность дома: стены, уходящие в землю, крыша, дверь.
+/// Модель дома в `models.json`.
+fn house_model(kind: HouseKind) -> &'static str {
+    match kind {
+        HouseKind::Hut => "house_small",
+        HouseKind::TwoStory => "house_two_story",
+        HouseKind::Barrack => "house_barrack",
+    }
+}
+
+/// Растяжка модели по осям дома: модель с масштабом из `models.json` подгоняется под план дома,
+/// чтобы её стены совпали со стенами из `half_extents` (двери, проёмы, препятствие, руины).
+fn house_fit(kind: HouseKind) -> Vec3 {
+    match kind {
+        HouseKind::Hut => Vec3::new(0.83, 1.0, 1.07),
+        HouseKind::TwoStory => Vec3::new(0.87, 1.0, 1.11),
+        HouseKind::Barrack => Vec3::new(0.82, 1.0, 1.0),
+    }
+}
+
+/// Дом показан моделью: после половины прочности темнеет вся модель.
+#[derive(Component)]
+struct HouseModel;
+
+/// Яркость модели дома после половины прочности: закопчённые стены.
+const DAMAGED_SHADE: f32 = 0.55;
+
+/// Создаёт сущность дома: модель из `models.json` или стены, уходящие в землю, крыша и дверь.
+///
+/// Модель стоит в отдельной сущности с растяжкой под план дома. Запасной облик из кубов лежит
+/// там же с обратной растяжкой, поэтому его размеры прежние. Цоколь до самой низкой точки
+/// рельефа и проём выбитой двери ставятся всегда: модель не уходит в землю на склоне.
 fn spawn_house(
     commands: &mut Commands,
     assets: &HouseAssets,
+    models: &mut Models,
     terrain: &Terrain,
     id: HouseId,
     house: &HouseState,
@@ -405,10 +438,6 @@ fn spawn_house(
         Transform::from_xyz(0.0, 0.9, half.y + 0.03).with_scale(Vec3::new(1.0, 1.8, 0.1)),
     ));
 
-    if let Some(side) = house.broken_door {
-        parts.push((assets.cube.clone(), assets.hole.clone(), door_hole(half, side)));
-    }
-
     let max = house.kind.max_health();
     let mut entity = commands.spawn((
         House(id),
@@ -424,22 +453,44 @@ fn spawn_house(
             max,
         },
     ));
-    let mut walls = None;
-    entity.with_children(|parent| {
-        for (i, (mesh, material, t)) in parts.into_iter().enumerate() {
-            let child = parent.spawn((Mesh3d(mesh), MeshMaterial3d(material), t)).id();
-            if i == 0 {
-                walls = Some(child);
-            }
-        }
-    });
-    if let Some(walls) = walls {
-        entity.insert(HouseWalls {
-            entity: walls,
-            color: house.wall_color,
-            darkened: false,
-        });
+    if models.has(house_model(house.kind)) {
+        entity.insert(HouseModel);
     }
+    let mut walls = None;
+    let fit = house_fit(house.kind);
+    let unfit = Transform::from_scale(fit.recip());
+    let plinth = assets.walls[house.wall_color].clone();
+    entity.with_children(|parent| {
+        parent.spawn((
+            Mesh3d(cube.clone()),
+            MeshMaterial3d(plinth),
+            Transform::from_xyz(0.0, -depth * 0.5, 0.0)
+                .with_scale(Vec3::new(size.x * 0.85, depth, size.y * 0.85)),
+        ));
+        if let Some(side) = house.broken_door {
+            parent.spawn((Mesh3d(cube.clone()), MeshMaterial3d(assets.hole.clone()), door_hole(half, side)));
+        }
+        // Растяжка — отдельной сущностью: неравномерный масштаб над повёрнутой моделью.
+        parent
+            .spawn((Transform::from_scale(fit), Visibility::default()))
+            .with_children(|fitted| {
+                models.spawn_visual(fitted, house_model(house.kind), Transform::IDENTITY, |spare| {
+                    for (i, (mesh, material, t)) in parts.into_iter().enumerate() {
+                        let child = spare.spawn((Mesh3d(mesh), MeshMaterial3d(material), unfit * t)).id();
+                        if i == 0 {
+                            walls = Some(child);
+                        }
+                    }
+                });
+            });
+    });
+    // Если модель уже загружена, запасных стен нет: копоть тогда ложится на модель.
+    let walls = walls.unwrap_or(entity.id());
+    entity.insert(HouseWalls {
+        entity: walls,
+        color: house.wall_color,
+        darkened: false,
+    });
     entity.id()
 }
 
@@ -637,12 +688,19 @@ fn wobble_houses(
 
 /// После половины прочности стены дома темнеют, как закопчённые.
 fn darken_damaged_houses(
+    mut commands: Commands,
     assets: Res<HouseAssets>,
-    mut houses: Query<(&Health, &mut HouseWalls), Changed<Health>>,
+    mut houses: Query<(Entity, &Health, &mut HouseWalls, Has<HouseModel>), Changed<Health>>,
     mut materials: Query<&mut MeshMaterial3d<StandardMaterial>>,
 ) {
-    for (health, mut walls) in &mut houses {
+    for (house, health, mut walls, model) in &mut houses {
         if walls.darkened || health.fraction() > 0.5 {
+            continue;
+        }
+        // Модель темнеет целиком вместе с цоколем.
+        if model {
+            commands.entity(house).try_insert(ModelShade(DAMAGED_SHADE));
+            walls.darkened = true;
             continue;
         }
         if let Ok(mut material) = materials.get_mut(walls.entity) {

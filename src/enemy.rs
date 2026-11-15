@@ -20,6 +20,7 @@ use crate::combat::{Collider, Damage, Died, Health, Team};
 use crate::explosion::Explosion;
 use crate::frame::{GameSet, RunMessages};
 use crate::laser::FireLaser;
+use crate::models::Models;
 use crate::mortar::{self, FireShell};
 use crate::obstacles::Obstacle;
 use crate::pickups::CarriedWeapon;
@@ -29,6 +30,7 @@ use crate::rover::{Rover, RoverMotion};
 use crate::run::RunScoped;
 use crate::sound_list::Dice;
 use crate::steering::{self, Steering};
+use crate::tank_look::{self, TankGun};
 use crate::terrain::Terrain;
 use crate::vehicle::{self, GroundVehicle};
 use crate::waves::enemy_damage;
@@ -53,7 +55,7 @@ const HULL_SIZE: Vec3 = Vec3::new(1.4, 0.7, 2.0);
 const WHEEL_RADIUS: f32 = 0.32;
 
 /// Высота центра корпуса врага над поверхностью, м.
-const RIDE_HEIGHT: f32 = HULL_SIZE.y * 0.5 + WHEEL_RADIUS * 0.6;
+pub(crate) const RIDE_HEIGHT: f32 = HULL_SIZE.y * 0.5 + WHEEL_RADIUS * 0.6;
 
 /// Кольцо появления вокруг лунохода, м. Кадр видит около 30 м от центра, враг появляется вне его.
 const SPAWN_RING: (f32, f32) = (45.0, 55.0);
@@ -140,7 +142,7 @@ const TANK_SPEED: f32 = 6.0;
 /// Поворот танка, рад/с: медленный, линия прицела заметно доворачивает.
 const TANK_TURN_SPEED: f32 = 1.2;
 /// Во сколько раз танк крупнее таран-стрелка.
-const TANK_SCALE: f32 = 1.6;
+pub(crate) const TANK_SCALE: f32 = 1.6;
 /// Насколько в стороне от линии к луноходу танк заходит, м.
 const FLANK_OFFSET: f32 = 30.0;
 /// На каком расстоянии от лунохода точка фланга, м: в дальности выстрела.
@@ -148,21 +150,13 @@ const FLANK_DISTANCE: f32 = TANK_FIRE_RANGE * 0.7;
 /// Насколько курс корпуса может отличаться от направления на луноход, чтобы прицеливание шло, рад.
 const TANK_AIM_TOLERANCE: f32 = 0.08;
 /// С какого расстояния танк стреляет, м: чуть меньше длины луча.
-const TANK_FIRE_RANGE: f32 = 36.0;
+pub(crate) const TANK_FIRE_RANGE: f32 = 36.0;
 /// Сколько видна линия прицела перед выстрелом, с.
 const TANK_AIM_TIME: f32 = 1.0;
 /// Перезарядка танка, с.
 const TANK_RELOAD: f32 = 4.0;
-/// Модель танка из Meshy: центр в нуле, размер около 0,96 × 0,68 × 0,78 при масштабе 1.
-const TANK_MODEL: &str = "models/enemy_heavy_tank.glb";
-/// Масштаб модели в мире: танк около 2,9 м в длину.
-const TANK_MODEL_SCALE: f32 = 3.0;
-/// Поворот модели вокруг вертикали, чтобы пушка смотрела вперёд, на -Z.
-const TANK_MODEL_YAW: f32 = 0.0;
-/// Половина высоты модели при масштабе 1, м.
-const TANK_MODEL_HALF_HEIGHT: f32 = 0.341;
-/// Цвет танка.
-const TANK_COLOR: Color = Color::srgb(0.32, 0.36, 0.3);
+/// Скорость поворота башни танка, рад/с.
+const TANK_TURRET_TURN_SPEED: f32 = 1.5;
 
 /// Подключает врагов.
 pub struct EnemyPlugin;
@@ -266,10 +260,6 @@ fn heading_error(heading: f32, target: f32) -> f32 {
     ((target - heading + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI).abs()
 }
 
-/// Линия прицела танка: тонкий красный луч, виден только во время прицеливания.
-#[derive(Component)]
-struct AimLine;
-
 /// Мортирщик: время до следующего выстрела, с.
 #[derive(Component)]
 struct Mortarman {
@@ -333,11 +323,7 @@ struct EnemyAssets {
     ram: Handle<Mesh>,
     barrel: Handle<Mesh>,
     launcher: Handle<Mesh>,
-    aim_line: Handle<Mesh>,
-    tank_scene: Handle<WorldAsset>,
     rocketeer_material: Handle<StandardMaterial>,
-    tank_material: Handle<StandardMaterial>,
-    aim_material: Handle<StandardMaterial>,
     hull_material: Handle<StandardMaterial>,
     mortar_material: Handle<StandardMaterial>,
     dark_material: Handle<StandardMaterial>,
@@ -347,7 +333,6 @@ fn create_enemy_assets(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    asset_server: Res<AssetServer>,
 ) {
     commands.insert_resource(EnemyAssets {
         hull: meshes.add(Cuboid::from_size(HULL_SIZE)),
@@ -355,18 +340,7 @@ fn create_enemy_assets(
         ram: meshes.add(Cuboid::new(HULL_SIZE.x + 0.5, 0.35, 0.35)),
         barrel: meshes.add(Cylinder::new(0.28, 1.5)),
         launcher: meshes.add(Cuboid::new(1.0, 0.5, 1.2)),
-        // Ось цилиндра — Y; линия поворачивается вдоль -Z при создании.
-        aim_line: meshes.add(Cylinder::new(0.04, 1.0)),
-        tank_scene: asset_server.load(GltfAssetLabel::Scene(0).from_asset(TANK_MODEL)),
         rocketeer_material: materials.add(ROCKETEER_COLOR),
-        tank_material: materials.add(TANK_COLOR),
-        aim_material: materials.add(StandardMaterial {
-            base_color: Color::srgba(1.0, 0.15, 0.1, 0.8),
-            emissive: LinearRgba::rgb(12.0, 1.0, 0.5),
-            unlit: true,
-            alpha_mode: AlphaMode::Blend,
-            ..default()
-        }),
         hull_material: materials.add(HULL_COLOR),
         mortar_material: materials.add(MORTAR_COLOR),
         dark_material: materials.add(DARK_COLOR),
@@ -384,6 +358,7 @@ fn spawn_enemies(
     mut requests: MessageReader<SpawnEnemy>,
     mut dice: ResMut<GameRng>,
     assets: Res<EnemyAssets>,
+    mut models: Models,
     terrain: Res<Terrain>,
     rover: Query<(&Transform, &Health), With<Rover>>,
     houses: Query<&House>,
@@ -414,7 +389,7 @@ fn spawn_enemies(
                 Vec3::new(door.x, 0.0, door.y)
             }
         };
-        spawn_enemy(&mut commands, &mut dice, &assets, &terrain, position, rover.translation, request.kind);
+        spawn_enemy(&mut commands, &mut dice, &assets, &mut models, &terrain, position, rover.translation, request.kind);
     }
 }
 
@@ -428,11 +403,23 @@ fn carried_weapon(kind: EnemyKind) -> CurrentWeapon {
     }
 }
 
+/// Модель врага в `models.json`. Танк собирает `tank_look` из трёх моделей.
+fn enemy_model(kind: EnemyKind) -> Option<&'static str> {
+    match kind {
+        EnemyKind::RamShooter => Some("enemy_rammer"),
+        EnemyKind::Mortar => Some("enemy_mortar"),
+        EnemyKind::Rocketeer => Some("enemy_rocket_robot"),
+        EnemyKind::HeavyTank => None,
+    }
+}
+
 /// Создаёт врага типа `kind` в точке `position` носом к точке `target`.
+#[allow(clippy::too_many_arguments)]
 fn spawn_enemy(
     commands: &mut Commands,
     dice: &mut Dice,
     assets: &EnemyAssets,
+    models: &mut Models,
     terrain: &Terrain,
     mut position: Vec3,
     target: Vec3,
@@ -445,7 +432,7 @@ fn spawn_enemy(
         EnemyKind::RamShooter => (ENEMY_HEALTH, assets.hull_material.clone(), 1.0, ENEMY_TURN_SPEED),
         EnemyKind::Mortar => (MORTAR_HEALTH, assets.mortar_material.clone(), 1.0, ENEMY_TURN_SPEED),
         EnemyKind::Rocketeer => (ROCKETEER_HEALTH, assets.rocketeer_material.clone(), 1.0, ENEMY_TURN_SPEED),
-        EnemyKind::HeavyTank => (TANK_HEALTH, assets.tank_material.clone(), TANK_SCALE, TANK_TURN_SPEED),
+        EnemyKind::HeavyTank => (TANK_HEALTH, assets.dark_material.clone(), TANK_SCALE, TANK_TURN_SPEED),
     };
     position.y += RIDE_HEIGHT * (scale - 1.0);
     let mut enemy = commands.spawn((
@@ -465,12 +452,11 @@ fn spawn_enemy(
         Transform::from_translation(position)
             .with_rotation(Quat::from_rotation_y(heading))
             .with_scale(Vec3::splat(scale)),
+        Visibility::default(),
     ));
-    // Танк — модель Meshy дочерней сценой, остальные враги пока собраны из примитивов.
+    // Корпус, башню и гусеницы танка ставит `tank_look`.
     if kind == EnemyKind::HeavyTank {
-        enemy.insert(Visibility::default());
-    } else {
-        enemy.insert((Mesh3d(assets.hull.clone()), MeshMaterial3d(material)));
+        enemy.insert(TankGun::default());
     }
     match kind {
         EnemyKind::RamShooter => enemy.insert(EnemyWeapons {
@@ -495,14 +481,15 @@ fn spawn_enemy(
             flank: None,
         }),
     };
+    let Some(model) = enemy_model(kind) else {
+        return;
+    };
+    // Модель врага стоит низом на земле; пока она грузится или без неё — корпус из примитивов.
     enemy.with_children(|parent| {
-            let wheels: &[(f32, f32)] = if kind == EnemyKind::HeavyTank {
-                &[]
-            } else {
-                &[(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)]
-            };
-            for &(side, along) in wheels {
-                parent.spawn((
+        models.spawn_visual(parent, model, Transform::from_xyz(0.0, -RIDE_HEIGHT, 0.0), |spare| {
+            spare.spawn((Mesh3d(assets.hull.clone()), MeshMaterial3d(material)));
+            for (side, along) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                spare.spawn((
                     Mesh3d(assets.wheel.clone()),
                     MeshMaterial3d(assets.dark_material.clone()),
                     Transform::from_xyz(
@@ -515,49 +502,27 @@ fn spawn_enemy(
             }
             match kind {
                 // Таран на носу: видно, куда враг едет.
-                EnemyKind::RamShooter => parent.spawn((
+                EnemyKind::RamShooter => spare.spawn((
                     Mesh3d(assets.ram.clone()),
                     MeshMaterial3d(assets.dark_material.clone()),
                     Transform::from_xyz(0.0, -0.1, -HULL_SIZE.z * 0.5 - 0.15),
                 )),
                 // Ствол мортиры смотрит вверх и вперёд.
-                EnemyKind::Mortar => parent.spawn((
+                EnemyKind::Mortar => spare.spawn((
                     Mesh3d(assets.barrel.clone()),
                     MeshMaterial3d(assets.dark_material.clone()),
                     Transform::from_xyz(0.0, HULL_SIZE.y * 0.5 + 0.45, -0.2)
                         .with_rotation(Quat::from_rotation_x(-0.5)),
                 )),
                 // Пусковой контейнер на спине.
-                EnemyKind::Rocketeer => parent.spawn((
+                EnemyKind::Rocketeer | EnemyKind::HeavyTank => spare.spawn((
                     Mesh3d(assets.launcher.clone()),
                     MeshMaterial3d(assets.dark_material.clone()),
                     Transform::from_xyz(0.0, HULL_SIZE.y * 0.5 + 0.25, 0.2),
                 )),
-                // Модель танка: низом на земле, пушкой вперёд. Родитель уже растянут на
-                // `TANK_SCALE`, поэтому масштаб и сдвиг модели делятся на него. Линия прицела
-                // лазера — отдельно, пока скрытая.
-                EnemyKind::HeavyTank => {
-                    let model_y = -RIDE_HEIGHT + TANK_MODEL_HALF_HEIGHT * TANK_MODEL_SCALE / TANK_SCALE;
-                    parent.spawn((
-                        WorldAssetRoot(assets.tank_scene.clone()),
-                        Transform::from_xyz(0.0, model_y, 0.0)
-                            .with_rotation(Quat::from_rotation_y(TANK_MODEL_YAW))
-                            .with_scale(Vec3::splat(TANK_MODEL_SCALE / TANK_SCALE)),
-                    ));
-                    let length = TANK_FIRE_RANGE / TANK_SCALE;
-                    parent.spawn((
-                        AimLine,
-                        Mesh3d(assets.aim_line.clone()),
-                        MeshMaterial3d(assets.aim_material.clone()),
-                        bevy::light::NotShadowCaster,
-                        Visibility::Hidden,
-                        Transform::from_xyz(0.0, HULL_SIZE.y * 0.5 + 0.2, -length * 0.5)
-                            .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2))
-                            .with_scale(Vec3::new(1.0, length, 1.0)),
-                    ))
-                }
             };
         });
+    });
 }
 
 /// Направляет врагов на луноход; объезд препятствий — в `steering`. Когда луноход погиб, враги встают.
@@ -762,8 +727,7 @@ fn drive_tanks(
     terrain: Res<Terrain>,
     obstacles: Query<(Entity, &Obstacle)>,
     rover: Query<(&Transform, &Health), With<Rover>>,
-    mut enemies: Query<(&Transform, &GroundVehicle, &mut Steering, &mut HeavyTank, &Children), Without<Rover>>,
-    mut lines: Query<&mut Visibility, With<AimLine>>,
+    mut enemies: Query<(&Transform, &GroundVehicle, &mut Steering, &mut HeavyTank, &mut TankGun), Without<Rover>>,
     mut lasers: MessageWriter<FireLaser>,
 ) {
     let target = rover
@@ -772,16 +736,22 @@ fn drive_tanks(
         .filter(|(_, health)| !health.is_dead())
         .map(|(transform, _)| transform.translation);
     let dt = time.delta_secs();
-    for (transform, vehicle, mut steering, mut tank, children) in &mut enemies {
+    for (transform, vehicle, mut steering, mut tank, mut gun) in &mut enemies {
         tank.reload -= dt;
         let mut show_line = false;
         let Some(target) = target else {
             steering.speed = 0.0;
             tank.state = TankState::Flank;
+            gun.aiming = false;
             continue;
         };
         let me = transform.translation;
         let to_rover = (target - me).with_y(0.0);
+        // Башня следит за луноходом по кратчайшей дуге; курс башни — от носа корпуса. Когда корпус
+        // довернул на луноход, башня смотрит по носу, и луч идёт из её ствола.
+        let wanted = vehicle::heading_towards(to_rover) - vehicle.heading;
+        gun.yaw = vehicle::steer(gun.yaw, wanted, TANK_TURRET_TURN_SPEED * dt);
+        gun.yaw = (gun.yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
         match tank.state {
             TankState::Flank => {
                 // Точка сбоку от линии «луноход — танк»: танк не едет в лоб.
@@ -821,8 +791,9 @@ fn drive_tanks(
                 } else if left > 0.0 || !aimed {
                     tank.state = TankState::Aiming(left.max(0.0));
                 } else {
+                    let (origin, _) = tank_look::muzzle(transform, vehicle, &gun);
                     lasers.write(FireLaser {
-                        origin: me + Vec3::Y * (HULL_SIZE.y * 0.5 + 0.2) * TANK_SCALE,
+                        origin,
                         direction: vehicle.forward(),
                         team: Team::Enemy,
                         damage: enemy_damage::TANK_LASER,
@@ -836,11 +807,7 @@ fn drive_tanks(
                 }
             }
         }
-        for child in children.iter() {
-            if let Ok(mut visibility) = lines.get_mut(child) {
-                *visibility = if show_line { Visibility::Visible } else { Visibility::Hidden };
-            }
-        }
+        gun.aiming = show_line;
     }
 }
 

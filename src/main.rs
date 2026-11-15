@@ -46,6 +46,7 @@ mod rng;
 mod rockets;
 mod rover;
 mod rover_look;
+mod tank_look;
 mod run;
 mod service;
 mod settlements;
@@ -121,6 +122,7 @@ fn game_plugins(app: &mut App) {
             RoverPlugin,
             models::ModelsPlugin,
             rover_look::RoverLookPlugin,
+            tank_look::TankLookPlugin,
             CameraPlugin,
             quality::QualityPlugin,
             aim::AimPlugin,

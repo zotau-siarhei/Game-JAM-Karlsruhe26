@@ -198,7 +198,7 @@ struct HitFlash {
 
 /// Меш светится вспышкой попадания и помнит свой материал.
 #[derive(Component)]
-struct FlashedMesh {
+pub(crate) struct FlashedMesh {
     /// Материал, который вернётся после вспышки.
     original: Handle<StandardMaterial>,
 }
