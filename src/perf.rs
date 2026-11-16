@@ -16,7 +16,7 @@
 //! на границу.
 
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use bevy::platform::time::Instant;
 
 use bevy::app::SubApp;
 use bevy::prelude::*;

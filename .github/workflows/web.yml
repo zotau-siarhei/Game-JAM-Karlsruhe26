@@ -1,0 +1,106 @@
+# Браузерная сборка игры (WASM + WebGPU) и выкладка на GitHub Pages.
+#
+# Запускается раз в 4 часа по расписанию (на ветке main) и собирает, только если в main есть
+# коммиты после последней успешной сборки. Ручной запуск (Actions → web → Run workflow)
+# собирает всегда. Сборку делает тот же scripts/build-web.sh, что и локально.
+name: web
+
+on:
+  schedule:
+    - cron: "0 */4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # Чтение прошлых запусков: с какого коммита была последняя сборка.
+  actions: read
+  # Выкладка в Pages: права на Pages и OIDC.
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  # Были ли изменения в main после последней успешной сборки.
+  check:
+    runs-on: ubuntu-24.04
+    outputs:
+      changed: ${{ steps.compare.outputs.changed }}
+    steps:
+      - id: compare
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "ручной запуск: собираем"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Последняя успешно выложенная сборка: запуск, где задача deploy прошла.
+          last=""
+          for run in $(gh run list -R "$GITHUB_REPOSITORY" --workflow web.yml --status success \
+              --limit 50 --json databaseId --jq '.[].databaseId'); do
+            if gh run view -R "$GITHUB_REPOSITORY" "$run" --json jobs \
+                --jq '.jobs[] | select(.name == "deploy") | .conclusion' | grep -qx success; then
+              last=$(gh run view -R "$GITHUB_REPOSITORY" "$run" --json headSha --jq .headSha)
+              break
+            fi
+          done
+          echo "main: $GITHUB_SHA, последняя сборка: ${last:-нет}"
+          if [ "$last" = "$GITHUB_SHA" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.changed == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      # Тулчейн из rust-toolchain.toml и цель WASM.
+      - name: Rust
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add wasm32-unknown-unknown
+
+      # .cargo/config.toml линкует на Linux через clang и mold: так собираются
+      # build-скрипты и proc-macro под сам раннер.
+      - name: clang и mold
+        run: sudo apt-get update && sudo apt-get install -y clang mold
+
+      # wasm-bindgen-cli той же версии, что крейт wasm-bindgen в Cargo.lock.
+      - name: Версия wasm-bindgen
+        id: bindgen
+        run: |
+          version=$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/version = |"/, ""); print }' Cargo.lock)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@${{ steps.bindgen.outputs.version }}
+
+      # Кэш зависимостей: без него каждая сборка компилирует Bevy с нуля.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm-release
+
+      - name: Сборка
+        run: scripts/build-web.sh --release
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: target/web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

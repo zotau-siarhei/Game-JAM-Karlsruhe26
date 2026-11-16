@@ -45,6 +45,7 @@ mod music;
 mod pickups;
 mod props;
 mod perf;
+mod platform;
 mod puddles;
 mod quality;
 mod rails;
@@ -109,8 +110,16 @@ fn main() {
                 title: "Space Guard".into(),
                 // В замере кадры не ждут развёртки экрана: видно, сколько игра может.
                 present_mode: if bench.on { bevy::window::PresentMode::AutoNoVsync } else { bevy::window::PresentMode::default() },
+                // В браузере игра рисует в холст `#space-guard` и занимает всю страницу.
+                canvas: cfg!(target_arch = "wasm32").then(|| "#space-guard".into()),
+                fit_canvas_to_parent: true,
                 ..default()
             }),
+            ..default()
+        }).set(AssetPlugin {
+            // В браузере каждый ненайденный файл `.meta` — лишний запрос с ошибкой 404,
+            // а файлов `.meta` у игры нет.
+            meta_check: bevy::asset::AssetMetaCheck::Never,
             ..default()
         }))
         // Частицы: плагину нужен рендер, поэтому он стоит здесь, а не среди плагинов игры.

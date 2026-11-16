@@ -19,6 +19,13 @@ noise = "0.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Браузерная сборка (`scripts/build-web.sh`): частицы bevy_hanabi считаются вычислительными
+# шейдерами, поэтому нужен WebGPU, а не WebGL2. На нативную сборку секция не влияет.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+bevy = { version = "0.20.1", features = ["webgpu"] }
+# Часы браузера для сидов: `std::time::SystemTime` в WASM нет.
+js-sys = "0.3"
+
 # Быстрые инкрементальные сборки: свой код почти без оптимизаций, зависимости с полными.
 [profile.dev]
 # Код игры оптимизирован полностью: иначе отладочная сборка тормозит.

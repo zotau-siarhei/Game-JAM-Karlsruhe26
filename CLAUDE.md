@@ -102,8 +102,16 @@ cargo test                                  # тесты
   начинается сам, перед луноходом встают огни, через 8 с кадр сохраняется и игра закрывается
   (`src/debug_shot.rs`).
 - F3 в игре — оверлей FPS и времени кадра по участкам основного и рендер-потока (`src/perf.rs`).
-- Сборка нативная: сейчас macOS на Apple Silicon, позже Linux. Браузерная (WASM) сборка отложена,
-  сейчас её нет и учитывать её не нужно.
+- Сборка нативная: сейчас macOS на Apple Silicon, позже Linux. Есть и браузерная (WASM, WebGPU):
+  `scripts/build-web.sh --serve` собирает в `target/web` и открывает на http://localhost:8080,
+  страница — `web/index.html`, игра на всё окно. Нужны `rustup target add wasm32-unknown-unknown`
+  и `wasm-bindgen-cli` той же версии, что `wasm-bindgen` в `Cargo.lock`. В браузере нет файлов
+  и `std::time`: списки ассетов, часы и проверка файлов — через `src/platform.rs`, рекорды и
+  настройки живут только до перезагрузки страницы. `std::time::Instant` не использовать:
+  в WASM он падает, бери `bevy::platform::time::Instant`.
+- Браузерная версия выкладывается на GitHub Pages: https://zotau-siarhei.github.io/Game-JAM-Karlsruhe26/
+  Workflow `.github/workflows/web.yml` раз в 4 часа собирает main (`--release`), если после последней
+  выкладки были коммиты; вручную — Actions → web → Run workflow.
 - Целевое железо — MacBook Air M2, игра должна идти на нём плавно.
 - На Linux линкует mold (`.cargo/config.toml`), его надо поставить: `pacman -S mold`.
 - Кэш компиляции — sccache через `scripts/rustc-wrapper.sh` (`.cargo/config.toml`): ставится

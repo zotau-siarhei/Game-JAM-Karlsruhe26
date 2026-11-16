@@ -4,9 +4,6 @@
 //! внутри `assets`, звуковые файлы лежат рядом со списком.
 
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use bevy::asset::io::file::FileAssetReader;
 use bevy::prelude::*;
 use serde::Deserialize;
 
@@ -95,27 +92,24 @@ impl SoundList {
     /// Ошибки не останавливают игру: о них пишется в лог с пометкой `label`.
     pub fn load(asset_server: &AssetServer, dir: &str, file: &str, label: &str) -> Self {
         let mut list = Self::default();
-        let dir_path = FileAssetReader::get_base_path().join("assets").join(dir);
-        let list_path = dir_path.join(file);
-
-        let json = match std::fs::read_to_string(&list_path) {
+        let json = match crate::platform::read_list(dir, file) {
             Ok(json) => json,
             Err(error) => {
-                warn!("{label}: не прочитан {}: {error}", list_path.display());
+                warn!("{label}: не прочитан список {error}");
                 return list;
             }
         };
         let entries = match parse_list(&json) {
             Ok(entries) => entries,
             Err(error) => {
-                warn!("{label}: ошибка в {}: {error}", list_path.display());
+                warn!("{label}: ошибка в {dir}/{file}: {error}");
                 return list;
             }
         };
 
         let mut silent = Vec::new();
         for entry in entries {
-            let sound = if !entry.file.is_empty() && dir_path.join(&entry.file).is_file() {
+            let sound = if crate::platform::asset_exists(dir, &entry.file) {
                 Some(asset_server.load(format!("{dir}/{}", entry.file)))
             } else {
                 silent.push(entry.id.clone());
@@ -183,10 +177,7 @@ pub struct Dice(u64);
 
 impl Default for Dice {
     fn default() -> Self {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0x9E37_79B9, |elapsed| elapsed.as_nanos() as u64);
-        Self(nanos | 1)
+        Self(crate::platform::clock_nanos() | 1)
     }
 }
 

@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Space Guard</title>
+  <style>
+    /* Игра занимает всю страницу: холст растягивается по окну, полос прокрутки нет. */
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+      color: #ccc;
+      font: 16px system-ui, sans-serif;
+    }
+    #space-guard {
+      display: block;
+      width: 100%;
+      height: 100%;
+      outline: none;
+    }
+    #status {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 16px;
+      pointer-events: none;
+    }
+    #status[hidden] {
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="space-guard" tabindex="0"></canvas>
+  <div id="status">Загрузка…</div>
+  <script type="module">
+    import init from "./space_guard.js";
+
+    const status = document.getElementById("status");
+    const canvas = document.getElementById("space-guard");
+    // Клавиши сразу идут в игру, без щелчка по холсту.
+    canvas.focus();
+    canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+
+    if (!navigator.gpu) {
+      status.textContent = "Браузер без WebGPU: откройте игру в свежем Chrome, Edge или Safari.";
+    } else {
+      // Игра проставляет холсту размер, когда открывает окно: тогда надпись убирается.
+      new MutationObserver(() => { status.hidden = true; })
+        .observe(canvas, { attributes: true, attributeFilter: ["width", "height"] });
+      init().catch((error) => {
+        // Bevy выходит из init через исключение управления потоком: это не ошибка.
+        if (!String(error).includes("Using exceptions for control flow")) {
+          status.hidden = false;
+          status.textContent = "Ошибка запуска: " + error;
+          console.error(error);
+        }
+      });
+    }
+  </script>
+</body>
+</html>

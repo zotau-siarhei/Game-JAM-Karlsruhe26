@@ -11,7 +11,6 @@ mod mesh;
 mod storage;
 
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use bevy::prelude::*;
 
@@ -44,12 +43,9 @@ impl RunSeed {
     /// запуска.
     pub fn from_clock() -> Self {
         let from_env = std::env::var("SPACE_GUARD_SEED").ok().and_then(|s| s.parse().ok());
-        let seed = from_env.or(DEBUG_SEED).unwrap_or_else(|| {
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_nanos() as u32)
-                .unwrap_or(0)
-        });
+        let seed = from_env
+            .or(DEBUG_SEED)
+            .unwrap_or_else(|| crate::platform::clock_nanos() as u32);
         Self(seed)
     }
 }

@@ -17,7 +17,6 @@ use std::collections::HashMap;
 
 use crate::combat::FlashedMesh;
 
-use bevy::asset::io::file::FileAssetReader;
 use bevy::asset::{LoadState, RecursiveDependencyLoadState};
 use bevy::ecs::system::SystemParam;
 use bevy::gltf::{Gltf, GltfMesh};
@@ -129,27 +128,24 @@ impl ModelBank {
     /// Ошибки не останавливают игру: о них пишется в лог, объекты получают запасной облик.
     pub fn load(dir: &str, file: &str) -> Self {
         let mut bank = Self::default();
-        let dir_path = FileAssetReader::get_base_path().join("assets").join(dir);
-        let list_path = dir_path.join(file);
-
-        let json = match std::fs::read_to_string(&list_path) {
+        let json = match crate::platform::read_list(dir, file) {
             Ok(json) => json,
             Err(error) => {
-                warn!("Модели: не прочитан {}: {error}", list_path.display());
+                warn!("Модели: не прочитан список {error}");
                 return bank;
             }
         };
         let entries = match parse_list(&json) {
             Ok(entries) => entries,
             Err(error) => {
-                warn!("Модели: ошибка в {}: {error}", list_path.display());
+                warn!("Модели: ошибка в {dir}/{file}: {error}");
                 return bank;
             }
         };
 
         let mut missing = Vec::new();
         for entry in entries {
-            let exists = !entry.file.is_empty() && dir_path.join(&entry.file).is_file();
+            let exists = crate::platform::asset_exists(dir, &entry.file);
             if !exists {
                 missing.push(entry.id.clone());
             }
