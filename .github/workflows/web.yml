@@ -86,7 +86,7 @@ jobs:
       # Кэш зависимостей: без него каждая сборка компилирует Bevy с нуля.
       - uses: Swatinem/rust-cache@v2
         with:
-          key: wasm-release
+          key: wasm-web
 
       - name: Сборка
         run: scripts/build-web.sh --release

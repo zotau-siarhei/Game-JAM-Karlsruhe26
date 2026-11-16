@@ -39,6 +39,31 @@
 <body>
   <canvas id="space-guard" tabindex="0"></canvas>
   <div id="status">Загрузка…</div>
+  <script>
+    // Браузер не даёт звуку играть до первого нажатия на странице: звук игры создаётся сразу
+    // при запуске и остаётся приостановленным навсегда. Запоминаем каждый AudioContext
+    // и будим его по нажатию клавиши, кнопки мыши или касанию. Отдельный обычный скрипт
+    // перед модулем: обвязка игры берёт AudioContext при импорте, раньше кода модуля.
+    const audioContexts = [];
+    const NativeAudioContext = window.AudioContext || window.webkitAudioContext;
+    if (NativeAudioContext) {
+      window.AudioContext = class extends NativeAudioContext {
+        constructor(...args) {
+          super(...args);
+          audioContexts.push(this);
+        }
+      };
+      const resumeAudio = () => {
+        for (const context of audioContexts) {
+          if (context.state !== "running") context.resume();
+        }
+      };
+      for (const event of ["pointerdown", "keydown", "touchstart"]) {
+        document.addEventListener(event, resumeAudio, { capture: true });
+      }
+      window.spaceGuardAudio = audioContexts;
+    }
+  </script>
   <script type="module">
     import init from "./space_guard.js";
 

@@ -4,7 +4,7 @@
 #
 #   scripts/build-web.sh            # собрать в target/web
 #   scripts/build-web.sh --serve    # собрать и открыть на http://localhost:8080
-#   scripts/build-web.sh --release  # профиль release: меньше и быстрее, но собирается дольше
+#   scripts/build-web.sh --release  # профиль web (release с параллельной сборкой): меньше и быстрее
 #
 # Один раз поставить: rustup target add wasm32-unknown-unknown
 #                     cargo install wasm-bindgen-cli --version <версия wasm-bindgen из Cargo.lock>
@@ -20,7 +20,7 @@ serve=0
 port=8080
 for arg in "$@"; do
     case "$arg" in
-        --release) profile=release; cargo_profile=(--release) ;;
+        --release) profile=web; cargo_profile=(--profile web) ;;
         --serve) serve=1 ;;
         --port=*) port="${arg#--port=}" ;;
         *) echo "неизвестный ключ: $arg" >&2; exit 1 ;;

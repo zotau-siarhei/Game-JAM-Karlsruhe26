@@ -37,3 +37,9 @@ opt-level = 3
 [profile.release]
 codegen-units = 1
 lto = "thin"
+
+# Браузерная сборка для выкладки (`scripts/build-web.sh --release`, GitHub Pages): как release,
+# но крейт игры компилируется параллельно — без этого он один собирается на раннере 6 минут.
+[profile.web]
+inherits = "release"
+codegen-units = 16
