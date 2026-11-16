@@ -2,19 +2,26 @@
 //! и пыль из-под колёс врагов.
 //!
 //! Машина с [`TrackMaker`] через каждые [`SEGMENT_STEP`] метров пути кладёт под левой и правой
-//! опорой отрезок, соединённый с предыдущим той же опоры: дуги поворота не рвутся. Отрезки лежат
-//! в кольцевом буфере [`Tracks`] и рисуются одним мешем-лентой поверх рельефа: углы ленты стоят
-//! на тех же треугольниках, что и меш участка, и подняты на [`LIFT`]. Отрезки бледнеют за
-//! последние [`FADE`] секунд из [`LIFETIME`], пропадают там, где рельеф изменился
-//! (`TerrainChanged`), и не ложатся на лаву, рельсы, пол вскрытого туннеля и воду.
+//! опорой отрезок, соединённый с предыдущим той же опоры: дуги поворота не рвутся. Опора при этом
+//! продавливает рельеф: вершины под ней опускаются на глубину колеи с плавным краем и буреют,
+//! трава в полосе пропадает ([`GroundPressed`]). Ресурс [`Tracks`] помнит, на сколько продавлена
+//! каждая вершина, поэтому повторный проезд колею не углубляет. Изменённые участки рельефа
+//! пересобираются пачкой раз в [`FLUSH_PERIOD`]: просадка в сантиметры не шлёт `TerrainChanged`,
+//! его читатели рассчитаны на кратеры.
+//!
+//! Следы живут до конца забега и хранятся по участкам рельефа: у участка в сцене свой меш-лента,
+//! он пересобирается, только когда на участке что-то изменилось. Углы ленты ставятся при сборке
+//! на те же треугольники, что и меш участка, и подняты на [`LIFT`]: после продавливания лента
+//! ложится на дно колеи. Следы пропадают там, где рельеф изменился (`TerrainChanged`), и не
+//! ложатся на лаву, рельсы, пол вскрытого туннеля и воду.
 //!
 //! «Колосс» шагает: через каждые [`STRIDE`] метров одна из четырёх ступней вдавливает рельеф
-//! на [`FOOT_DEPTH`] и оставляет тёмный отпечаток до конца забега.
+//! на [`FOOT_DEPTH`] и оставляет тёмный отпечаток.
 //!
 //! Мокрый след: опора, вышедшая из воды (`Puddles::at`), ещё [`WET_LENGTH`] метров кладёт
 //! тёмные и плотные отрезки, к концу обычные. В воде пыли нет.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::NoFrustumCulling;
@@ -26,7 +33,7 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy_hanabi::prelude::*;
 
 use crate::boss::Boss;
-use crate::frame::GameSet;
+use crate::frame::{GameSet, RunMessages};
 use crate::lava::{self, LavaPools};
 use crate::puddles::Puddles;
 use crate::quality::Quality;
@@ -35,7 +42,7 @@ use crate::rover::Rover;
 use crate::run::WorldRebuilt;
 use crate::subsidence::TerrainChanged;
 use crate::tank_look::TankGun;
-use crate::terrain::{Terrain, VisibleChunks};
+use crate::terrain::{Terrain, VisibleChunks, chunk_coord_at};
 use crate::vehicle::GroundVehicle;
 
 /// Через сколько метров пути опоры кладётся новый отрезок, м.
@@ -44,17 +51,36 @@ const SEGMENT_STEP: f32 = 0.4;
 /// Больше такого сдвига за кадр — перенос машины (рестарт), а не езда: колея начинается заново, м.
 const MAX_JUMP: f32 = 3.0;
 
-/// Сколько живёт след колёс и гусениц, с.
-const LIFETIME: f32 = 40.0;
+/// Предел отрезков колёс и гусениц на участке рельефа: при превышении первыми уходят самые старые.
+const MAX_SEGMENTS: usize = 1500;
 
-/// За сколько последних секунд жизни след бледнеет до нуля, с.
-const FADE: f32 = 10.0;
+/// Предел отпечатков ступней на участке.
+const MAX_FOOTPRINTS: usize = 120;
 
-/// Предел отрезков колёс и гусениц: при превышении первыми уходят самые старые.
-const MAX_SEGMENTS: usize = 4000;
+/// Глубина колеи гусениц и колёс, м.
+const TREADS_DEPTH: f32 = 0.2;
+const WHEELS_DEPTH: f32 = 0.12;
 
-/// Предел отпечатков ступней: они не бледнеют, но и бесконечно копиться не должны.
-const MAX_FOOTPRINTS: usize = 600;
+/// На сколько за край опоры спадает просадка до нуля, м: сетка рельефа — 1 м.
+const PRESS_EDGE: f32 = 0.7;
+
+/// Меньше такой добавки вершина не опускается: колея уже продавлена, м.
+const PRESS_EPSILON: f32 = 0.01;
+
+/// Насколько вершина на полной глубине колеи смешивается с цветом голого грунта.
+const SOIL_MIX: f32 = 0.45;
+
+/// Цвет голого грунта в колее, sRGB.
+const SOIL: Color = Color::srgb(0.33, 0.24, 0.15);
+
+/// Трава пропадает в полосе шире опоры на столько с каждой стороны, м.
+const GRASS_CLEAR: f32 = 0.3;
+
+/// Вершина продавлена глубже этого — трава на ней при появлении участка не растёт, м.
+const GRASS_RUT_DEPTH: f32 = 0.05;
+
+/// Пачка: изменённые участки рельефа и меши следов пересобираются не чаще этого, с.
+const FLUSH_PERIOD: f32 = 0.15;
 
 /// Подъём ленты над рельефом, м: против мерцания вместе со сдвигом глубины материала.
 const LIFT: f32 = 0.04;
@@ -62,10 +88,7 @@ const LIFT: f32 = 0.04;
 /// Сдвиг глубины материала следов: лента рисуется поверх рельефа.
 const DEPTH_BIAS: f32 = 8.0;
 
-/// Пересборка меша не чаще этого, с.
-const REBUILD_PERIOD: f32 = 0.1;
-
-/// Непрозрачность свежего следа: гусеницы, колёса, ступни.
+/// Непрозрачность следа: гусеницы, колёса, ступни.
 const TREADS_ALPHA: f32 = 0.55;
 const WHEELS_ALPHA: f32 = 0.6;
 const FEET_ALPHA: f32 = 0.7;
@@ -123,18 +146,26 @@ pub struct TracksPlugin;
 impl Plugin for TracksPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Tracks>()
-            .add_systems(Startup, spawn_track_mesh)
+            .add_run_message::<GroundPressed>()
+            .add_systems(Startup, create_assets)
             .add_systems(
                 Update,
                 (
                     reset_tracks.in_set(GameSet::Reset),
-                    stomp.in_set(GameSet::Damage),
-                    (attach_makers, attach_dust, lay_tracks, cut_and_rebuild, emit_dust)
+                    (lay_tracks, stomp, flush).chain().in_set(GameSet::Damage),
+                    (attach_makers, attach_dust, cut_and_rebuild, emit_dust)
                         .chain()
                         .in_set(GameSet::Presentation),
                 ),
             );
     }
+}
+
+/// Опора машины продавила грунт: трава в круге пропадает.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct GroundPressed {
+    pub center: Vec2,
+    pub radius: f32,
 }
 
 /// Чем машина касается земли.
@@ -146,6 +177,17 @@ pub enum TrackKind {
     Wheels,
     /// Ступни шагающего босса: вмятины с отпечатком.
     Feet,
+}
+
+impl TrackKind {
+    /// Глубина колеи, м: ступни вдавливают рельеф сами, в [`stomp`].
+    fn depth(self) -> f32 {
+        match self {
+            TrackKind::Treads => TREADS_DEPTH,
+            TrackKind::Wheels => WHEELS_DEPTH,
+            TrackKind::Feet => 0.0,
+        }
+    }
 }
 
 /// Машина оставляет следы.
@@ -173,14 +215,15 @@ struct TrackTrail {
     wet: [f32; 2],
 }
 
-/// Точка касания опоры: края полосы на рельефе.
+/// Точка касания опоры на плане: высоты краёв полосы берутся из рельефа при сборке меша.
 #[derive(Debug, Clone, Copy)]
 struct Contact {
-    /// Середина полосы на плане.
+    /// Середина полосы.
     center: Vec2,
-    left: Vec3,
-    right: Vec3,
-    normal: Vec3,
+    /// Поперечное направление, вправо по ходу.
+    right: Vec2,
+    /// Полуширина полосы, м.
+    half: f32,
     /// Путь вдоль колеи с её начала, м: координата текстуры.
     distance: f32,
 }
@@ -191,8 +234,6 @@ struct Segment {
     from: Contact,
     to: Contact,
     kind: TrackKind,
-    /// Время появления по часам игры, с.
-    born: f32,
     /// Насколько отрезок мокрый: 0 — сухой, 1 — только из воды.
     wet: f32,
 }
@@ -205,66 +246,131 @@ struct Footprint {
     forward: Vec2,
 }
 
-/// Следы забега.
-#[derive(Resource, Default)]
-pub struct Tracks {
+/// Следы одного участка рельефа.
+#[derive(Default)]
+struct ChunkTracks {
     segments: VecDeque<Segment>,
     footprints: VecDeque<Footprint>,
+    /// Сущность меша, пока участок в сцене.
+    entity: Option<Entity>,
+    /// Меш надо пересобрать.
+    dirty: bool,
+}
+
+/// Следы и колеи забега.
+#[derive(Resource, Default)]
+pub struct Tracks {
+    /// Следы по участкам: отрезок лежит на участке своего начала.
+    chunks: HashMap<IVec2, ChunkTracks>,
     /// Отпечатки этого кадра: в буфер они попадают после того, как свой же `TerrainChanged`
     /// срежет старые следы под ступнёй.
     pending_feet: Vec<Footprint>,
-    /// Буфер менялся с последней пересборки меша.
-    dirty: bool,
-    /// Сколько прошло с последней пересборки, с.
+    /// На сколько продавлена вершина мировой сетки, м.
+    pressed: HashMap<IVec2, f32>,
+    /// Участки рельефа, изменённые колеёй с последней пачки.
+    terrain_dirty: HashSet<IVec2>,
+    /// Сколько прошло с последней пачки, с.
     clock: f32,
+    /// Пачка ушла в этом кадре: пора пересобрать меши следов.
+    flushed: bool,
 }
 
 impl Tracks {
-    /// Добавляет отрезок; сверх предела уходит самый старый.
+    /// Следы участка, создаёт пустые при первом обращении.
+    fn chunk(&mut self, coord: IVec2) -> &mut ChunkTracks {
+        self.chunks.entry(coord).or_default()
+    }
+
+    /// Добавляет отрезок на участок его начала; сверх предела уходит самый старый.
     fn push(&mut self, segment: Segment) {
-        self.segments.push_back(segment);
-        while self.segments.len() > MAX_SEGMENTS {
-            self.segments.pop_front();
+        let chunk = self.chunk(chunk_coord_at(segment.from.center.x, segment.from.center.y));
+        chunk.segments.push_back(segment);
+        while chunk.segments.len() > MAX_SEGMENTS {
+            chunk.segments.pop_front();
         }
-        self.dirty = true;
+        chunk.dirty = true;
     }
 
-    /// Добавляет отпечаток ступни; сверх предела уходит самый старый.
+    /// Добавляет отпечаток ступни; сверх предела на участке уходит самый старый.
     fn push_foot(&mut self, foot: Footprint) {
-        self.footprints.push_back(foot);
-        while self.footprints.len() > MAX_FOOTPRINTS {
-            self.footprints.pop_front();
+        let chunk = self.chunk(chunk_coord_at(foot.center.x, foot.center.y));
+        chunk.footprints.push_back(foot);
+        while chunk.footprints.len() > MAX_FOOTPRINTS {
+            chunk.footprints.pop_front();
         }
-        self.dirty = true;
-    }
-
-    /// Убирает отрезки старше [`LIFETIME`]. Отрезки лежат по времени появления.
-    fn expire(&mut self, now: f32) {
-        while self.segments.front().is_some_and(|s| now - s.born > LIFETIME) {
-            self.segments.pop_front();
-            self.dirty = true;
-        }
+        chunk.dirty = true;
     }
 
     /// Убирает отрезки, у которых хоть один конец в круге на плане, и отпечатки с центром в нём.
+    /// Участки, задетые кругом, пересобираются: рельеф под лентой мог измениться.
     fn cut(&mut self, center: Vec2, radius: f32) {
         let r2 = radius * radius;
         let inside = |p: Vec2| p.distance_squared(center) < r2;
-        let before = self.segments.len() + self.footprints.len();
-        self.segments.retain(|s| !inside(s.from.center) && !inside(s.to.center));
-        self.footprints.retain(|f| !inside(f.center));
-        if self.segments.len() + self.footprints.len() != before {
-            self.dirty = true;
+        // Отрезок лежит на участке начала, а конец может быть на соседнем: запас в шаг отрезка.
+        let reach = radius + SEGMENT_STEP;
+        let (low, high) = (
+            chunk_coord_at(center.x - reach, center.y - reach),
+            chunk_coord_at(center.x + reach, center.y + reach),
+        );
+        for cz in low.y..=high.y {
+            for cx in low.x..=high.x {
+                let Some(chunk) = self.chunks.get_mut(&IVec2::new(cx, cz)) else {
+                    continue;
+                };
+                chunk.segments.retain(|s| !inside(s.from.center) && !inside(s.to.center));
+                chunk.footprints.retain(|f| !inside(f.center));
+                chunk.dirty = true;
+            }
         }
     }
 
-    /// Есть ли бледнеющие отрезки: тогда меш меняется и без новых отрезков.
-    fn fading(&self, now: f32) -> bool {
-        self.segments.front().is_some_and(|s| now - s.born > LIFETIME - FADE)
+    /// Продавлен ли грунт в точке плана настолько, что трава там не растёт.
+    pub fn rut_at(&self, p: Vec2) -> bool {
+        let v = IVec2::new(p.x.round() as i32, p.y.round() as i32);
+        self.pressed.get(&v).is_some_and(|&d| d > GRASS_RUT_DEPTH)
+    }
+
+    /// Продавливает рельеф под опорой с центром `center` и полушириной `half` на глубину `depth`
+    /// с плавным спадом за край. Вершина опускается только на то, чего ей не хватает до нужной
+    /// глубины, и буреет пропорционально. Изменённые участки копятся до пачки.
+    fn press(&mut self, terrain: &mut Terrain, center: Vec2, half: f32, depth: f32) {
+        let outer = half + PRESS_EDGE;
+        let soil = SOIL.to_linear();
+        let soil = [soil.red, soil.green, soil.blue];
+        let (x0, x1) = ((center.x - outer).floor() as i32, (center.x + outer).ceil() as i32);
+        let (z0, z1) = ((center.y - outer).floor() as i32, (center.y + outer).ceil() as i32);
+        for vz in z0..=z1 {
+            for vx in x0..=x1 {
+                let d = Vec2::new(vx as f32, vz as f32).distance(center);
+                if d >= outer {
+                    continue;
+                }
+                let t = ((d - half) / PRESS_EDGE).clamp(0.0, 1.0);
+                let want = depth * (1.0 - t * t * (3.0 - 2.0 * t));
+                let done = self.pressed.entry(IVec2::new(vx, vz)).or_insert(0.0);
+                let delta = want - *done;
+                if delta < PRESS_EPSILON {
+                    continue;
+                }
+                *done = want;
+                let mix = SOIL_MIX * delta / depth;
+                let changed = terrain.edit_vertex(vx, vz, |h, c| {
+                    *h -= delta;
+                    for (channel, target) in c[..3].iter_mut().zip(soil) {
+                        *channel += (target - *channel) * mix;
+                    }
+                });
+                self.terrain_dirty.extend(changed);
+            }
+        }
     }
 }
 
-/// Сущность меша всех следов.
+/// Общие ресурсы следов: материал ленты.
+#[derive(Resource)]
+struct TrackMaterial(Handle<StandardMaterial>);
+
+/// Меш следов участка.
 #[derive(Component)]
 struct TrackMesh;
 
@@ -276,10 +382,9 @@ struct WheelDust;
 #[derive(Resource)]
 struct DustEffect(Handle<EffectAsset>);
 
-/// Создаёт сущность меша следов, его материал с текстурой и эффект пыли.
-fn spawn_track_mesh(
+/// Создаёт материал следов с текстурой и эффект пыли.
+fn create_assets(
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut effects: ResMut<Assets<EffectAsset>>,
@@ -293,15 +398,7 @@ fn spawn_track_mesh(
         depth_bias: DEPTH_BIAS,
         ..default()
     });
-    commands.spawn((
-        TrackMesh,
-        Mesh3d(meshes.add(empty_mesh())),
-        MeshMaterial3d(material),
-        Transform::IDENTITY,
-        NotShadowCaster,
-        // Границы меша меняются вместе с буфером.
-        NoFrustumCulling,
-    ));
+    commands.insert_resource(TrackMaterial(material));
     commands.insert_resource(DustEffect(effects.add(crate::rover_look::dust_effect())));
 }
 
@@ -360,13 +457,15 @@ fn empty_mesh() -> Mesh {
         .with_inserted_indices(Indices::U32(vec![0, 1, 2]))
 }
 
-/// Новый забег или меню: следов нет.
-fn reset_tracks(mut rebuilt: MessageReader<WorldRebuilt>, mut tracks: ResMut<Tracks>) {
+/// Новый забег или меню: следов и колей нет, меши участков удаляются.
+fn reset_tracks(mut commands: Commands, mut rebuilt: MessageReader<WorldRebuilt>, mut tracks: ResMut<Tracks>) {
     if rebuilt.read().last().is_some() {
-        *tracks = Tracks {
-            dirty: true,
-            ..default()
-        };
+        for chunk in tracks.chunks.values() {
+            if let Some(entity) = chunk.entity {
+                commands.entity(entity).try_despawn();
+            }
+        }
+        *tracks = Tracks::default();
     }
 }
 
@@ -456,31 +555,15 @@ fn forbidden(terrain: &Terrain, pools: &LavaPools, p: Vec2) -> bool {
     terrain.is_tunnel(near.line, near.s) && h < level + 1.0
 }
 
-/// Точка касания опоры с центром `center` и поперечным направлением `right`.
-fn contact(terrain: &Terrain, center: Vec2, right: Vec2, width: f32, distance: f32) -> Contact {
-    let edge = |s: f32| {
-        let p = center + right * s * width * 0.5;
-        Vec3::new(p.x, mesh_height(terrain, p.x, p.y) + LIFT, p.y)
-    };
-    Contact {
-        center,
-        left: edge(-1.0),
-        right: edge(1.0),
-        normal: terrain.normal_at(center.x, center.y),
-        distance,
-    }
-}
-
-/// Кладёт отрезки колей под опорами едущих машин.
+/// Кладёт отрезки колей под опорами едущих машин и продавливает под ними грунт.
 fn lay_tracks(
-    time: Res<Time>,
-    terrain: Res<Terrain>,
+    mut terrain: ResMut<Terrain>,
     pools: Res<LavaPools>,
     puddles: Res<Puddles>,
     mut tracks: ResMut<Tracks>,
     mut makers: Query<(&GlobalTransform, &TrackMaker, &mut TrackTrail)>,
+    mut pressed: MessageWriter<GroundPressed>,
 ) {
-    let now = time.elapsed_secs();
     for (transform, maker, mut trail) in &mut makers {
         if maker.kind == TrackKind::Feet {
             continue;
@@ -491,6 +574,7 @@ fn lay_tracks(
         }
         trail.position = Some(position);
         let right = (transform.rotation() * Vec3::X).xz().normalize_or(Vec2::X);
+        let half = maker.width * 0.5;
         for (side, sign) in [(0, -1.0f32), (1, 1.0)] {
             let center = position.xz() + right * sign * maker.gauge * 0.5;
             let last = trail.last[side];
@@ -514,7 +598,17 @@ fn lay_tracks(
                 trail.last[side] = None;
                 continue;
             }
-            let here = contact(&terrain, center, right, maker.width, distance);
+            tracks.press(&mut terrain, center, half, maker.kind.depth());
+            pressed.write(GroundPressed {
+                center,
+                radius: half + GRASS_CLEAR,
+            });
+            let here = Contact {
+                center,
+                right,
+                half,
+                distance,
+            };
             let wet = trail.wet[side] / WET_LENGTH;
             trail.wet[side] = (trail.wet[side] - step).max(0.0);
             if let Some(from) = last {
@@ -522,7 +616,6 @@ fn lay_tracks(
                     from,
                     to: here,
                     kind: maker.kind,
-                    born: now,
                     wet,
                 });
             }
@@ -578,34 +671,83 @@ fn stomp(
     }
 }
 
-/// Срезает следы по изменениям рельефа, убирает старые и пересобирает меш.
-fn cut_and_rebuild(
-    time: Res<Time>,
-    terrain: Res<Terrain>,
-    mut changes: MessageReader<TerrainChanged>,
-    mut tracks: ResMut<Tracks>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mesh: Query<&Mesh3d, With<TrackMesh>>,
-) {
-    for change in changes.read() {
-        tracks.cut(change.center.xz(), change.radius);
-    }
-    for foot in std::mem::take(&mut tracks.pending_feet) {
-        tracks.push_foot(foot);
-    }
-    let now = time.elapsed_secs();
-    tracks.expire(now);
+/// Раз в [`FLUSH_PERIOD`] помечает на пересборку участки рельефа, продавленные колеёй,
+/// и разрешает в этом кадре пересобрать меши следов: лента и рельеф меняются вместе.
+fn flush(mut commands: Commands, time: Res<Time>, visible: Res<VisibleChunks>, mut tracks: ResMut<Tracks>) {
     tracks.clock += time.delta_secs();
-    if tracks.clock < REBUILD_PERIOD || !(tracks.dirty || tracks.fading(now)) {
+    if tracks.clock < FLUSH_PERIOD {
         return;
     }
     tracks.clock = 0.0;
-    tracks.dirty = false;
-    let Some(handle) = mesh.iter().next() else {
-        return;
-    };
-    if let Some(mut mesh) = meshes.get_mut(&handle.0) {
-        *mesh = build_mesh(&tracks, &terrain, now);
+    tracks.flushed = true;
+    let changed: Vec<IVec2> = tracks.terrain_dirty.drain().collect();
+    for &coord in &changed {
+        for offset in [IVec2::ZERO, IVec2::X, IVec2::NEG_X, IVec2::Y, IVec2::NEG_Y] {
+            if let Some(chunk) = tracks.chunks.get_mut(&(coord + offset)) {
+                chunk.dirty = true;
+            }
+        }
+    }
+    visible.mark_dirty(&mut commands, changed);
+}
+
+/// Срезает следы по изменениям рельефа, ставит и убирает меши следов вслед за участками в сцене
+/// и пересобирает изменённые.
+#[allow(clippy::too_many_arguments)]
+fn cut_and_rebuild(
+    mut commands: Commands,
+    terrain: Res<Terrain>,
+    visible: Res<VisibleChunks>,
+    material: Res<TrackMaterial>,
+    mut changes: MessageReader<TerrainChanged>,
+    mut tracks: ResMut<Tracks>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    handles: Query<&Mesh3d, With<TrackMesh>>,
+) {
+    // Кратер и ступня меняют рельеф сразу, без пачки: ленту надо переложить в этом же кадре.
+    let mut urgent = false;
+    for change in changes.read() {
+        tracks.cut(change.center.xz(), change.radius);
+        urgent = true;
+    }
+    for foot in std::mem::take(&mut tracks.pending_feet) {
+        tracks.push_foot(foot);
+        urgent = true;
+    }
+    let tracks = &mut *tracks;
+    let rebuild = std::mem::take(&mut tracks.flushed) || urgent;
+    for (coord, chunk) in tracks.chunks.iter_mut() {
+        match (visible.entity(*coord).is_some(), chunk.entity) {
+            (false, Some(entity)) => {
+                commands.entity(entity).try_despawn();
+                chunk.entity = None;
+            }
+            (true, None) => {
+                let mesh = meshes.add(build_mesh(chunk, &terrain));
+                let entity = commands
+                    .spawn((
+                        TrackMesh,
+                        Mesh3d(mesh),
+                        MeshMaterial3d(material.0.clone()),
+                        Transform::IDENTITY,
+                        NotShadowCaster,
+                        // Отрезки на краю выходят за участок: границы считать не стоит.
+                        NoFrustumCulling,
+                    ))
+                    .id();
+                chunk.entity = Some(entity);
+                chunk.dirty = false;
+            }
+            (true, Some(entity)) if rebuild && chunk.dirty => {
+                chunk.dirty = false;
+                if let Ok(handle) = handles.get(entity)
+                    && let Some(mut mesh) = meshes.get_mut(&handle.0)
+                {
+                    *mesh = build_mesh(chunk, &terrain);
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -620,33 +762,32 @@ fn column(kind: TrackKind) -> (f32, f32) {
     (i / 3.0 + pad, (i + 1.0) / 3.0 - pad)
 }
 
-/// Меш всех следов: квад на отрезок, сетка 4×4 на отпечаток ступни.
-fn build_mesh(tracks: &Tracks, terrain: &Terrain, now: f32) -> Mesh {
-    let count = tracks.segments.len() * 4 + tracks.footprints.len() * 16;
+/// Меш следов участка: квад на отрезок, сетка 4×4 на отпечаток ступни. Высоты — с рельефа сейчас.
+fn build_mesh(chunk: &ChunkTracks, terrain: &Terrain) -> Mesh {
+    let count = chunk.segments.len() * 4 + chunk.footprints.len() * 16;
     let mut positions: Vec<[f32; 3]> = Vec::with_capacity(count);
     let mut normals: Vec<[f32; 3]> = Vec::with_capacity(count);
     let mut uvs: Vec<[f32; 2]> = Vec::with_capacity(count);
     let mut colors: Vec<[f32; 4]> = Vec::with_capacity(count);
-    let mut indices: Vec<u32> = Vec::with_capacity(tracks.segments.len() * 6 + tracks.footprints.len() * 54);
+    let mut indices: Vec<u32> = Vec::with_capacity(chunk.segments.len() * 12 + chunk.footprints.len() * 108);
     let [r, g, b] = TRACK_COLOR;
+    let ground = |p: Vec2| [p.x, mesh_height(terrain, p.x, p.y) + LIFT, p.y];
 
-    for segment in &tracks.segments {
-        let age = now - segment.born;
-        let fade = ((LIFETIME - age) / FADE).clamp(0.0, 1.0);
+    for segment in &chunk.segments {
         let (alpha, repeat) = match segment.kind {
             TrackKind::Treads => (TREADS_ALPHA, TREAD_REPEAT),
             _ => (WHEELS_ALPHA, WHEEL_REPEAT),
         };
         let dark = 1.0 - WET_DARKEN * segment.wet;
         let alpha = alpha + (WET_ALPHA - alpha) * segment.wet;
-        let color = [r * dark, g * dark, b * dark, alpha * fade];
+        let color = [r * dark, g * dark, b * dark, alpha];
         let (u0, u1) = column(segment.kind);
         let base = positions.len() as u32;
         for c in [segment.from, segment.to] {
             let v = c.distance / repeat;
-            positions.push(c.left.to_array());
-            positions.push(c.right.to_array());
-            normals.extend([c.normal.to_array(); 2]);
+            positions.push(ground(c.center - c.right * c.half));
+            positions.push(ground(c.center + c.right * c.half));
+            normals.extend([terrain.normal_at(c.center.x, c.center.y).to_array(); 2]);
             uvs.push([u0, v]);
             uvs.push([u1, v]);
             colors.extend([color; 2]);
@@ -658,7 +799,7 @@ fn build_mesh(tracks: &Tracks, terrain: &Terrain, now: f32) -> Mesh {
 
     let (u0, u1) = column(TrackKind::Feet);
     let color = [r, g, b, FEET_ALPHA];
-    for foot in &tracks.footprints {
+    for foot in &chunk.footprints {
         let forward = foot.forward;
         let right = Vec2::new(-forward.y, forward.x);
         let base = positions.len() as u32;
@@ -666,7 +807,7 @@ fn build_mesh(tracks: &Tracks, terrain: &Terrain, now: f32) -> Mesh {
             for i in 0..4 {
                 let (s, t) = (i as f32 / 3.0, j as f32 / 3.0);
                 let p = foot.center + right * (s - 0.5) * FOOT_SIZE.x + forward * (t - 0.5) * FOOT_SIZE.y;
-                positions.push([p.x, mesh_height(terrain, p.x, p.y) + LIFT, p.y]);
+                positions.push(ground(p));
                 normals.push(terrain.normal_at(p.x, p.y).to_array());
                 uvs.push([u0 + (u1 - u0) * s, t]);
                 colors.push(color);
@@ -756,67 +897,83 @@ mod tests {
 
     fn point(x: f32) -> Contact {
         Contact {
-            center: Vec2::new(x, 0.0),
-            left: Vec3::new(x, 0.0, -0.3),
-            right: Vec3::new(x, 0.0, 0.3),
-            normal: Vec3::Y,
+            center: Vec2::new(x, 0.5),
+            right: Vec2::Y,
+            half: 0.3,
             distance: x,
         }
     }
 
-    fn segment(x: f32, born: f32) -> Segment {
+    fn segment(x: f32) -> Segment {
         Segment {
             from: point(x),
             to: point(x + SEGMENT_STEP),
             kind: TrackKind::Wheels,
-            born,
             wet: 0.0,
         }
     }
 
-    #[test]
-    fn отрезки_старше_40_с_удаляются_и_буфер_не_растёт_больше_предела() {
-        let mut tracks = Tracks::default();
-        for i in 0..MAX_SEGMENTS * 2 {
-            tracks.push(segment(i as f32 * SEGMENT_STEP, i as f32 * 0.01));
-        }
-        assert_eq!(tracks.segments.len(), MAX_SEGMENTS);
-        // Самые старые ушли первыми: остались последние.
-        assert!(tracks.segments.front().unwrap().born > (MAX_SEGMENTS as f32 - 1.0) * 0.01);
+    fn segments(tracks: &Tracks) -> impl Iterator<Item = &Segment> {
+        tracks.chunks.values().flat_map(|c| c.segments.iter())
+    }
 
+    #[test]
+    fn буфер_участка_не_растёт_больше_предела_и_следы_не_гаснут() {
         let mut tracks = Tracks::default();
-        tracks.push(segment(0.0, 0.0));
-        tracks.push(segment(1.0, 20.0));
-        tracks.expire(39.0);
-        assert_eq!(tracks.segments.len(), 2);
-        assert!(tracks.fading(39.0), "последние 10 с жизни след бледнеет");
-        tracks.expire(41.0);
-        assert_eq!(tracks.segments.len(), 1);
-        tracks.expire(61.0);
-        assert!(tracks.segments.is_empty());
+        // Все отрезки в одном участке: начало у x = 10.
+        for _ in 0..MAX_SEGMENTS * 2 {
+            tracks.push(segment(10.0));
+        }
+        assert_eq!(tracks.chunks.len(), 1);
+        assert_eq!(segments(&tracks).count(), MAX_SEGMENTS);
+        // Отрезки на другом участке не вытесняют чужие.
+        tracks.push(segment(-10.0));
+        assert_eq!(segments(&tracks).count(), MAX_SEGMENTS + 1);
     }
 
     #[test]
     fn отрезок_в_круге_изменения_удаляется_вне_круга_остаётся() {
         let mut tracks = Tracks::default();
-        for i in 0..50 {
-            tracks.push(segment(i as f32 * SEGMENT_STEP, 0.0));
+        // Колея через границу участков x = 0.
+        for i in 0..100 {
+            tracks.push(segment(-20.0 + i as f32 * SEGMENT_STEP));
         }
         tracks.push_foot(Footprint {
-            center: Vec2::new(10.0, 0.0),
+            center: Vec2::new(0.0, 0.5),
             forward: Vec2::NEG_Y,
         });
-        tracks.cut(Vec2::new(10.0, 0.0), 3.0);
-        assert!(tracks.footprints.is_empty());
-        assert!(!tracks.segments.is_empty());
-        for s in &tracks.segments {
+        let c = Vec2::new(0.0, 0.5);
+        tracks.cut(c, 3.0);
+        assert!(tracks.chunks.values().all(|ch| ch.footprints.is_empty()));
+        for s in segments(&tracks) {
             for p in [s.from.center, s.to.center] {
-                assert!(p.distance(Vec2::new(10.0, 0.0)) >= 3.0, "конец {p} в круге");
+                assert!(p.distance(c) >= 3.0, "конец {p} в круге");
             }
         }
         // Вне круга остались отрезки по обе стороны кратера.
-        assert!(tracks.segments.iter().any(|s| s.to.center.x < 7.0));
-        assert!(tracks.segments.iter().any(|s| s.from.center.x > 13.0));
+        assert!(segments(&tracks).any(|s| s.to.center.x < -3.0));
+        assert!(segments(&tracks).any(|s| s.from.center.x > 3.0));
+    }
+
+    #[test]
+    fn повторный_проезд_не_углубляет_колею() {
+        let mut terrain = Terrain::new(7);
+        let mut tracks = Tracks::default();
+        let center = Vec2::new(5.3, 7.6);
+        let before = terrain.vertex_height(5, 8);
+        let far = terrain.vertex_height(9, 8);
+        tracks.press(&mut terrain, center, 0.6, TREADS_DEPTH);
+        let once = terrain.vertex_height(5, 8);
+        assert!(before - once > 0.5 * TREADS_DEPTH, "вершина под опорой продавлена: {before} → {once}");
+        assert!(!tracks.terrain_dirty.is_empty());
+        for _ in 0..10 {
+            tracks.press(&mut terrain, center, 0.6, TREADS_DEPTH);
+        }
+        assert!((terrain.vertex_height(5, 8) - once).abs() < 1e-5);
+        // Вдали от опоры рельеф не тронут.
+        assert_eq!(terrain.vertex_height(9, 8), far);
+        assert!(tracks.rut_at(Vec2::new(5.2, 7.9)));
+        assert!(!tracks.rut_at(Vec2::new(9.0, 8.0)));
     }
 
     #[test]

@@ -4,8 +4,9 @@
 //! гуще порога, склон пологий, нет гор, путей, домов и объектов. Цвет берётся с рельефа под
 //! пучком, поэтому оттенок травы совпадает с травой на грунте. Один меш на участок, без теней.
 //!
-//! Состояние пучка хранится до конца забега: машины его приминают по ходу, взрыв и лава выжигают,
-//! кратер убирает. Изменённые участки пересобираются не больше [`REBUILDS_PER_FRAME`] за кадр.
+//! Состояние пучка хранится до конца забега: машины его приминают по ходу, колея гусениц и колёс
+//! (`GroundPressed`) убирает, взрыв и лава выжигают, кратер убирает. На участке, который появился
+//! после проезда, в продавленной колее трава не растёт. Изменённые участки пересобираются не больше [`REBUILDS_PER_FRAME`] за кадр.
 
 use std::collections::{HashMap, HashSet};
 
@@ -26,6 +27,7 @@ use crate::railway::TRACK_FLAT;
 use crate::rover::{ROVER_SCALE, Rover, RoverMotion};
 use crate::run::{RunScoped, WorldRebuilt};
 use crate::subsidence::TerrainChanged;
+use crate::tracks::{GroundPressed, Tracks};
 use crate::terrain::{self, CHUNK_SIZE, Terrain, VisibleChunks, chunk_coord_at, chunk_origin};
 use crate::vehicle::{self, GroundVehicle};
 
@@ -266,6 +268,7 @@ fn stream_grass(
     visible: Res<VisibleChunks>,
     obstacles: NearObstacles,
     puddles: Res<Puddles>,
+    ruts: Res<Tracks>,
     quality: Res<Quality>,
     material: Res<GrassMaterial>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -298,7 +301,7 @@ fn stream_grass(
             }
         }
     }
-    // Новые участки: пучки по сиду минус дома, объекты и лужи. Лужа ставится при появлении
+    // Новые участки: пучки по сиду минус дома, объекты, лужи и колеи. Лужа ставится при появлении
     // участка, трава — через несколько кадров, так что лужа уже есть.
     let mut ready = Vec::new();
     for (coord, frames) in grass.settling.iter_mut() {
@@ -315,6 +318,7 @@ fn stream_grass(
             for cell in cells.iter_mut() {
                 let blocked = cell.is_some_and(|tuft| {
                     puddles.at(tuft.position)
+                        || ruts.rut_at(tuft.position)
                         || obstacles
                         .near(tuft.position, OBSTACLE_CLEAR + 1.0)
                         .any(|(_, o)| o.shape.push_out(tuft.position, OBSTACLE_CLEAR).is_some())
@@ -451,13 +455,22 @@ fn crush_grass(
     }
 }
 
-/// Взрыв выжигает траву вокруг, кратер её убирает, а на изменённом рельефе пучки переставляются.
+/// Взрыв выжигает траву вокруг, кратер и колея её убирают, а на изменённом рельефе пучки
+/// переставляются.
 fn scorch_grass(
     mut grass: ResMut<Grass>,
     mut explosions: MessageReader<Explosion>,
     mut changes: MessageReader<TerrainChanged>,
+    mut pressed: MessageReader<GroundPressed>,
     terrain: Res<Terrain>,
 ) {
+    for press in pressed.read() {
+        let cells = grass.around(press.center, press.radius);
+        grass.update(&cells, |tuft| {
+            (tuft.state != State::Gone && tuft.position.distance(press.center) <= press.radius)
+                .then_some(Tuft { state: State::Gone, ..*tuft })
+        });
+    }
     for explosion in explosions.read() {
         let center = Vec2::new(explosion.position.x, explosion.position.z);
         let reach = explosion.radius * BURN_REACH;
