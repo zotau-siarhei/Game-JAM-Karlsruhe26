@@ -11,6 +11,7 @@
 //! в кадр не попадает.
 
 use bevy::prelude::*;
+use bevy::window::PrimaryWindow;
 
 use crate::frame::GameSet;
 use crate::rover::Rover;
@@ -50,10 +51,44 @@ const GROUND_CLEARANCE: f32 = 3.0;
 /// Скорость, с которой камера догоняет фокус, 1/с.
 const FOLLOW_DECAY: f32 = 8.0;
 
+/// Обычный угол обзора камеры по вертикали, рад (как у камеры Bevy по умолчанию).
+const FOV_DEFAULT: f32 = std::f32::consts::FRAC_PI_4;
+/// На узком экране угол обзора растёт не больше этого, рад: шире — сильные искажения по краям.
+const FOV_WIDEST: f32 = 55.0 * std::f32::consts::PI / 180.0;
+/// Узким считается экран уже этой доли ширины к высоте. Ширина обзора у лунохода на нём
+/// держится как на таком экране: половина обзора экрана 16:9.
+const NARROW_ASPECT: f32 = 16.0 / 9.0 * 0.5;
+/// Дальше этого камера на узком экране не отъезжает: верх кадра остаётся в подгруженном мире
+/// (`terrain::LOAD_RADIUS` участков вокруг фокуса).
+const ZOOM_FARTHEST: f32 = 1.6;
+
 /// Игровая камера и её текущая крутизна: 0 — обычный вид, 1 — самый крутой.
-#[derive(Component, Default)]
+#[derive(Component)]
 pub struct GameCamera {
     steepness: f32,
+    /// Во сколько раз камера дальше обычного: на узком экране (телефон вертикально) она
+    /// отъезжает, чтобы по бокам было видно, кто атакует.
+    zoom: f32,
+}
+
+impl Default for GameCamera {
+    fn default() -> Self {
+        Self { steepness: 0.0, zoom: 1.0 }
+    }
+}
+
+/// Угол обзора по вертикали и отъезд камеры для экрана с долей ширины к высоте `aspect`.
+/// На экране не уже [`NARROW_ASPECT`] — обычные; на узком сначала шире угол, потом дальше камера.
+fn view_for_aspect(aspect: f32) -> (f32, f32) {
+    if !aspect.is_finite() || aspect <= 0.0 || aspect >= NARROW_ASPECT {
+        return (FOV_DEFAULT, 1.0);
+    }
+    // Во сколько раз надо расширить обзор по горизонтали.
+    let widen = NARROW_ASPECT / aspect;
+    let half = (FOV_DEFAULT * 0.5).tan();
+    let fov = (2.0 * (half * widen).atan()).min(FOV_WIDEST);
+    let zoom = (widen * half / (fov * 0.5).tan()).clamp(1.0, ZOOM_FARTHEST);
+    (fov, zoom)
 }
 
 /// Точка мира, за которой идут камера и подгрузка мира.
@@ -76,7 +111,7 @@ impl Plugin for CameraPlugin {
                         .run_if(not(in_state(GameState::Menu)))
                         .after(GameSet::Cleanup)
                         .before(GameSet::Streaming),
-                    follow_focus.in_set(GameSet::Presentation),
+                    (fit_view, follow_focus).chain().in_set(GameSet::Presentation),
                 ),
             );
     }
@@ -113,13 +148,13 @@ fn ray_blocked(height: impl Fn(f32, f32) -> f32, from: Vec3, to: Vec3, margin: f
 
 /// Наименьшая ступень крутизны, с которой точка `look` видна. Ступени положе нынешней
 /// `current` требуют большего запаса. Если обзор закрыт отовсюду — самая крутая.
-fn needed_steepness(height: impl Fn(f32, f32) -> f32, look: Vec3, current: f32) -> f32 {
+fn needed_steepness(height: impl Fn(f32, f32) -> f32, look: Vec3, current: f32, zoom: f32) -> f32 {
     STEEPNESS_STEPS
         .iter()
         .copied()
         .find(|&steepness| {
             let margin = if steepness < current { RETURN_MARGIN } else { BLOCK_MARGIN };
-            !ray_blocked(&height, look, look + camera_offset(steepness), margin)
+            !ray_blocked(&height, look, look + camera_offset(steepness) * zoom, margin)
         })
         .unwrap_or(1.0)
 }
@@ -136,6 +171,25 @@ pub fn spawn_camera(mut commands: Commands, focus: Res<Focus>) {
     ));
 }
 
+/// Под форму окна: на узком экране шире угол обзора и камера дальше, на обычном — как было.
+pub fn fit_view(
+    window: Single<&Window, With<PrimaryWindow>>,
+    camera: Single<(&mut Projection, &mut GameCamera)>,
+) {
+    let size = window.resolution.size();
+    let (fov, zoom) = view_for_aspect(size.x / size.y);
+    let (mut projection, mut camera) = camera.into_inner();
+    if (camera.zoom - zoom).abs() > 1e-3 {
+        camera.zoom = zoom;
+    }
+    if let Projection::Perspective(perspective) = projection.as_ref()
+        && (perspective.fov - fov).abs() > 1e-3
+        && let Projection::Perspective(perspective) = projection.as_mut()
+    {
+        perspective.fov = fov;
+    }
+}
+
 /// Плавно двигает камеру за фокусом. Когда рельеф закрывает фокус, камера поднимается
 /// и смотрит круче, потом возвращается; ниже рельефа не опускается.
 pub fn follow_focus(
@@ -148,7 +202,7 @@ pub fn follow_focus(
     let dt = time.delta_secs();
     let height = |x: f32, z: f32| terrain.height_at(x, z);
 
-    let wanted = needed_steepness(height, focus.0 + Vec3::Y * LOOK_HEIGHT, camera.steepness);
+    let wanted = needed_steepness(height, focus.0 + Vec3::Y * LOOK_HEIGHT, camera.steepness, camera.zoom);
     let step = if wanted > camera.steepness { STEEPEN_SPEED } else { RELAX_SPEED } * dt;
     let steepness = camera.steepness + (wanted - camera.steepness).clamp(-step, step);
     if steepness != camera.steepness {
@@ -156,7 +210,7 @@ pub fn follow_focus(
         transform.rotation = camera_rotation(steepness);
     }
 
-    let target = focus.0 + camera_offset(camera.steepness);
+    let target = focus.0 + camera_offset(camera.steepness) * camera.zoom;
     transform
         .translation
         .smooth_nudge(&target, FOLLOW_DECAY, dt);
@@ -191,10 +245,33 @@ mod tests {
     }
 
     #[test]
+    fn wide_screen_keeps_the_usual_view() {
+        assert_eq!(view_for_aspect(16.0 / 9.0), (FOV_DEFAULT, 1.0));
+        assert_eq!(view_for_aspect(1020.0 / 461.0), (FOV_DEFAULT, 1.0));
+    }
+
+    #[test]
+    fn portrait_phone_sees_twice_as_wide() {
+        let aspect = 461.0 / 1020.0;
+        let (fov, zoom) = view_for_aspect(aspect);
+        assert!(fov <= FOV_WIDEST + 1e-6 && zoom > 1.0 && zoom <= ZOOM_FARTHEST);
+        // Половина ширины обзора у фокуса — как у экрана NARROW_ASPECT, вдвое шире прежней.
+        let before = (FOV_DEFAULT * 0.5).tan() * aspect;
+        let after = zoom * (fov * 0.5).tan() * aspect;
+        assert!(after / before > 1.9, "{}", after / before);
+        // Верх кадра смотрит вниз: неба нет, и он не дальше подгруженного мира.
+        let top = PITCH_DEFAULT - fov * 0.5;
+        assert!(top > 0.2);
+        let height = CAMERA_DISTANCE * zoom * PITCH_DEFAULT.sin();
+        let reach = height / top.tan() - CAMERA_DISTANCE * zoom * PITCH_DEFAULT.cos();
+        assert!(reach < (crate::terrain::LOAD_RADIUS * crate::terrain::CHUNK_SIZE) as f32, "{reach}");
+    }
+
+    #[test]
     fn flat_ground_keeps_the_default_view() {
         let flat = |_: f32, _: f32| 0.0;
-        assert_eq!(needed_steepness(flat, Vec3::Y, 0.0), 0.0);
-        assert_eq!(needed_steepness(flat, Vec3::Y, 1.0), 0.0);
+        assert_eq!(needed_steepness(flat, Vec3::Y, 0.0, 1.0), 0.0);
+        assert_eq!(needed_steepness(flat, Vec3::Y, 1.0, 1.0), 0.0);
     }
 
     #[test]
@@ -202,7 +279,7 @@ mod tests {
         // Луноход на дне кратера глубиной 20 м и радиусом 15 м: южная стенка закрывает вид под 45°.
         let crater = |x: f32, z: f32| if x.hypot(z) < 15.0 { -20.0 } else { 0.0 };
         let look = Vec3::new(0.0, -20.0 + LOOK_HEIGHT, 0.0);
-        let steepness = needed_steepness(crater, look, 0.0);
+        let steepness = needed_steepness(crater, look, 0.0, 1.0);
         assert!(steepness > 0.0);
         assert!(!ray_blocked(crater, look, look + camera_offset(steepness), BLOCK_MARGIN));
     }
