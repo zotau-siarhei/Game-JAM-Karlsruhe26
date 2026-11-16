@@ -2,8 +2,18 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Space Guard</title>
+  <!-- Установка на экран «Домой»: игра открывается без интерфейса браузера (на iPhone это
+       единственный способ получить полный экран). -->
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <meta name="theme-color" content="#000000">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Space Guard">
   <style>
     /* Шрифт меню игры: FiraMono из Bevy (лицензия OFL), в нём только латиница. */
     @font-face {
@@ -27,9 +37,65 @@
       margin: 0;
       width: 100%;
       height: 100%;
+      /* Видимая высота: на телефоне без части, закрытой строкой адреса. */
+      height: 100dvh;
       overflow: hidden;
       background: #000;
+      overscroll-behavior: none;
+      touch-action: none;
     }
+
+    /* Кнопка полного экрана: поверх игры в правом верхнем углу, вне вырезов экрана. */
+    #fullscreen {
+      position: fixed;
+      top: calc(env(safe-area-inset-top, 0px) + 10px);
+      right: calc(env(safe-area-inset-right, 0px) + 10px);
+      z-index: 20;
+      width: 44px;
+      height: 44px;
+      display: grid;
+      place-items: center;
+      padding: 0;
+      border: 1px solid rgb(255 255 255 / 0.18);
+      border-radius: 8px;
+      background: rgb(0 0 0 / 0.45);
+      color: rgb(255 255 255 / 0.85);
+      cursor: pointer;
+      opacity: 0.55;
+      transition: opacity 0.2s ease, background 0.2s ease;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #fullscreen:hover, #fullscreen:focus-visible {
+      opacity: 1;
+      background: rgb(0 0 0 / 0.7);
+      outline: none;
+    }
+    #fullscreen[hidden] { display: none; }
+    #fullscreen svg { width: 22px; height: 22px; }
+    #fullscreen .exit { display: none; }
+    :root.is-fullscreen #fullscreen .enter { display: none; }
+    :root.is-fullscreen #fullscreen .exit { display: block; }
+
+    /* Подсказка для iPhone: полный экран страницам там не дают, только установка на «Домой». */
+    #install-hint {
+      position: fixed;
+      top: calc(env(safe-area-inset-top, 0px) + 62px);
+      right: calc(env(safe-area-inset-right, 0px) + 10px);
+      z-index: 20;
+      max-width: min(320px, calc(100vw - 20px));
+      padding: 12px 14px;
+      border: 1px solid rgb(255 255 255 / 0.18);
+      border-radius: 8px;
+      background: var(--panel);
+      color: #fff;
+      font: 14px/1.4 var(--mono);
+      opacity: 0;
+      transform: translateY(-6px);
+      pointer-events: none;
+      transition: opacity 0.25s ease, transform 0.25s ease;
+    }
+    #install-hint.shown { opacity: 1; transform: none; }
+    #install-hint b { color: var(--title); font-weight: normal; }
     /* Холст в обёртке: на телефоне обёртка меньше окна в --scale раз и растянута обратно
        через transform. Холст считает пиксели по размеру обёртки, поэтому игра рисует меньше
        пикселей, а на экране занимает всё окно. На компьютере --scale = 1. */
@@ -254,6 +320,16 @@
 <body>
   <div id="viewport"><canvas id="space-guard" tabindex="0"></canvas></div>
 
+  <button id="fullscreen" type="button" aria-label="Full screen" title="Full screen" hidden>
+    <svg class="enter" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>
+    </svg>
+    <svg class="exit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>
+    </svg>
+  </button>
+  <div id="install-hint" role="status">To play full screen: tap <b>Share</b>, then <b>Add to Home Screen</b>.</div>
+
   <div id="loader" role="dialog" aria-label="Space Guard loading">
     <h1 class="title">SPACE GUARD</h1>
     <p class="subtitle">Survive as long as you can</p>
@@ -302,7 +378,8 @@
           if (context.state !== "running") context.resume();
         }
       };
-      for (const event of ["pointerdown", "keydown", "touchstart"]) {
+      // На сенсорном экране жест, который разрешает звук, — отпускание пальца (pointerup, touchend).
+      for (const event of ["pointerdown", "pointerup", "keydown", "touchstart", "touchend"]) {
         document.addEventListener(event, resumeAudio, { capture: true });
       }
 
@@ -367,6 +444,7 @@
           || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1));
       const asked = new URLSearchParams(location.search).get("quality");
       window.spaceGuardQuality = asked || (mobile ? "low" : "");
+      window.spaceGuardMobile = mobile;
       if (mobile && window.devicePixelRatio > 1.5) {
         document.getElementById("viewport").style.setProperty("--scale", String(window.devicePixelRatio / 1.5));
       }
@@ -693,6 +771,73 @@
       tip.textContent = "";
     }
 
+
+    // --- Полный экран ---
+    // Полный экран дают только из обработчика жеста. В него уходит вся страница: холст следует
+    // за размером окна сам. Safari на iPad — с префиксом webkit; Safari на iPhone не умеет вовсе:
+    // там кнопка подсказывает установку на «Домой» (манифест открывает игру без браузера).
+    const root = document.documentElement;
+    const fullscreenButton = document.getElementById("fullscreen");
+    const installHint = document.getElementById("install-hint");
+    const fullscreenElement = () => document.fullscreenElement || document.webkitFullscreenElement || null;
+    const canFullscreen = Boolean(root.requestFullscreen || root.webkitRequestFullscreen);
+    // Установленная игра: стартовый адрес манифеста помечен ?source=app (display-mode: fullscreen
+    // сам по себе не годится — он верен и для окна браузера, развёрнутого на весь экран), на iOS —
+    // navigator.standalone.
+    const installed = new URLSearchParams(location.search).get("source") === "app"
+      || matchMedia("(display-mode: standalone)").matches
+      || navigator.standalone === true;
+    const iPhone = /iPhone|iPod/.test(navigator.userAgent);
+
+    async function enterFullscreen() {
+      if (fullscreenElement() || !canFullscreen) return;
+      try {
+        if (root.requestFullscreen) await root.requestFullscreen({ navigationUI: "hide" });
+        else root.webkitRequestFullscreen();
+      } catch {
+        return; // Браузер отказал (настройки, встроенный браузер мессенджера): играем в окне.
+      }
+      // Повернуть горизонтально можно только в полном экране, и то не везде.
+      try { await screen.orientation?.lock?.("landscape"); } catch {}
+    }
+
+    function exitFullscreen() {
+      if (!fullscreenElement()) return;
+      (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+    }
+
+    let hintTimer = 0;
+    function showInstallHint() {
+      installHint.classList.add("shown");
+      clearTimeout(hintTimer);
+      hintTimer = setTimeout(() => installHint.classList.remove("shown"), 6000);
+    }
+
+    function onFullscreenChange() {
+      const on = Boolean(fullscreenElement());
+      root.classList.toggle("is-fullscreen", on);
+      fullscreenButton.setAttribute("aria-label", on ? "Exit full screen" : "Full screen");
+      fullscreenButton.title = on ? "Exit full screen (hold Esc)" : "Full screen";
+      // Esc в игре — пауза. В полном экране Chrome отдаёт его игре, а выход — удержанием Esc
+      // (браузер сам об этом подсказывает).
+      if (on) navigator.keyboard?.lock?.(["Escape"]).catch(() => {});
+      else navigator.keyboard?.unlock?.();
+    }
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    document.addEventListener("webkitfullscreenchange", onFullscreenChange);
+
+    if (!installed && (canFullscreen || iPhone)) fullscreenButton.hidden = false;
+    // Касание кнопки не уходит ни в игру, ни в экран загрузки.
+    fullscreenButton.addEventListener("pointerdown", (event) => event.stopPropagation());
+    fullscreenButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (!canFullscreen) showInstallHint();
+      else if (fullscreenElement()) exitFullscreen();
+      else enterFullscreen();
+      fullscreenButton.blur();
+      canvas.focus();
+    });
+
     // Закрыть экран: то же нажатие будит звук. Клавиша, закрывшая экран, в игру не идёт.
     function enter() {
       if (!ready) return;
@@ -701,6 +846,9 @@
       // Игра ждёт этого нажатия, чтобы войти в меню (src/loading.rs): меню проявляется под
       // гаснущим экраном загрузки, и звук меню начинается уже разбуженным.
       window.spaceGuardEntered = true;
+      // На телефоне и планшете то же касание уводит игру в полный экран и альбомную ориентацию.
+      // Касание разрешает полный экран только на отпускании пальца — поэтому ещё и по click ниже.
+      if (window.spaceGuardMobile) enterFullscreen();
       screen.classList.add("leaving");
       window.removeEventListener("keydown", onKey, true);
       setTimeout(() => screen.remove(), 800);
@@ -714,6 +862,9 @@
     }
     window.addEventListener("keydown", onKey, true);
     screen.addEventListener("pointerdown", enter);
+    screen.addEventListener("click", () => {
+      if (window.spaceGuardMobile && window.spaceGuardEntered) enterFullscreen();
+    });
 
     render();
     if (!navigator.gpu) {
