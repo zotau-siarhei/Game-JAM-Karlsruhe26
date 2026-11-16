@@ -26,6 +26,14 @@ bevy = { version = "0.20.1", features = ["webgpu"] }
 # Часы браузера для сидов: `std::time::SystemTime` в WASM нет.
 js-sys = "0.3"
 
+# Вибрация и световая панель геймпада на macOS (`src/haptics.rs`): gilrs там вибрацию не умеет,
+# а системный GameController с CoreHaptics умеет (DualShock 4, DualSense, Xbox).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSString", "NSError", "NSSet", "NSValue", "NSObject"] }
+objc2-game-controller = { version = "0.3", default-features = false, features = ["std", "GCController", "GCDevice", "GCDeviceHaptics", "GCDeviceLight", "GCColor", "GCExtendedGamepad", "GCControllerButtonInput", "GCControllerDirectionPad", "GCControllerAxisInput", "GCControllerElement", "GCPhysicalInputProfile", "objc2-core-haptics"] }
+objc2-core-haptics = { version = "0.3", default-features = false, features = ["std", "CHHapticEngine", "CHHapticPattern", "CHHapticEvent", "CHHapticParameter", "CHHapticPatternPlayer", "CHHapticDeviceCapability"] }
+
 # Быстрые инкрементальные сборки: свой код почти без оптимизаций, зависимости с полными.
 [profile.dev]
 # Код игры оптимизирован полностью: иначе отладочная сборка тормозит.

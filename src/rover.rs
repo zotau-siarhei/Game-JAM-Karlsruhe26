@@ -129,10 +129,30 @@ fn axis(keys: &ButtonInput<KeyCode>, plus: [KeyCode; 2], minus: [KeyCode; 2]) ->
     plus - minus
 }
 
-/// Танковое управление, посадка на рельеф и наклон по склону.
+/// Угол между курсом и целью, при котором стик крутит корпус в полную силу, рад.
+const STEER_FULL_ANGLE: f32 = 0.5;
+
+/// Газ и поворот к направлению стика на плоскости (x, z): корпус поворачивает к цели, газ —
+/// наклон, умноженный на косинус угла до цели; цель сбоку или сзади — разворот на месте.
+pub fn steer_towards(heading: f32, target: Vec2) -> (f32, f32) {
+    let tilt = target.length().min(1.0);
+    if tilt == 0.0 {
+        return (0.0, 0.0);
+    }
+    // Курс 0 — нос на −Z, рост курса — поворот против часовой стрелки (вид сверху).
+    let wanted = (-target.x).atan2(-target.y);
+    let diff = (wanted - heading + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+    let turn = (diff / STEER_FULL_ANGLE).clamp(-1.0, 1.0);
+    let throttle = tilt * diff.cos().max(0.0);
+    (throttle, turn)
+}
+
+/// Танковое управление с клавиатуры, езда по направлению левого стика геймпада, посадка на
+/// рельеф и наклон по склону.
 pub fn drive_rover(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
+    pad: Res<crate::gamepad::PadInput>,
     terrain: Res<Terrain>,
     rover: Single<(&mut Transform, &mut RoverMotion, Option<&SpeedFactor>, Option<&mut Impact>), With<Rover>>,
 ) {
@@ -143,16 +163,20 @@ pub fn drive_rover(
         impact.left = (impact.left - dt).max(0.0);
     }
 
-    let throttle = axis(&keys, [KeyCode::KeyW, KeyCode::ArrowUp], [KeyCode::KeyS, KeyCode::ArrowDown]);
-    let turn = axis(&keys, [KeyCode::KeyA, KeyCode::ArrowLeft], [KeyCode::KeyD, KeyCode::ArrowRight]);
+    let mut throttle = axis(&keys, [KeyCode::KeyW, KeyCode::ArrowUp], [KeyCode::KeyS, KeyCode::ArrowDown]);
+    let mut turn = axis(&keys, [KeyCode::KeyA, KeyCode::ArrowLeft], [KeyCode::KeyD, KeyCode::ArrowRight]);
+    let (pad_throttle, pad_turn) = steer_towards(motion.heading, pad.drive_world);
+    throttle = (throttle + pad_throttle).clamp(-1.0, 1.0);
+    turn = (turn + pad_turn).clamp(-1.0, 1.0);
 
     // Танковый поворот: A всегда крутит корпус против часовой стрелки, даже на заднем ходу.
     motion.heading += turn * TURN_SPEED * dt;
 
+    // Клавиши дают газ ±1, стик — долю: скорость по наклону.
     let target_speed = if throttle > 0.0 {
-        MAX_FORWARD_SPEED
+        MAX_FORWARD_SPEED * throttle
     } else if throttle < 0.0 {
-        -MAX_REVERSE_SPEED
+        MAX_REVERSE_SPEED * throttle
     } else {
         0.0
     } * cap;
@@ -187,6 +211,23 @@ pub fn drive_rover(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn стик_ведёт_к_направлению_на_экране() {
+        // Нос на −Z, стик туда же — полный газ без поворота.
+        let (throttle, turn) = steer_towards(0.0, Vec2::new(0.0, -1.0));
+        assert!((throttle - 1.0).abs() < 1e-5 && turn.abs() < 1e-5);
+        // Стик на +X: поворот по часовой (курс убывает), газа почти нет — цель сбоку.
+        let (throttle, turn) = steer_towards(0.0, Vec2::new(1.0, 0.0));
+        assert!(turn < -0.99 && throttle < 1e-4, "{throttle} {turn}");
+        // Цель сзади — разворот на месте.
+        let (throttle, turn) = steer_towards(0.0, Vec2::new(0.1, 1.0));
+        assert_eq!(throttle, 0.0);
+        assert!(turn.abs() > 0.99);
+        // Курс к +X после поворота: (−sin, −cos) при курсе −π/2 даёт +X.
+        let (throttle, _) = steer_towards(-std::f32::consts::FRAC_PI_2, Vec2::new(0.5, 0.0));
+        assert!((throttle - 0.5).abs() < 1e-4);
+    }
 
     #[test]
     fn удар_режет_потолок_до_0_55() {

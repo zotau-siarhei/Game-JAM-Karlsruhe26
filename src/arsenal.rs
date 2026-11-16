@@ -223,9 +223,11 @@ fn reset_inventory(
     }
 }
 
-/// Клавиши 1–6 выбирают оружие, колесо листает по кругу только то, из чего можно стрелять.
+/// Клавиши 1–6 выбирают оружие, колесо, бамперы и крестовина геймпада листают по кругу только
+/// то, из чего можно стрелять.
 fn select_weapon(
     keys: Res<ButtonInput<KeyCode>>,
+    pad: Res<crate::gamepad::PadInput>,
     scroll: Res<AccumulatedMouseScroll>,
     time: Res<Time>,
     inventory: Res<Inventory>,
@@ -244,6 +246,8 @@ fn select_weapon(
         } else if inventory.owns(pressed) {
             denied.write(WeaponDenied(pressed));
         }
+    } else if pad.weapon_step != 0 {
+        chosen = inventory.cycled(*weapon, pad.weapon_step);
     } else if scroll.delta.y != 0.0 {
         // Пока колесо крутится, пауза продлевается: переключение только в начале прокрутки.
         if *cooldown == 0.0 {

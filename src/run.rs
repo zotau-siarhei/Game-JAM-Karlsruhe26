@@ -21,6 +21,7 @@ use crate::camera::Focus;
 use crate::combat::{Died, Health, SurvivalTime, Team, ROVER_MAX_HEALTH};
 use crate::explosion::Explosion;
 use crate::fade::{Appear, Curtain};
+use crate::gamepad::{DeviceHint, InputDevice};
 use crate::frame::GameSet;
 use crate::hud::format_time;
 use crate::records::{self, Record, RecordPlaced, Records};
@@ -482,6 +483,12 @@ fn best_line(best: Option<&Record>) -> Option<String> {
     best.map(|record| format!("BEST {}  {}", format_time(record.seconds as f32), record.name))
 }
 
+/// Строка-подсказка: свой текст для клавиатуры и для геймпада (метки кнопок — см. `DeviceHint`).
+fn hint_line(keys: impl Into<String>, pad: impl Into<String>, size: f32, color: Color) -> impl Bundle {
+    let hint = DeviceHint::new(keys, pad);
+    (screen_line(hint.keys.clone(), size, color), hint)
+}
+
 /// Строка текста на экране.
 fn screen_line(text: impl Into<String>, size: f32, color: Color) -> impl Bundle {
     (
@@ -527,11 +534,21 @@ fn show_menu(mut commands: Commands, records: Res<RecordsTable>) {
                 screen.spawn(screen_line(best, 26.0, TITLE_COLOR));
             }
             screen.spawn(screen_line("", 10.0, Color::NONE));
-            screen.spawn(screen_line("WASD - DRIVE     MOUSE - AIM     LEFT BUTTON - FIRE", 20.0, HINT_COLOR));
-            screen.spawn(screen_line("1-6, WHEEL - WEAPON     HOLD SPACE - REPAIR     ESC - PAUSE", 20.0, HINT_COLOR));
+            screen.spawn(hint_line(
+                "WASD - DRIVE     MOUSE - AIM     LEFT BUTTON - FIRE",
+                "LEFT STICK - DRIVE     RIGHT STICK - AIM     {FIRE} - FIRE",
+                20.0,
+                HINT_COLOR,
+            ));
+            screen.spawn(hint_line(
+                "1-6, WHEEL - WEAPON     HOLD SPACE - REPAIR     ESC - PAUSE",
+                "{BUMPERS} - WEAPON     HOLD {A} - REPAIR     {START} - PAUSE",
+                20.0,
+                HINT_COLOR,
+            ));
             screen.spawn(screen_line("", 10.0, Color::NONE));
-            screen.spawn(screen_line("ENTER, SPACE OR CLICK - START", 32.0, Color::WHITE));
-            screen.spawn(screen_line("ESC - QUIT", 20.0, HINT_COLOR));
+            screen.spawn(hint_line("ENTER, SPACE OR CLICK - START", "{A} - START", 32.0, Color::WHITE));
+            screen.spawn(hint_line("ESC - QUIT", "", 20.0, HINT_COLOR));
         });
 }
 
@@ -658,7 +675,12 @@ fn draw_game_over(
                             cells.spawn(screen_line(cell.unwrap_or('_').to_string(), 64.0, color));
                         }
                     });
-                screen.spawn(screen_line("LETTERS, DIGITS, BACKSPACE     ENTER - SAVE", 20.0, HINT_COLOR));
+                screen.spawn(hint_line(
+                    "LETTERS, DIGITS, BACKSPACE     ENTER - SAVE",
+                    format!("{{A}} - SAVE AS {}", records.table.last_name),
+                    20.0,
+                    HINT_COLOR,
+                ));
                 return;
             }
 
@@ -674,7 +696,7 @@ fn draw_game_over(
                         table.spawn(screen_line(table_row(place, record), 22.0, color));
                     }
                 });
-            screen.spawn(screen_line("ENTER - RESTART     ESC - MENU", 22.0, HINT_COLOR));
+            screen.spawn(hint_line("ENTER - RESTART     ESC - MENU", "{A} - RESTART     {B} - MENU", 22.0, HINT_COLOR));
         });
 }
 
@@ -684,6 +706,7 @@ fn draw_game_over(
 fn game_over_input(
     time: Res<Time<Real>>,
     keys: Res<ButtonInput<KeyCode>>,
+    device: Res<InputDevice>,
     mut result: ResMut<RunResult>,
     mut records: ResMut<RecordsTable>,
     mut world: RunWorld,
@@ -707,7 +730,9 @@ fn game_over_input(
             entry.backspace();
         }
         // Esc с недописанным именем сохраняет результат под прежним именем: рекорд не теряется.
-        let name = entry.name().or_else(|| escape.then(|| records.table.last_name.clone()));
+        // С геймпада букв не набрать: «да» сохраняет под прежним именем.
+        let keep_last = escape || (enter && device.gamepad());
+        let name = entry.name().or_else(|| keep_last.then(|| records.table.last_name.clone()));
         if let (true, Some(name)) = (enter || escape, name) {
             result.place = records.add(&name, result.seconds);
             result.entry = None;
@@ -727,11 +752,11 @@ fn game_over_input(
     }
 }
 
-/// Пункты экрана паузы по порядку и их клавиши-подсказки.
-const PAUSE_ITEMS: [(&str, KeyCode); 3] = [
-    ("CONTINUE - ESC", KeyCode::Escape),
-    ("RESTART - R", KeyCode::KeyR),
-    ("MENU - M", KeyCode::KeyM),
+/// Пункты экрана паузы по порядку, их клавиши-подсказки и подписи для геймпада.
+const PAUSE_ITEMS: [(&str, KeyCode, &str); 3] = [
+    ("CONTINUE - ESC", KeyCode::Escape, "CONTINUE - {B}"),
+    ("RESTART - R", KeyCode::KeyR, "RESTART"),
+    ("MENU - M", KeyCode::KeyM, "MENU"),
 ];
 
 /// Корень экрана паузы.
@@ -780,11 +805,11 @@ fn show_pause(mut commands: Commands) {
         .with_children(|screen| {
             screen.spawn(screen_line("PAUSED", 56.0, TITLE_COLOR));
             screen.spawn(screen_line("", 10.0, Color::NONE));
-            for (index, (label, _)) in PAUSE_ITEMS.iter().enumerate() {
-                screen.spawn((PauseItem(index), screen_line(*label, 30.0, HINT_COLOR)));
+            for (index, (label, _, pad)) in PAUSE_ITEMS.iter().enumerate() {
+                screen.spawn((PauseItem(index), hint_line(*label, *pad, 30.0, HINT_COLOR)));
             }
             screen.spawn(screen_line("", 10.0, Color::NONE));
-            screen.spawn(screen_line("UP, DOWN AND ENTER TO CHOOSE", 18.0, HINT_COLOR));
+            screen.spawn(hint_line("UP, DOWN AND ENTER TO CHOOSE", "D-PAD AND {A} TO CHOOSE", 18.0, HINT_COLOR));
         });
 }
 
@@ -799,7 +824,7 @@ fn pause_input(keys: Res<ButtonInput<KeyCode>>, mut choice: ResMut<PauseChoice>,
     if keys.any_just_pressed([KeyCode::ArrowDown, KeyCode::KeyS]) {
         choice.0 = moved_choice(choice.0, 1);
     }
-    let by_hint = PAUSE_ITEMS.iter().position(|(_, key)| keys.just_pressed(*key));
+    let by_hint = PAUSE_ITEMS.iter().position(|(_, key, _)| keys.just_pressed(*key));
     let by_enter = keys
         .any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter])
         .then_some(choice.0);

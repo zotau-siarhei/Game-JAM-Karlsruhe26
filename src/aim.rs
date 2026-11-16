@@ -140,13 +140,18 @@ fn confine_cursor(mut cursor: Single<&mut CursorOptions, With<PrimaryWindow>>) {
 }
 
 /// Пересчитывает точку прицела по курсору. Без курсора над окном точка остаётся прежней.
+/// С геймпада прицел ставит правый стик (`gamepad::aim_with_stick`), курсор не трогает его.
 pub fn update_aim_point(
+    device: Res<crate::gamepad::InputDevice>,
     mut aim: ResMut<AimPoint>,
     terrain: Res<Terrain>,
     window: Single<&Window, With<PrimaryWindow>>,
     camera: Single<(&Camera, &Transform), With<GameCamera>>,
     rover: Single<&Transform, With<Rover>>,
 ) {
+    if device.gamepad() {
+        return;
+    }
     let Some(cursor) = window.cursor_position() else {
         return;
     };
@@ -190,8 +195,10 @@ fn spawn_marker(
 
 /// Двигает маркер в точку прицела, кладёт его вершины на рельеф и красит по дальности.
 /// Маркер виден только в забеге и только у мортиры: остальному оружию точка падения не нужна.
+/// С геймпадом курсора нет, и маркер виден у любого оружия: он показывает, куда смотрит стик.
 fn update_marker(
     state: Res<State<GameState>>,
+    device: Res<crate::gamepad::InputDevice>,
     aim: Res<AimPoint>,
     weapon: Res<crate::weapons::CurrentWeapon>,
     terrain: Res<Terrain>,
@@ -208,7 +215,8 @@ fn update_marker(
     >,
 ) {
     let (mut transform, mesh, mut material, mut visibility) = marker.into_inner();
-    let mortar = *state.get() == GameState::Playing && *weapon == crate::weapons::CurrentWeapon::Mortar;
+    let mortar = *state.get() == GameState::Playing
+        && (*weapon == crate::weapons::CurrentWeapon::Mortar || device.gamepad());
     visibility.set_if_neq(if mortar {
         Visibility::Inherited
     } else {

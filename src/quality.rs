@@ -198,6 +198,8 @@ fn spawn_label(mut commands: Commands) {
 /// На паузе внизу слева видна текущая ступень и подсказка.
 fn show_label(
     quality: Res<Quality>,
+    device: Res<crate::gamepad::InputDevice>,
+    style: Res<crate::gamepad::PadStyle>,
     state: Res<State<GameState>>,
     mut labels: Query<(&mut Text, &mut Visibility), With<QualityLabel>>,
 ) {
@@ -207,7 +209,8 @@ fn show_label(
         if *visibility != wanted {
             *visibility = wanted;
         }
-        let line = format!("QUALITY: {} (Q)", quality.name().to_uppercase());
+        let key = crate::gamepad::hint_text(*device, *style, "Q", "{SELECT}");
+        let line = format!("QUALITY: {} ({key})", quality.name().to_uppercase());
         if text.0 != line {
             text.0 = line;
         }
