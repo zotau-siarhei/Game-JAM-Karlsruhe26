@@ -55,10 +55,10 @@ pub struct CollapseHouse {
     pub house: HouseState,
     /// Основание дома в мире.
     pub base: Vec3,
-    pub wall_color: Color,
-    pub roof_color: Color,
-    pub wall_material: Handle<StandardMaterial>,
-    pub roof_material: Handle<StandardMaterial>,
+    /// Цвета стен с материалами: панели перебирают их по кругу. Не пустой.
+    pub walls: Vec<(Color, Handle<StandardMaterial>)>,
+    /// Цвета крыши с материалами. Не пустой.
+    pub roofs: Vec<(Color, Handle<StandardMaterial>)>,
     /// Центр разрушившего взрыва: стены с его стороны падают раньше и летят дальше.
     pub blast: Option<Vec3>,
 }
@@ -170,6 +170,7 @@ fn start_collapse(
         // Крыша: 4–6 кусков, проседают и падают внутрь со случайными задержками.
         let roof_pieces = 4 + (rng.next() * 3.0) as usize;
         for i in 0..roof_pieces {
+            let (roof_color, roof_material) = &request.roofs[i % request.roofs.len()];
             let fx = (i % 2) as f32 - 0.5;
             let fz = (i / 2) as f32 / ((roof_pieces as f32 / 2.0).ceil()).max(1.0) - 0.4;
             let size = Vec3::new(half.x, 0.35, (half.y * 2.0 / (roof_pieces as f32 / 2.0).ceil()).max(1.0));
@@ -181,11 +182,11 @@ fn start_collapse(
                         velocity: Vec3::new(-fx * 1.5, -1.0, 0.0),
                         floor: base.y + 0.4,
                     },
-                    color: request.roof_color,
+                    color: *roof_color,
                 },
                 RunScoped,
                 Mesh3d(assets.cube.clone()),
-                MeshMaterial3d(request.roof_material.clone()),
+                MeshMaterial3d(roof_material.clone()),
                 Transform::from_translation(to_world(local))
                     .with_rotation(rotation * Quat::from_rotation_z(fx * 0.5))
                     .with_scale(size),
@@ -199,12 +200,15 @@ fn start_collapse(
             (Vec3::Z, half.y, half.x, Vec3::X),
             (Vec3::NEG_Z, half.y, half.x, Vec3::X),
         ];
+        let mut panel_count = 0;
         for (normal, offset, span, along) in walls {
             let outward = rotation * normal;
             let facing_blast = blast_dir.map_or(0.0, |d| (-d).dot(outward).max(0.0));
             let panels = 3 + (rng.next() * 2.0) as usize;
             let width = span * 2.0 / panels as f32;
             for p in 0..panels {
+                let (wall_color, wall_material) = &request.walls[panel_count % request.walls.len()];
+                panel_count += 1;
                 let t = -span + width * (p as f32 + 0.5);
                 let center_local = normal * offset + along * t + Vec3::Y * height * 0.5;
                 let pivot_local = normal * offset + along * t;
@@ -229,11 +233,11 @@ fn start_collapse(
                             push: 2.0 + rng.range(0.0, 2.0) + facing_blast * 7.0,
                             outward,
                         },
-                        color: request.wall_color,
+                        color: *wall_color,
                     },
                     RunScoped,
                     Mesh3d(assets.cube.clone()),
-                    MeshMaterial3d(request.wall_material.clone()),
+                    MeshMaterial3d(wall_material.clone()),
                     rest,
                 ));
             }

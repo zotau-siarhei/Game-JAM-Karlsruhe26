@@ -1,7 +1,7 @@
 //! Модели из Meshy: список `assets/models/models.json` и облик объектов по идентификатору.
 //!
 //! Список — файл JSON вида `{"models": [{"id", "file", "scale", "rotation_y", "offset_y",
-//! "budget"}]}`, файлы моделей (GLB) лежат рядом со списком. Модель подключается записью в списке,
+//! "budget", "colors", "top_colors"}]}`, файлы моделей (GLB) лежат рядом со списком. Модель подключается записью в списке,
 //! без изменения кода: код просит облик по идентификатору объекта через
 //! [`Models::spawn_visual`] и передаёт запасной облик из примитивов.
 //!
@@ -64,6 +64,13 @@ pub struct ModelEntry {
     /// Бюджет треугольников. Ноль — без проверки.
     #[serde(default)]
     pub budget: usize,
+    /// Главные цвета нижних 70 % высоты модели, sRGB `#rrggbb`, по убыванию площади: для обломков.
+    /// Считает `scripts/model_colors.py`.
+    #[serde(default)]
+    pub colors: Vec<String>,
+    /// Главные цвета верхних 30 % высоты модели (крыша дома).
+    #[serde(default)]
+    pub top_colors: Vec<String>,
 }
 
 fn unit_scale() -> f32 {
@@ -76,6 +83,49 @@ impl ModelEntry {
         Transform::from_xyz(0.0, self.offset_y, 0.0)
             .with_rotation(Quat::from_rotation_y(self.rotation_y))
             .with_scale(Vec3::splat(self.scale))
+    }
+}
+
+/// Цвета модели для обломков: текстуры живут только в видеопамяти, поэтому палитра посчитана
+/// заранее и лежит в списке.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelColors {
+    /// Нижние 70 % высоты: стены, кузов. Не пустой.
+    pub body: Vec<Color>,
+    /// Верхние 30 % высоты: крыша. Не пустой: без своих цветов — цвета тела.
+    pub top: Vec<Color>,
+}
+
+impl ModelColors {
+    /// Палитра записи; `None`, если в записи нет ни одного разборчивого цвета.
+    fn of(entry: &ModelEntry) -> Option<Self> {
+        let parse = |list: &[String]| -> Vec<Color> {
+            list.iter().filter_map(|hex| Srgba::hex(hex).ok().map(Color::from)).collect()
+        };
+        let mut body = parse(&entry.colors);
+        let mut top = parse(&entry.top_colors);
+        if body.is_empty() {
+            body = top.clone();
+        }
+        if top.is_empty() {
+            top = body.clone();
+        }
+        (!body.is_empty()).then_some(Self { body, top })
+    }
+
+    /// Цвет тела по номеру куска: куски перебирают палитру по кругу.
+    pub fn body(&self, index: usize) -> Color {
+        self.body[index % self.body.len()]
+    }
+
+    /// Цвет верха по номеру куска.
+    pub fn top(&self, index: usize) -> Color {
+        self.top[index % self.top.len()]
+    }
+
+    /// Цвет любой части модели: тело и верх вперемешку, тела больше.
+    pub fn any(&self, index: usize) -> Color {
+        if index % 3 == 2 { self.top(index / 3) } else { self.body(index) }
     }
 }
 
@@ -175,6 +225,16 @@ impl ModelBank {
             warn!("Модели: нет файлов, будет запасной облик: {}", missing.join(", "));
         }
         bank
+    }
+
+    /// Цвета модели `id` для обломков. `None` — модели нет (объект показан примитивами) или
+    /// у записи нет цветов: тогда обломки берут цвета запасного облика.
+    pub fn colors(&self, id: &str) -> Option<ModelColors> {
+        let model = self.models.get(id)?;
+        if matches!(model.state, ModelState::Missing | ModelState::Failed) {
+            return None;
+        }
+        ModelColors::of(&model.entry)
     }
 
     /// Ставит на загрузку все модели списка: прогрев (`src/prewarm.rs`) берёт их заранее,
@@ -540,6 +600,37 @@ mod tests {
         assert_eq!(entries[0].rotation_y, 0.0);
         assert_eq!(entries[0].offset_y, 0.0);
         assert_eq!(entries[0].budget, 0);
+    }
+
+    #[test]
+    fn colors_are_parsed_and_fill_each_other() {
+        let entries = parse_list(
+            r##"{ "models": [
+                { "id": "a", "colors": ["#ff0000", "не цвет", "#00ff00"], "top_colors": ["#0000ff"] },
+                { "id": "b", "top_colors": ["#0000ff"] },
+                { "id": "c" }
+            ] }"##,
+        )
+        .unwrap();
+        let a = ModelColors::of(&entries[0]).unwrap();
+        assert_eq!(a.body, vec![Color::from(Srgba::RED), Color::from(Srgba::GREEN)]);
+        assert_eq!(a.top(5), Color::from(Srgba::BLUE));
+        assert_eq!(a.body(3), Color::from(Srgba::GREEN));
+        let b = ModelColors::of(&entries[1]).unwrap();
+        assert_eq!(b.body, b.top);
+        assert!(ModelColors::of(&entries[2]).is_none());
+    }
+
+    /// У каждой модели репозитория посчитаны цвета для обломков.
+    #[test]
+    fn repository_models_have_colors() {
+        let entries = parse_list(include_str!("../assets/models/models.json")).unwrap();
+        let bare: Vec<_> = entries
+            .iter()
+            .filter(|entry| ModelColors::of(entry).is_none())
+            .map(|entry| entry.id.as_str())
+            .collect();
+        assert!(bare.is_empty(), "нет цветов у {bare:?}: запусти scripts/model_colors.py");
     }
 
     #[test]

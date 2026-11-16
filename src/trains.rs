@@ -29,7 +29,8 @@ use crate::camera::GameCamera;
 use crate::combat::{Collider, Damage, Died, Health, ROVER_MAX_HEALTH, Team, blast_damage};
 use crate::explosion::Explosion;
 use crate::frame::{GameSet, RunMessages};
-use crate::models::{ModelShade, Models};
+use crate::debris::SpawnDebris;
+use crate::models::{ModelBank, ModelShade, Models};
 use crate::obstacles::{Obstacle, Shape};
 use crate::pickups::{SpawnLoot, crate_weapons};
 use crate::rails::{LINK_LENGTH, TrackDamage};
@@ -374,6 +375,54 @@ struct TrainAssets {
     window: Handle<StandardMaterial>,
 }
 
+/// Цвета кузова запасного облика по [`CarKind::index`].
+const BODY_COLORS: [Color; 4] = [
+    Color::srgb(0.15, 0.32, 0.22),
+    Color::srgb(0.75, 0.68, 0.35),
+    Color::srgb(0.45, 0.25, 0.15),
+    Color::srgb(0.6, 0.62, 0.65),
+];
+
+/// Обломки кузова: листы и куски в цветах модели вагона (без модели — в цвете запасного облика)
+/// разлетаются из его объёма. `burning` — сколько из них горит.
+fn burst_car(
+    debris: &mut MessageWriter<SpawnDebris>,
+    bank: &ModelBank,
+    kind: CarKind,
+    transform: &Transform,
+    count: u32,
+    speed: f32,
+    burning: u32,
+) {
+    let colors = bank.colors(kind.model());
+    let (length, height) = kind.size();
+    let seed = (transform.translation.x * 13.7 + transform.translation.z * 7.3).abs() as u32;
+    for i in 0..count {
+        let h = seed.wrapping_add(i).wrapping_mul(2654435761);
+        let k = (h % 1000) as f32 / 1000.0;
+        let m = ((h / 1000) % 1000) as f32 / 1000.0;
+        // Точка вдоль кузова и сторона, в которую летит кусок.
+        let local = Vec3::new((k - 0.5) * length * 0.8, height * (0.3 + 0.6 * m), 0.0);
+        let side = if i % 2 == 0 { 1.0 } else { -1.0 };
+        let out = transform.rotation * Vec3::new((k - 0.5) * 0.6, 0.0, side).normalize();
+        let color = colors
+            .as_ref()
+            .map_or(BODY_COLORS[kind.index()], |c| c.any(i as usize + seed as usize));
+        debris.write(SpawnDebris {
+            position: transform.translation + transform.rotation * local,
+            velocity: out * speed * (0.6 + 0.6 * m) + Vec3::Y * speed * (0.8 + 0.6 * k),
+            // Листы обшивки: тонкие и широкие, через один — кусок потолще.
+            size: if i % 3 == 0 {
+                Vec3::new(0.6 + 0.4 * k, 0.4 + 0.3 * m, 0.5)
+            } else {
+                Vec3::new(1.0 + 0.8 * k, 0.08, 0.6 + 0.5 * m)
+            },
+            color,
+            burning: i < burning,
+        });
+    }
+}
+
 fn create_assets(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -389,12 +438,7 @@ fn create_assets(
     commands.insert_resource(TrainAssets {
         cube: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
         cylinder: meshes.add(Cylinder::new(0.5, 1.0)),
-        bodies: [
-            body(&mut materials, Color::srgb(0.15, 0.32, 0.22)),
-            body(&mut materials, Color::srgb(0.75, 0.68, 0.35)),
-            body(&mut materials, Color::srgb(0.45, 0.25, 0.15)),
-            body(&mut materials, Color::srgb(0.6, 0.62, 0.65)),
-        ],
+        bodies: BODY_COLORS.map(|c| body(&mut materials, c)),
         charred: body(&mut materials, Color::srgb(0.08, 0.07, 0.065)),
         dark: body(&mut materials, Color::srgb(0.1, 0.1, 0.11)),
         window: materials.add(StandardMaterial {
@@ -925,6 +969,8 @@ fn derail_trains(
     mut explosions: MessageWriter<Explosion>,
     mut loot: MessageWriter<SpawnLoot>,
     mut derailed: MessageWriter<TrainDerailed>,
+    mut debris: MessageWriter<SpawnDebris>,
+    bank: Res<ModelBank>,
 ) {
     let mut derails: Vec<(Entity, usize, Team)> = Vec::new();
     for death in died.read() {
@@ -984,6 +1030,8 @@ fn derail_trains(
                     cause,
                 });
             }
+            // При сходе с кузова срывает обшивку.
+            burst_car(&mut debris, &bank, car.kind, transform, 4, 6.0, 0);
             // Цистерны состава рвутся по очереди, а не в одном кадре.
             let due = match car.kind {
                 CarKind::Locomotive => LOCO_DELAY,
@@ -1052,6 +1100,8 @@ fn move_wrecks(
     terrain: Res<Terrain>,
     mut wrecks: Query<(Entity, &Car, &mut Transform, &mut Wreck)>,
     mut explosions: MessageWriter<Explosion>,
+    mut debris: MessageWriter<SpawnDebris>,
+    bank: Res<ModelBank>,
     mut blast_wait: Local<f32>,
 ) {
     let dt = time.delta_secs();
@@ -1110,6 +1160,7 @@ fn move_wrecks(
                 power,
                 source_team: wreck.cause,
             });
+            burst_car(&mut debris, &bank, car.kind, &transform, 10, 9.0, 3);
         }
         // Вагон загорается сразу после схода: свет, огонь и дым из кузова.
         if !wreck.lit {

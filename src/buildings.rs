@@ -225,12 +225,35 @@ struct HouseAssets {
     trim: Handle<StandardMaterial>,
     /// Тёмный проём выбитой двери.
     hole: Handle<StandardMaterial>,
+    /// Цвета домов с моделью по [`HouseKind`]: обломки и руины в цветах модели, а не палитры.
+    model_tones: [Option<Tones>; 3],
+}
+
+/// Цвета стен и крыши для обломков и руин, у каждого цвета свой материал.
+#[derive(Clone)]
+struct Tones {
+    walls: Vec<(Color, Handle<StandardMaterial>)>,
+    roofs: Vec<(Color, Handle<StandardMaterial>)>,
+}
+
+impl HouseAssets {
+    /// Цвета дома: модели, если дом показан ею, иначе его цвета из палитры.
+    fn tones(&self, house: &HouseState) -> Tones {
+        if let Some(tones) = &self.model_tones[house.kind as usize] {
+            return tones.clone();
+        }
+        Tones {
+            walls: vec![(WALL_PALETTE[house.wall_color], self.walls[house.wall_color].clone())],
+            roofs: vec![(ROOF_PALETTE[house.roof_color], self.roofs[house.roof_color].clone())],
+        }
+    }
 }
 
 fn create_house_assets(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    bank: Res<crate::models::ModelBank>,
 ) {
     let triangle = Triangle2d::new(
         Vec2::new(-0.5, 0.0),
@@ -244,7 +267,16 @@ fn create_house_assets(
             ..default()
         })
     };
+    let model_tones = [HouseKind::Hut, HouseKind::TwoStory, HouseKind::Barrack].map(|kind| {
+        let colors = bank.colors(house_model(kind))?;
+        let mut tones = |list: &[Color]| list.iter().map(|&c| (c, matte(&mut materials, c))).collect();
+        Some(Tones {
+            walls: tones(&colors.body),
+            roofs: tones(&colors.top),
+        })
+    });
     commands.insert_resource(HouseAssets {
+        model_tones,
         cube: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
         prism: meshes.add(Extrusion::new(triangle, 1.0)),
         walls: WALL_PALETTE.iter().map(|&c| matte(&mut materials, c)).collect(),
@@ -505,14 +537,15 @@ fn spawn_ruin(
     let footprint = house.footprint();
     let size = footprint.half * 2.0;
     let base = terrain.height_at(house.position.x, house.position.y);
-    let wall = assets.walls[house.wall_color].clone();
-    let roof = assets.roofs[house.roof_color].clone();
+    let tones = assets.tones(house);
+    let wall = |i: usize| tones.walls[i % tones.walls.len()].1.clone();
+    let roof = |i: usize| tones.roofs[i % tones.roofs.len()].1.clone();
     // Груды обломков по углам и в центре: позиция, размер, материал.
     let heaps = [
-        (Vec3::new(-0.3, 0.4, -0.25), Vec3::new(0.45, 0.8, 0.4), wall.clone()),
-        (Vec3::new(0.3, 0.3, 0.3), Vec3::new(0.4, 0.6, 0.35), roof.clone()),
-        (Vec3::new(0.25, 0.25, -0.3), Vec3::new(0.3, 0.5, 0.3), wall),
-        (Vec3::new(-0.2, 0.2, 0.3), Vec3::new(0.35, 0.4, 0.3), roof),
+        (Vec3::new(-0.3, 0.4, -0.25), Vec3::new(0.45, 0.8, 0.4), wall(0)),
+        (Vec3::new(0.3, 0.3, 0.3), Vec3::new(0.4, 0.6, 0.35), roof(0)),
+        (Vec3::new(0.25, 0.25, -0.3), Vec3::new(0.3, 0.5, 0.3), wall(1)),
+        (Vec3::new(-0.2, 0.2, 0.3), Vec3::new(0.35, 0.4, 0.3), roof(1)),
     ];
     commands
         .spawn((
@@ -645,14 +678,13 @@ fn destroy_houses(
             _ => DestroyCause::Player,
         };
         let position = wobble.map_or(transform.translation, |w| w.rest.translation);
+        let tones = assets.tones(&state);
         destroyed.write(BuildingDestroyed { position, cause });
         collapse.write(CollapseHouse {
             house: state.clone(),
             base: position,
-            wall_color: WALL_PALETTE[state.wall_color],
-            roof_color: ROOF_PALETTE[state.roof_color],
-            wall_material: assets.walls[state.wall_color].clone(),
-            roof_material: assets.roofs[state.roof_color].clone(),
+            walls: tones.walls,
+            roofs: tones.roofs,
             blast: blast.map(|b| b.0),
         });
     }

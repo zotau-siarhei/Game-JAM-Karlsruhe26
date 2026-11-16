@@ -6,7 +6,9 @@
       "scale": 0.8,
       "rotation_y": 3.14159,
       "offset_y": 0.688,
-      "budget": 15000
+      "budget": 15000,
+      "colors": ["#dcd2c4", "#0ba2a2", "#868788", "#0e3665"],
+      "top_colors": ["#95918f", "#0da3a2", "#e5d9ca", "#98a8a8"]
     },
     {
       "id": "rover_track",
@@ -14,7 +16,9 @@
       "scale": 0.8,
       "rotation_y": 0.0,
       "offset_y": 0.344,
-      "budget": 1500
+      "budget": 1500,
+      "colors": ["#f7ecdd", "#35353b", "#10bab3"],
+      "top_colors": ["#35343b", "#47454b", "#f6ecdd", "#1cc3bd"]
     },
     {
       "id": "enemy_rammer",
@@ -22,7 +26,9 @@
       "scale": 2.52,
       "rotation_y": -1.5708,
       "offset_y": 0.607,
-      "budget": 5000
+      "budget": 5000,
+      "colors": ["#393731", "#2a281d", "#52524f", "#151308"],
+      "top_colors": ["#302e25", "#41403a", "#565654"]
     },
     {
       "id": "enemy_mortar",
@@ -30,7 +36,9 @@
       "scale": 2.72,
       "rotation_y": -1.5708,
       "offset_y": 0.702,
-      "budget": 5000
+      "budget": 5000,
+      "colors": ["#181719", "#35353a"],
+      "top_colors": ["#38393f", "#1d1d20", "#020203"]
     },
     {
       "id": "enemy_wheel",
@@ -38,7 +46,9 @@
       "scale": 1.05,
       "rotation_y": 1.5708,
       "offset_y": 0.0,
-      "budget": 1600
+      "budget": 1600,
+      "colors": ["#393a34", "#514f48", "#27281e"],
+      "top_colors": ["#383933", "#484842", "#292b21"]
     },
     {
       "id": "house_small",
@@ -46,7 +56,9 @@
       "scale": 6.3,
       "rotation_y": 0.0,
       "offset_y": 3.005,
-      "budget": 4000
+      "budget": 4000,
+      "colors": ["#39393c", "#beb8a7", "#80807a"],
+      "top_colors": ["#3d4145", "#31343a", "#624d3f"]
     },
     {
       "id": "tree_oak",
@@ -54,7 +66,9 @@
       "scale": 6.303,
       "rotation_y": 0.0,
       "offset_y": 3.0,
-      "budget": 3000
+      "budget": 3000,
+      "colors": ["#3b5d12", "#496730", "#294a05", "#544b2e"],
+      "top_colors": ["#375909", "#486730"]
     },
     {
       "id": "tree_spruce",
@@ -62,7 +76,9 @@
       "scale": 6.303,
       "rotation_y": 0.0,
       "offset_y": 3.0,
-      "budget": 3000
+      "budget": 3000,
+      "colors": ["#40571c", "#4e6540", "#54432d"],
+      "top_colors": ["#42571b", "#4b6136"]
     },
     {
       "id": "tree_poplar",
@@ -70,7 +86,9 @@
       "scale": 7.353,
       "rotation_y": 0.0,
       "offset_y": 3.5,
-      "budget": 3000
+      "budget": 3000,
+      "colors": ["#505e02", "#596625"],
+      "top_colors": ["#515f01", "#596723"]
     },
     {
       "id": "tree_pine",
@@ -78,7 +96,9 @@
       "scale": 6.828,
       "rotation_y": 0.0,
       "offset_y": 3.25,
-      "budget": 3000
+      "budget": 3000,
+      "colors": ["#2c430c", "#3d5026", "#4e5c47"],
+      "top_colors": ["#2c410b"]
     },
     {
       "id": "bush",
@@ -86,7 +106,9 @@
       "scale": 1.8,
       "rotation_y": 0.0,
       "offset_y": 0.563,
-      "budget": 1500
+      "budget": 1500,
+      "colors": ["#2a4206", "#364f17"],
+      "top_colors": ["#2d4508"]
     },
     {
       "id": "boulder",
@@ -94,7 +116,9 @@
       "scale": 1.5,
       "rotation_y": 0.0,
       "offset_y": 1.424,
-      "budget": 1500
+      "budget": 1500,
+      "colors": ["#564c3f", "#665f54", "#4b4332"],
+      "top_colors": ["#6f6960", "#878178"]
     },
     {
       "id": "crystal",
@@ -102,7 +126,9 @@
       "scale": 1.3,
       "rotation_y": 0.0,
       "offset_y": 1.158,
-      "budget": 1500
+      "budget": 1500,
+      "colors": ["#4c4c4a", "#797a77", "#636361", "#dee5e6"],
+      "top_colors": ["#e5e7e6", "#cadfe7"]
     },
     {
       "id": "enemy_tank_hull",
@@ -110,7 +136,9 @@
       "scale": 2.2,
       "rotation_y": -1.5708,
       "offset_y": 0.49,
-      "budget": 3500
+      "budget": 3500,
+      "colors": ["#020301", "#212221"],
+      "top_colors": ["#020301", "#323537", "#202322", "#647788"]
     },
     {
       "id": "enemy_tank_turret",
@@ -118,7 +146,9 @@
       "scale": 1.95,
       "rotation_y": -1.5708,
       "offset_y": 0.0,
-      "budget": 2500
+      "budget": 2500,
+      "colors": ["#494c4f", "#353730", "#161409", "#999d9d"],
+      "top_colors": ["#484b4c", "#33342b", "#161704"]
     },
     {
       "id": "enemy_tank_track",
@@ -126,7 +156,9 @@
       "scale": 1.89,
       "rotation_y": 1.5708,
       "offset_y": 0.0,
-      "budget": 2000
+      "budget": 2000,
+      "colors": ["#181812", "#252420"],
+      "top_colors": ["#1b1b14", "#2f312f"]
     },
     {
       "id": "train_loco",
@@ -134,7 +166,9 @@
       "scale": 12.53,
       "rotation_y": 1.5708,
       "offset_y": 2.0,
-      "budget": 4000
+      "budget": 4000,
+      "colors": ["#373b49", "#d4ad08"],
+      "top_colors": ["#709dbd", "#496683", "#587fa2"]
     },
     {
       "id": "train_wagon_passenger",
@@ -142,7 +176,9 @@
       "scale": 11.48,
       "rotation_y": 1.5708,
       "offset_y": 1.69,
-      "budget": 4000
+      "budget": 4000,
+      "colors": ["#4e4e51", "#ebbb20", "#85a7b9"],
+      "top_colors": ["#92b9c8", "#7f9fb1", "#40515c"]
     },
     {
       "id": "train_wagon_freight",
@@ -150,7 +186,9 @@
       "scale": 10.53,
       "rotation_y": 1.5708,
       "offset_y": 1.42,
-      "budget": 4000
+      "budget": 4000,
+      "colors": ["#515058", "#5489c3", "#605f66"],
+      "top_colors": ["#dcb246", "#4d84bc"]
     },
     {
       "id": "train_wagon_tank",
@@ -158,7 +196,9 @@
       "scale": 9.39,
       "rotation_y": 1.5708,
       "offset_y": 1.51,
-      "budget": 4000
+      "budget": 4000,
+      "colors": ["#3d3c48", "#ae7159", "#a06149"],
+      "top_colors": ["#b67c63", "#97847f"]
     },
     {
       "id": "house_two_story",
@@ -166,7 +206,9 @@
       "scale": 9.0,
       "rotation_y": 1.5708,
       "offset_y": 3.96,
-      "budget": 4000
+      "budget": 4000,
+      "colors": ["#4f4239", "#d1ac80", "#695d52", "#d1c6ba"],
+      "top_colors": ["#2b1f18", "#45342a", "#625b51"]
     },
     {
       "id": "house_barrack",
@@ -174,7 +216,9 @@
       "scale": 14.0,
       "rotation_y": 1.5708,
       "offset_y": 2.09,
-      "budget": 4000
+      "budget": 4000,
+      "colors": ["#424242", "#646563", "#7c7e7b", "#a3a59f"],
+      "top_colors": ["#414241", "#5b5b5a"]
     },
     {
       "id": "boss_body",
@@ -182,7 +226,9 @@
       "scale": 8.5,
       "rotation_y": -1.5708,
       "offset_y": 2.87,
-      "budget": 8000
+      "budget": 8000,
+      "colors": ["#2b2923", "#3a3b3a", "#211b0e"],
+      "top_colors": ["#141202", "#303031", "#221f16"]
     },
     {
       "id": "boss_leg",
@@ -190,7 +236,9 @@
       "scale": 3.15,
       "rotation_y": 3.14159,
       "offset_y": 0.0,
-      "budget": 1500
+      "budget": 1500,
+      "colors": ["#3c3928", "#51524f"],
+      "top_colors": ["#49463c", "#3c3727", "#515353"]
     },
     {
       "id": "weapon_mg",
@@ -198,7 +246,9 @@
       "scale": 0.6,
       "rotation_y": -1.5708,
       "offset_y": 0.165,
-      "budget": 1500
+      "budget": 1500,
+      "colors": ["#127690", "#4c7c9e", "#024e6a", "#b1c5d0"],
+      "top_colors": ["#459daf", "#5b5a68", "#d6dee3", "#1d8293"]
     },
     {
       "id": "weapon_mortar",
@@ -206,7 +256,9 @@
       "scale": 0.6,
       "rotation_y": -1.5708,
       "offset_y": 0.28,
-      "budget": 1500
+      "budget": 1500,
+      "colors": ["#066692", "#6d7486", "#62a2b8"],
+      "top_colors": ["#4f5a70", "#303b4f", "#bec1d1", "#a6a8ba"]
     },
     {
       "id": "weapon_rockets",
@@ -214,7 +266,9 @@
       "scale": 0.6,
       "rotation_y": 1.5708,
       "offset_y": 0.231,
-      "budget": 1500
+      "budget": 1500,
+      "colors": ["#1e8fa2", "#acc4d7", "#16778d", "#24556c"],
+      "top_colors": ["#2091a3", "#b3cbde", "#6faebf"]
     },
     {
       "id": "weapon_laser",
@@ -222,7 +276,9 @@
       "scale": 0.6,
       "rotation_y": -1.5708,
       "offset_y": 0.163,
-      "budget": 1500
+      "budget": 1500,
+      "colors": ["#028aa8", "#acfaff", "#05fefd", "#b7d9e2"],
+      "top_colors": ["#01a8b0", "#00fefc", "#b2f2ff", "#d2eae8"]
     },
     {
       "id": "resident_man",
@@ -230,7 +286,9 @@
       "scale": 1.0,
       "rotation_y": 3.14159,
       "offset_y": 0.0,
-      "budget": 7000
+      "budget": 7000,
+      "colors": ["#06172b", "#162f4b", "#2f4d6c", "#a06e5e"],
+      "top_colors": ["#0c2343", "#1b3959", "#315170", "#271e13"]
     },
     {
       "id": "resident_woman",
@@ -238,7 +296,9 @@
       "scale": 1.0,
       "rotation_y": 3.14159,
       "offset_y": 0.0,
-      "budget": 7000
+      "budget": 7000,
+      "colors": ["#898a85", "#c0a68e"],
+      "top_colors": ["#c0a78e", "#3c1f0f", "#e6b08e"]
     },
     {
       "id": "resident_elder",
@@ -246,7 +306,9 @@
       "scale": 1.0,
       "rotation_y": 3.14159,
       "offset_y": 0.0,
-      "budget": 7000
+      "budget": 7000,
+      "colors": ["#432f14", "#1e2a16"],
+      "top_colors": ["#1e2c16", "#837f79", "#a87963"]
     },
     {
       "id": "resident_young",
@@ -254,7 +316,9 @@
       "scale": 1.0,
       "rotation_y": 3.14159,
       "offset_y": 0.0,
-      "budget": 7000
+      "budget": 7000,
+      "colors": ["#d79237", "#769cc3", "#5c84ae"],
+      "top_colors": ["#db973b", "#000000", "#784c34"]
     }
   ]
 }

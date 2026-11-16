@@ -1172,6 +1172,7 @@ fn break_props(
     objects: Query<(&Prop, &Transform, Option<&PropBlastFrom>, Option<&Children>, Option<&Sway>)>,
     parts: Query<(&Mesh3d, &MeshMaterial3d<StandardMaterial>)>,
     mut debris: MessageWriter<SpawnDebris>,
+    bank: Res<crate::models::ModelBank>,
 ) {
     for death in died.read() {
         let Ok((prop, transform, blast, children, sway)) = objects.get(death.entity) else {
@@ -1233,8 +1234,11 @@ fn break_props(
                 } else {
                     (4 + prop.index % 3, GEM_COLORS[state.variant], 0.4)
                 };
+                // Куски в цветах модели, если объект показан ею.
+                let colors = prop_model(prop.kind, state.variant).and_then(|id| bank.colors(id));
                 let scale = transform.scale.max_element();
                 for i in 0..count {
+                    let color = colors.as_ref().map_or(color, |c| c.any(i + prop.index));
                     let a = i as f32 / count as f32 * std::f32::consts::TAU + p.x;
                     let dir = (Quat::from_rotation_y(a) * Vec3::X + away).normalize_or(Vec3::X);
                     debris.write(SpawnDebris {
