@@ -5,13 +5,16 @@
 //!   реального времени, затем выход;
 //! - `SPACE_GUARD_AUTOSTART=1` — забег начинается сам, как по Enter;
 //! - `SPACE_GUARD_SCENE=fire` — через 2 с забега перед луноходом встают огни трёх размеров,
-//!   взрывы и горящие обломки.
+//!   взрывы и горящие обломки;
+//! - `SPACE_GUARD_SCENE=enemies` — через 2 с забега перед луноходом в ряд встают враги всех
+//!   видов, кроме босса: сравнить их размер с луноходом (снимок на `SPACE_GUARD_SHOT_AT=3`).
 
 use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
 
 use crate::combat::Team;
 use crate::debris::SpawnDebris;
+use crate::enemy::{EnemyKind, SpawnEnemy, SpawnPlace};
 use crate::explosion::Explosion;
 use crate::fire::Fire;
 use crate::frame::GameSet;
@@ -75,8 +78,11 @@ fn stage_scene(
     rover: Query<&Transform, With<Rover>>,
     mut explosions: MessageWriter<Explosion>,
     mut debris: MessageWriter<SpawnDebris>,
+    mut enemies: MessageWriter<SpawnEnemy>,
 ) {
-    if debug.staged || debug.scene.as_deref() != Some("fire") || time.elapsed_secs() < 2.0 {
+    let enemies_scene = debug.scene.as_deref() == Some("enemies");
+    let scene = debug.scene.as_deref();
+    if debug.staged || !matches!(scene, Some("fire" | "enemies")) || time.elapsed_secs() < 2.0 {
         return;
     }
     let Some(rover) = rover.iter().next() else {
@@ -87,6 +93,20 @@ fn stage_scene(
         let p = rover.translation + Vec3::new(x, 0.0, z);
         Vec3::new(p.x, terrain.height_at(p.x, p.z), p.z)
     };
+    if enemies_scene {
+        let kinds = [
+            EnemyKind::RamShooter,
+            EnemyKind::Mortar,
+            EnemyKind::Rocketeer,
+            EnemyKind::HeavyTank,
+            EnemyKind::Interceptor,
+        ];
+        for (i, kind) in kinds.into_iter().enumerate() {
+            let place = SpawnPlace::Point(ground(-16.0 + i as f32 * 8.0, -9.0));
+            enemies.write(SpawnEnemy { place, kind });
+        }
+        return;
+    }
     // Огни трёх размеров в ряд перед луноходом.
     for (i, size) in [0.6, 1.5, 3.0].into_iter().enumerate() {
         commands.spawn((

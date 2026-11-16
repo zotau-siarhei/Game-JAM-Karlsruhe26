@@ -54,9 +54,9 @@ pub fn spec(weapon: CurrentWeapon) -> WeaponSpec {
             key: KeyCode::Digit2,
             icon: "M",
             color: Color::srgb(0.95, 0.65, 0.2),
-            limit: 20,
+            limit: 30,
             per_crate: 6,
-            start: Some(8),
+            start: Some(24),
         },
         CurrentWeapon::Rockets => WeaponSpec {
             key: KeyCode::Digit3,
@@ -485,9 +485,9 @@ mod tests {
     #[test]
     fn pickup_does_not_exceed_limit() {
         let mut inventory = Inventory::default();
-        assert_eq!(inventory.ammo(CurrentWeapon::Mortar), Some(8));
-        assert_eq!(inventory.add(CurrentWeapon::Mortar, 50), 12);
-        assert_eq!(inventory.ammo(CurrentWeapon::Mortar), Some(20));
+        assert_eq!(inventory.ammo(CurrentWeapon::Mortar), Some(24));
+        assert_eq!(inventory.add(CurrentWeapon::Mortar, 50), 6);
+        assert_eq!(inventory.ammo(CurrentWeapon::Mortar), Some(30));
         assert_eq!(inventory.add(CurrentWeapon::Laser, 4), 4);
         assert_eq!(inventory.add(CurrentWeapon::Laser, 100), 8);
     }
@@ -496,7 +496,7 @@ mod tests {
     fn empty_weapon_is_skipped_by_wheel() {
         let mut inventory = Inventory::default();
         assert_eq!(inventory.cycled(CurrentWeapon::MachineGun, 1), CurrentWeapon::Mortar);
-        for _ in 0..8 {
+        for _ in 0..24 {
             assert!(inventory.spend(CurrentWeapon::Mortar));
         }
         assert!(!inventory.spend(CurrentWeapon::Mortar));

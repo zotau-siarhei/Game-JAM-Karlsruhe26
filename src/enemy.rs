@@ -90,7 +90,7 @@ const RELOAD: f32 = 1.5;
 const SPREAD: f32 = 4.0 * std::f32::consts::PI / 180.0;
 
 /// Высота дула над центром корпуса, м.
-const MUZZLE_HEIGHT: f32 = 0.5;
+const MUZZLE_HEIGHT: f32 = 0.5 * RAMMER_GROWTH;
 
 /// Взрыв при гибели врага: радиус, м, и мощность. Мощность ниже порога кратера.
 const DEATH_BLAST: (f32, f32) = (2.5, 0.25);
@@ -136,9 +136,17 @@ const PEEK_SHIFT: f32 = 3.0;
 /// Как часто перепроверяется укрытие, с.
 const COVER_RECHECK: f32 = 0.5;
 /// Высота пускового контейнера над центром корпуса, м.
-const LAUNCHER_HEIGHT: f32 = 0.9;
+const LAUNCHER_HEIGHT: f32 = 0.9 * GROWTH;
 /// Цвет ракетчика.
 const ROCKETEER_COLOR: Color = Color::srgb(0.3, 0.32, 0.35);
+
+/// Во сколько раз враги крупнее прежнего: все, кроме босса, больше лунохода (enemy-size-medkit).
+/// Размеры дула и пусковой растут вместе с обликом.
+const GROWTH: f32 = 1.5;
+/// Таран-стрелок узкий, поэтому растёт сильнее: и длиннее, почти как луноход с гусеницами в ширину и вдвое длиннее.
+const RAMMER_GROWTH: f32 = 1.8;
+/// Танк и так велик: растёт меньше, чтобы босс оставался самым крупным.
+const TANK_GROWTH: f32 = 1.3;
 
 /// Здоровье тяжёлого танка.
 pub const TANK_HEALTH: f32 = 220.0;
@@ -148,12 +156,12 @@ const TANK_SPEED: f32 = 6.0;
 const TANK_TURN_SPEED: f32 = 1.2;
 /// Масштаб врагов относительно базового корпуса `HULL_SIZE`: корпус, модель, колёса, коллайдер
 /// и посадка растягиваются вместе. Подобран к луноходу (около 3,6 × 3,0 м, высота 2,5 м)
-/// и жителям (рост 1,7 м): бронебагги длиной 3,4 м чуть ниже лунохода, транспортёр мортиры
-/// 3,9 м, робот ростом 2,6 м, тяжёлый танк 4,4 × 3,7 м — крупнее лунохода, босс крупнее всех.
-const RAMMER_SCALE: f32 = 1.4;
-const MORTAR_SCALE: f32 = 1.5;
-pub(crate) const ROBOT_SCALE: f32 = 1.2;
-pub(crate) const TANK_SCALE: f32 = 2.1;
+/// и жителям (рост 1,7 м): бронебагги 6,1 × 3,1 м, транспортёр мортиры 5,8 м, робот ростом 4,0 м,
+/// тяжёлый танк 5,7 м длиной — все крупнее лунохода, босс крупнее всех.
+const RAMMER_SCALE: f32 = 1.4 * RAMMER_GROWTH;
+const MORTAR_SCALE: f32 = 1.5 * GROWTH;
+pub(crate) const ROBOT_SCALE: f32 = 1.2 * GROWTH;
+pub(crate) const TANK_SCALE: f32 = 2.1 * TANK_GROWTH;
 /// Насколько в стороне от линии к луноходу танк заходит, м.
 const FLANK_OFFSET: f32 = 30.0;
 /// На каком расстоянии от лунохода точка фланга, м: в дальности выстрела.
@@ -476,10 +484,10 @@ fn spawn_enemy(
         EnemyKind::Mortar => (MORTAR_HEALTH, assets.mortar_material.clone(), MORTAR_SCALE, ENEMY_TURN_SPEED),
         EnemyKind::Rocketeer => (ROCKETEER_HEALTH, assets.rocketeer_material.clone(), ROBOT_SCALE, ENEMY_TURN_SPEED),
         EnemyKind::HeavyTank => (TANK_HEALTH, assets.dark_material.clone(), TANK_SCALE, TANK_TURN_SPEED),
-        EnemyKind::Interceptor => (INTERCEPTOR_HEALTH, assets.hull_material.clone(), 1.0, INTERCEPTOR_TURN_SPEED),
+        EnemyKind::Interceptor => (INTERCEPTOR_HEALTH, assets.hull_material.clone(), GROWTH, INTERCEPTOR_TURN_SPEED),
     };
     let (radius, half_base) = match kind {
-        EnemyKind::Interceptor => (INTERCEPTOR_RADIUS, Vec2::new(0.5, 2.2)),
+        EnemyKind::Interceptor => (INTERCEPTOR_RADIUS * scale, Vec2::new(0.5, 2.2) * scale),
         _ => (ENEMY_RADIUS * scale, Vec2::new(HULL_SIZE.x, HULL_SIZE.z) * 0.5 * scale),
     };
     position.y += RIDE_HEIGHT * (scale - 1.0);
@@ -958,7 +966,7 @@ fn fire_mortarmen(
             dice.range(-MORTAR_SCATTER, MORTAR_SCATTER),
         );
         shots.write(FireShell {
-            origin: transform.translation + Vec3::Y * 1.4,
+            origin: transform.translation + Vec3::Y * 1.4 * GROWTH,
             target: lead_target(rover.translation, velocity) + scatter,
             team: Team::Enemy,
             power: enemy_damage::MORTAR_POWER,

@@ -43,8 +43,8 @@ const MEDKIT_FORGET_RADIUS: f32 = 150.0;
 /// Кольцо появления аптечек вокруг лунохода, м.
 const MEDKIT_RING: (f32, f32) = (15.0, 30.0);
 
-/// Сколько здоровья даёт аптечка: доля полного здоровья.
-pub const MEDKIT_HEAL: f32 = ROVER_MAX_HEALTH * (35.0 / 300.0);
+/// Сколько здоровья даёт аптечка: до полного (лечение выше максимума не поднимает).
+pub const MEDKIT_HEAL: f32 = ROVER_MAX_HEALTH;
 
 /// С какого расстояния аптечка подбирается, м.
 const PICKUP_DISTANCE: f32 = 2.0;
@@ -384,11 +384,11 @@ mod tests {
         assert!(!can_pick(PICKUP_DISTANCE + 0.1, &health));
     }
 
-    /// Ремонт и аптечка — те же доли здоровья, что 10 в секунду и 35 при здоровье 300.
+    /// Ремонт — та же доля здоровья, что 10 в секунду при здоровье 300; аптечка лечит до полного.
     #[test]
     fn healing_is_a_share_of_full_health() {
         assert!((REPAIR_RATE / ROVER_MAX_HEALTH - 10.0 / 300.0).abs() < 1e-6);
-        assert!((MEDKIT_HEAL / ROVER_MAX_HEALTH - 35.0 / 300.0).abs() < 1e-6);
+        assert_eq!(MEDKIT_HEAL, ROVER_MAX_HEALTH);
     }
 
     #[test]
