@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Space Guard Gamepad</title>
+<!-- Раскладка геймпада Space Guard: всё внутри файла (схема — встроенный SVG, стили и скрипт здесь же),
+     сеть не нужна. Источник правды — src/gamepad.rs (virtual_for) и src/haptics.rs. -->
+<style>
+  /* Layout: one dark "hangar" screen — controller diagram on top with state tabs, then a readable list and the rumble/light legend. Single deliberate dark look, like the game. */
+  :root {
+    --bg: #05070d;
+    --panel: #0d121d;
+    --line: #26304a;
+    --fg: #e8ecf5;
+    --muted: #8b95ad;
+    --accent: #ffd94d;
+    --pad: #1a2133;
+    --pad-edge: #3a4664;
+    --strong: #ff8a3d;
+    --weak: #5ec8ff;
+    --display: "Fira Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --mono: "Fira Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color-scheme: dark;
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 15px/1.55 var(--mono);
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 28px 48px;
+  }
+  main { max-width: 1120px; margin: 0 auto; display: grid; gap: 28px; }
+  header { display: grid; gap: 6px; }
+  h1 {
+    margin: 0; font: 700 clamp(28px, 5vw, 46px)/1.05 var(--display);
+    letter-spacing: 0.06em; color: var(--accent); text-transform: uppercase; text-wrap: balance;
+  }
+  header p { margin: 0; color: var(--muted); max-width: 68ch; }
+  h2 {
+    margin: 0 0 12px; font: 700 13px/1 var(--display); letter-spacing: 0.18em;
+    text-transform: uppercase; color: var(--muted);
+  }
+
+  .tabs { display: flex; flex-wrap: wrap; gap: 8px; }
+  .tabs button {
+    font: 500 14px/1 var(--mono); color: var(--muted); background: transparent;
+    border: 1px solid var(--line); border-radius: 999px; padding: 9px 16px; cursor: pointer;
+  }
+  .tabs button:hover { color: var(--fg); border-color: var(--pad-edge); }
+  .tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .tabs button[aria-selected="true"] { color: var(--bg); background: var(--accent); border-color: var(--accent); }
+
+  .stage { background: radial-gradient(ellipse at 50% 40%, #111a2c 0%, var(--bg) 70%); border: 1px solid var(--line); border-radius: 14px; overflow-x: auto; }
+  .stage svg { display: block; width: 100%; min-width: 720px; height: auto; }
+  svg text { font-family: var(--mono); }
+  .lbl { fill: var(--fg); font-size: 17px; }
+  .lbl .k { fill: var(--accent); font-weight: 700; }
+  .lead { stroke: var(--muted); stroke-width: 1.2; fill: none; opacity: 0.7; }
+  .dot { fill: var(--accent); }
+  .btn { transition: opacity 0.2s ease; }
+  .off { opacity: 0.28; }
+  .call { transition: opacity 0.2s ease; }
+  .call.hide { opacity: 0; }
+  @media (prefers-reduced-motion: reduce) { .btn, .call { transition: none; } }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; min-width: 0; }
+  dl.map { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; }
+  dl.map dt { color: var(--accent); font-weight: 700; white-space: nowrap; }
+  dl.map dd { margin: 0; }
+  .note { color: var(--muted); font-size: 13px; margin: 12px 0 0; }
+
+  table.rumble { width: 100%; border-collapse: collapse; font-size: 14px; }
+  table.rumble th { text-align: left; font-weight: 500; color: var(--muted); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; padding: 0 0 8px; }
+  table.rumble td { padding: 7px 0; border-top: 1px solid var(--line); vertical-align: middle; }
+  table.rumble td:first-child { padding-right: 12px; }
+  .bars { display: grid; gap: 4px; width: 120px; }
+  .bar { height: 6px; border-radius: 3px; background: #1b2236; position: relative; overflow: hidden; }
+  .bar i { position: absolute; inset: 0 auto 0 0; border-radius: 3px; }
+  .bar.s i { background: var(--strong); }
+  .bar.w i { background: var(--weak); }
+  .legend { display: flex; gap: 16px; font-size: 12px; color: var(--muted); margin-top: 10px; flex-wrap: wrap; }
+  .legend span::before { content: ""; display: inline-block; width: 10px; height: 6px; border-radius: 3px; margin-right: 6px; vertical-align: middle; }
+  .legend .ls::before { background: var(--strong); }
+  .legend .lw::before { background: var(--weak); }
+
+  .light { height: 18px; border-radius: 9px; background: linear-gradient(90deg, #ff0000 0%, #ffbf00 50%, #00ff40 100%); }
+  .scale { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-top: 6px; }
+  ul.plain { margin: 12px 0 0; padding-left: 18px; display: grid; gap: 6px; }
+  .swatch { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -1px; margin-right: 6px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Space Guard · DualShock 4</h1>
+    <p>Что делает каждая кнопка в нативной версии игры. Переключайте экран сверху: раскладка меняется вместе с ним. Подсказки в игре сами переходят на кнопки геймпада после первого нажатия.</p>
+  </header>
+
+  <section>
+    <div class="tabs" role="tablist" aria-label="Экран игры">
+      <button role="tab" id="tab-playing" aria-selected="true" data-state="playing">В забеге</button>
+      <button role="tab" id="tab-paused" aria-selected="false" data-state="paused">Пауза</button>
+      <button role="tab" id="tab-menu" aria-selected="false" data-state="menu">Меню</button>
+      <button role="tab" id="tab-over" aria-selected="false" data-state="over">Конец забега</button>
+    </div>
+  </section>
+
+  <div class="stage">
+    <svg viewBox="0 0 1200 600" role="img" aria-label="Схема DualShock 4 с назначением кнопок">
+      <defs>
+        <linearGradient id="bodyGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#232b40"/>
+          <stop offset="1" stop-color="#141a29"/>
+        </linearGradient>
+        <filter id="glow" x="-20%" y="-200%" width="140%" height="500%">
+          <feGaussianBlur stdDeviation="5"/>
+        </filter>
+      </defs>
+
+      <!-- Курки и бамперы -->
+      <g class="btn" data-btn="l2"><rect x="395" y="112" width="100" height="34" rx="12" fill="var(--pad)" stroke="var(--pad-edge)" stroke-width="2"/><text x="445" y="135" text-anchor="middle" fill="var(--muted)" font-size="15">L2</text></g>
+      <g class="btn" data-btn="r2"><rect x="705" y="112" width="100" height="34" rx="12" fill="var(--pad)" stroke="var(--pad-edge)" stroke-width="2"/><text x="755" y="135" text-anchor="middle" fill="var(--muted)" font-size="15">R2</text></g>
+      <g class="btn" data-btn="l1"><rect x="388" y="152" width="114" height="20" rx="9" fill="var(--pad)" stroke="var(--pad-edge)" stroke-width="2"/><text x="445" y="167" text-anchor="middle" fill="var(--muted)" font-size="13">L1</text></g>
+      <g class="btn" data-btn="r1"><rect x="698" y="152" width="114" height="20" rx="9" fill="var(--pad)" stroke="var(--pad-edge)" stroke-width="2"/><text x="755" y="167" text-anchor="middle" fill="var(--muted)" font-size="13">R1</text></g>
+
+      <!-- Корпус -->
+      <path d="M400 200 C430 172 520 168 600 170 C680 168 770 172 800 200 C860 232 900 330 920 430 C935 500 890 545 850 524 C815 504 790 452 760 422 C700 410 500 410 440 422 C410 452 385 504 350 524 C310 545 265 500 280 430 C300 330 340 232 400 200 Z" fill="url(#bodyGrad)" stroke="var(--pad-edge)" stroke-width="2.5"/>
+
+      <!-- Световая панель -->
+      <g data-btn="light">
+        <path d="M528 176 L672 176" stroke="#00ff40" stroke-width="10" stroke-linecap="round" filter="url(#glow)" opacity="0.8"/>
+        <path d="M528 176 L672 176" stroke="#7dffa0" stroke-width="3" stroke-linecap="round"/>
+      </g>
+
+      <!-- Тачпад -->
+      <rect x="520" y="188" width="160" height="94" rx="10" fill="#10162a" stroke="var(--pad-edge)" stroke-width="2"/>
+
+      <!-- Share / Options -->
+      <g class="btn" data-btn="share"><rect x="482" y="196" width="26" height="14" rx="7" fill="var(--pad)" stroke="var(--pad-edge)" stroke-width="2"/><text x="495" y="228" text-anchor="middle" fill="var(--muted)" font-size="10">SHARE</text></g>
+      <g class="btn" data-btn="options"><rect x="692" y="196" width="26" height="14" rx="7" fill="var(--pad)" stroke="var(--pad-edge)" stroke-width="2"/><text x="705" y="228" text-anchor="middle" fill="var(--muted)" font-size="10">OPTIONS</text></g>
+
+      <!-- Крестовина -->
+      <g class="btn" data-btn="dpad" fill="var(--pad)" stroke="var(--pad-edge)" stroke-width="2">
+        <path d="M408 238 h24 v22 l-12 12 l-12 -12 Z"/>
+        <path d="M408 304 h24 v-22 l-12 -12 l-12 12 Z"/>
+        <path d="M376 258 v24 h22 l12 -12 l-12 -12 Z"/>
+        <path d="M464 258 v24 h-22 l-12 -12 l12 -12 Z"/>
+      </g>
+
+      <!-- Кнопки справа: треугольник, круг, крест, квадрат -->
+      <g class="btn" data-btn="triangle"><circle cx="780" cy="232" r="17" fill="var(--pad)" stroke="var(--pad-edge)" stroke-width="2"/><path d="M780 223 L788 238 L772 238 Z" fill="none" stroke="#3fd2a0" stroke-width="2.2"/></g>
+      <g class="btn" data-btn="circle"><circle cx="818" cy="270" r="17" fill="var(--pad)" stroke="var(--pad-edge)" stroke-width="2"/><circle cx="818" cy="270" r="7.5" fill="none" stroke="#ff5f6d" stroke-width="2.2"/></g>
+      <g class="btn" data-btn="cross"><circle cx="780" cy="308" r="17" fill="var(--pad)" stroke="var(--pad-edge)" stroke-width="2"/><path d="M773 301 L787 315 M787 301 L773 315" stroke="#7aa8ff" stroke-width="2.2"/></g>
+      <g class="btn" data-btn="square"><circle cx="742" cy="270" r="17" fill="var(--pad)" stroke="var(--pad-edge)" stroke-width="2"/><rect x="735" y="263" width="14" height="14" fill="none" stroke="#ff7ad9" stroke-width="2.2"/></g>
+
+      <!-- Стики -->
+      <g class="btn" data-btn="lstick"><circle cx="510" cy="352" r="36" fill="#0f1424" stroke="var(--pad-edge)" stroke-width="2"/><circle cx="510" cy="352" r="24" fill="var(--pad)" stroke="var(--pad-edge)" stroke-width="2"/></g>
+      <g class="btn" data-btn="rstick"><circle cx="690" cy="352" r="36" fill="#0f1424" stroke="var(--pad-edge)" stroke-width="2"/><circle cx="690" cy="352" r="24" fill="var(--pad)" stroke="var(--pad-edge)" stroke-width="2"/></g>
+
+      <!-- PS -->
+      <g class="btn off" data-btn="ps"><circle cx="600" cy="342" r="11" fill="var(--pad)" stroke="var(--pad-edge)" stroke-width="2"/></g>
+
+      <!-- Подписи (текст заполняется из таблицы раскладок ниже) -->
+      <g class="call" data-call="l2"><path class="lead" d="M250 128 H395"/><circle class="dot" cx="395" cy="128" r="3"/><text class="lbl" x="240" y="134" text-anchor="end"></text></g>
+      <g class="call" data-call="l1"><path class="lead" d="M250 168 H388"/><circle class="dot" cx="388" cy="162" r="0"/><text class="lbl" x="240" y="174" text-anchor="end"></text></g>
+      <g class="call" data-call="share"><path class="lead" d="M250 210 H482"/><text class="lbl" x="240" y="216" text-anchor="end"></text></g>
+      <g class="call" data-call="dpad"><path class="lead" d="M250 270 H376"/><text class="lbl" x="240" y="276" text-anchor="end"></text></g>
+      <g class="call" data-call="lstick"><path class="lead" d="M250 400 H420 L476 362"/><text class="lbl" x="240" y="406" text-anchor="end"></text></g>
+      <g class="call" data-call="r2"><path class="lead" d="M805 128 H950"/><text class="lbl" x="960" y="134"></text></g>
+      <g class="call" data-call="r1"><path class="lead" d="M812 168 H950"/><text class="lbl" x="960" y="174"></text></g>
+      <g class="call" data-call="options"><path class="lead" d="M718 203 L740 196 H950"/><text class="lbl" x="960" y="202"></text></g>
+      <g class="call" data-call="triangle"><path class="lead" d="M797 232 H950"/><text class="lbl" x="960" y="238"></text></g>
+      <g class="call" data-call="circle"><path class="lead" d="M835 270 H950"/><text class="lbl" x="960" y="276"></text></g>
+      <g class="call" data-call="cross"><path class="lead" d="M797 308 L820 316 H950"/><text class="lbl" x="960" y="322"></text></g>
+      <g class="call" data-call="rstick"><path class="lead" d="M724 362 L780 400 H950"/><text class="lbl" x="960" y="406"></text></g>
+      <g class="call" data-call="light"><path class="lead" d="M600 60 V168"/><text class="lbl" x="600" y="50" text-anchor="middle"></text></g>
+    </svg>
+  </div>
+
+  <div class="grid">
+    <section class="card" aria-live="polite">
+      <h2 id="list-title">В забеге</h2>
+      <dl class="map" id="list"></dl>
+      <p class="note" id="list-note"></p>
+    </section>
+
+    <section class="card">
+      <h2>Вибрация</h2>
+      <table class="rumble">
+        <thead><tr><th>Событие</th><th>Моторы</th></tr></thead>
+        <tbody id="rumble"></tbody>
+      </table>
+      <div class="legend"><span class="ls">сильный — низкий гул</span><span class="lw">слабый — мелкая дрожь</span></div>
+      <p class="note">Толчки складываются с насыщением и гаснут сами за доли секунды; общая сила — 1,35 от исходной. На паузе, в меню и когда играете мышью — тишина.</p>
+    </section>
+
+    <section class="card">
+      <h2>Световая панель</h2>
+      <div class="light" role="img" aria-label="Цвет от красного при нуле здоровья до зелёного при полном"></div>
+      <div class="scale"><span>0 %</span><span>50 %</span><span>здоровье 100 %</span></div>
+      <ul class="plain">
+        <li><span class="swatch" style="background:#ffffff"></span>Попадание — короткая белая вспышка</li>
+        <li><span class="swatch" style="background:#ff0000"></span>Меньше 25 % — панель пульсирует</li>
+        <li><span class="swatch" style="background:#1a59ff"></span>Меню и загрузка — синяя</li>
+      </ul>
+      <p class="note">macOS — через системный GameController, Linux — через светодиоды ядра в /sys/class/leds (нужно правило udev, игра подскажет его в логе).</p>
+    </section>
+
+    <section class="card">
+      <h2>Платформы</h2>
+      <dl class="map">
+        <dt>macOS</dt><dd>Кнопки, вибрация и панель — через системный GameController и CoreHaptics.</dd>
+        <dt>Linux</dt><dd>Кнопки и вибрация — через gilrs (evdev); панель — /sys/class/leds.</dd>
+        <dt>Windows</dt><dd>Кнопки — через gilrs; вибрация, где её даёт система (Xbox — да, DualShock 4 — обычно нет); панели нет.</dd>
+        <dt>Браузер</dt><dd>Не проверялось.</dd>
+      </dl>
+      <p class="note">Подписи кнопок в игре — PlayStation или Xbox по производителю геймпада.</p>
+    </section>
+  </div>
+</main>
+
+<script>
+  const LAYOUTS = {
+    playing: {
+      title: "В забеге",
+      note: "Езда относительно экрана: наклоните стик вправо — луноход развернётся и поедет вправо. Цель сзади — разворот на месте.",
+      map: {
+        lstick: ["Левый стик", "Езда: куда наклонил — туда едет"],
+        rstick: ["Правый стик", "Прицел, враг рядом с линией притягивает"],
+        r2: ["R2", "Огонь (держать)"],
+        l1: ["L1", "Оружие назад"],
+        r1: ["R1", "Оружие вперёд"],
+        dpad: ["Крестовина ← →", "Оружие назад / вперёд"],
+        cross: ["✕ Крест", "Ремонт (держать)"],
+        options: ["OPTIONS", "Пауза"],
+        light: ["Панель", "Здоровье лунохода"],
+      },
+    },
+    paused: {
+      title: "Пауза",
+      note: "Пункты: продолжить, заново, в меню.",
+      map: {
+        dpad: ["Крестовина ↑ ↓", "Выбрать пункт"],
+        lstick: ["Левый стик ↑ ↓", "Выбрать пункт"],
+        cross: ["✕ Крест", "Подтвердить пункт"],
+        circle: ["○ Круг", "Продолжить"],
+        options: ["OPTIONS", "Продолжить"],
+        share: ["SHARE", "Качество графики"],
+        light: ["Панель", "Здоровье лунохода"],
+      },
+    },
+    menu: {
+      title: "Меню",
+      note: "○ Круг в меню ничего не делает: с геймпада игру не закрыть случайно. Закрыть — Esc на клавиатуре.",
+      map: {
+        cross: ["✕ Крест", "Начать забег"],
+        options: ["OPTIONS", "Начать забег"],
+        light: ["Панель", "Синяя"],
+      },
+    },
+    over: {
+      title: "Конец забега",
+      note: "Букв с геймпада не набрать: рекорд сохраняется под прежним именем, его можно поменять с клавиатуры.",
+      map: {
+        cross: ["✕ Крест", "Сохранить рекорд, потом заново"],
+        options: ["OPTIONS", "Сохранить рекорд, потом заново"],
+        circle: ["○ Круг", "В меню"],
+        light: ["Панель", "Здоровье лунохода"],
+      },
+    },
+  };
+
+  const RUMBLE = [
+    // Уровни моторов после общей силы 1,35 (src/haptics.rs: damage_kick, KNOCK, HEAVY_SHOT, GAIN).
+    ["Пуля попала в луноход", 0.05, 0.39],
+    ["Таран врага (60 урона)", 0.55, 0.63],
+    ["Удар перехватчика: урон и торможение", 1.0, 0.99],
+    ["Сильное попадание (150 урона и больше)", 1.0, 1.0],
+    ["Взрыв вплотную (мортира)", 0.79, 0.24],
+    ["Свой выстрел: мортира, ракеты, авиаудар", 0.41, 0.61],
+    ["Очередь пулемёта (на выстрел)", 0, 0.16],
+    ["Гибель лунохода (держится ~0,5 с)", 1, 1],
+  ];
+
+  const tbody = document.getElementById("rumble");
+  for (const [name, strong, weak] of RUMBLE) {
+    const row = document.createElement("tr");
+    row.innerHTML = `<td>${name}</td><td><div class="bars"><div class="bar s"><i style="width:${strong * 100}%"></i></div><div class="bar w"><i style="width:${weak * 100}%"></i></div></div></td>`;
+    tbody.append(row);
+  }
+
+  function show(state) {
+    const layout = LAYOUTS[state];
+    for (const tab of document.querySelectorAll(".tabs button")) {
+      tab.setAttribute("aria-selected", String(tab.dataset.state === state));
+    }
+    for (const btn of document.querySelectorAll("[data-btn]")) {
+      if (btn.dataset.btn === "light") continue;
+      btn.classList.toggle("off", !layout.map[btn.dataset.btn]);
+    }
+    for (const call of document.querySelectorAll("[data-call]")) {
+      const entry = layout.map[call.dataset.call];
+      call.classList.toggle("hide", !entry);
+      const text = call.querySelector("text");
+      text.textContent = "";
+      if (entry) {
+        const key = document.createElementNS("http://www.w3.org/2000/svg", "tspan");
+        key.setAttribute("class", "k");
+        key.textContent = entry[0].replace(/ [↑↓←→ ]+$/, "") + "  ";
+        text.append(key, entry[1]);
+      }
+    }
+    document.getElementById("list-title").textContent = layout.title;
+    const list = document.getElementById("list");
+    list.innerHTML = "";
+    for (const [key, action] of Object.values(layout.map)) {
+      const dt = document.createElement("dt");
+      dt.textContent = key;
+      const dd = document.createElement("dd");
+      dd.textContent = action;
+      list.append(dt, dd);
+    }
+    document.getElementById("list-note").textContent = layout.note;
+  }
+
+  for (const tab of document.querySelectorAll(".tabs button")) {
+    tab.addEventListener("click", () => show(tab.dataset.state));
+  }
+  show("playing");
+</script>
+</body>
+</html>
