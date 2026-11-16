@@ -1,6 +1,6 @@
 ## 1. Восстановление
 
-- [ ] 1.1 Создать `src/regen.rs`: `RegenPlugin`, ресурсы `RegenSettings` (по умолчанию пауза 5 с, 1 % полного здоровья в секунду) и `Regen`, сброс `Regen` по `WorldRebuilt` в `GameSet::Reset`; подключить в `src/main.rs`. Проверка: `cargo build`.
+- [ ] 1.1 Создать `src/regen.rs`: `RegenPlugin`, ресурсы `RegenSettings` (по умолчанию пауза 5 с, 1 % полного здоровья в секунду) и `Regen`, сброс `Regen` по `WorldRebuilt` в `GameSet::Reset`; подключить в `src/main.rs`. Проверка: `cargo build`. — **в работе: Sergei Zotov**
 - [ ] 1.2 Система `regenerate` в `GameSet::Death`: урон лунохода обнуляет отсчёт, после паузы пишет `Heal`, ведёт `Regen::active`. Тесты в модуле: рост после паузы, нет роста сразу после урона, не выше максимума, не у погибшего. Проверка: `cargo test regen`.
 
 ## 2. Интерфейс
