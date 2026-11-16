@@ -29,6 +29,8 @@ const TURRET_OFFSET: Vec3 = Vec3::new(0.0, 0.0, 0.3);
 
 /// Высота башни над центром лунохода, м: башня стоит на крышке корпуса.
 const TURRET_HEIGHT: f32 = 0.46;
+/// Место башни на корпусе без отдачи (`src/recoil.rs`), м в мерах модели.
+pub(crate) const TURRET_BASE: Vec3 = Vec3::new(TURRET_OFFSET.x, TURRET_OFFSET.y + TURRET_HEIGHT, TURRET_OFFSET.z);
 
 /// Скорость поворота башни, рад/с: пол-оборота примерно за треть секунды.
 const TURRET_TURN_SPEED: f32 = 9.0;
@@ -121,7 +123,7 @@ impl CurrentWeapon {
 
 /// Башня лунохода: вращается к точке прицела независимо от корпуса.
 #[derive(Component, Default)]
-struct Turret {
+pub(crate) struct Turret {
     /// Поворот башни относительно корпуса вокруг его оси «вверх», рад. Ноль — вперёд.
     yaw: f32,
 }
@@ -182,7 +184,7 @@ fn attach_turret(
                     Turret::default(),
                     Mesh3d(base),
                     MeshMaterial3d(material.clone()),
-                    Transform::from_translation(TURRET_OFFSET + Vec3::Y * TURRET_HEIGHT),
+                    Transform::from_translation(TURRET_BASE),
                 ))
                 .with_children(|turret| {
                     turret.spawn((

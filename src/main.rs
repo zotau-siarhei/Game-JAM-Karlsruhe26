@@ -50,6 +50,7 @@ mod quality;
 mod rails;
 mod railway;
 mod records;
+mod recoil;
 mod regen;
 mod repair;
 mod resident_anim;
@@ -133,6 +134,8 @@ fn game_plugins(app: &mut App) {
         anim_lod::AnimLodPlugin,
         // Здоровье само растёт, если лунохода давно не ранили.
         regen::RegenPlugin,
+        // Отдача башни и вспышка у дула.
+        recoil::RecoilPlugin,
     ))
         // Посёлки, объекты поверхности и разрушение.
         .add_plugins((
