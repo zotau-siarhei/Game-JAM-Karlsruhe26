@@ -1,10 +1,27 @@
 <!doctype html>
-<html lang="ru">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Space Guard</title>
   <style>
+    /* Шрифт меню игры: FiraMono из Bevy (лицензия OFL), в нём только латиница. */
+    @font-face {
+      font-family: "Space Guard Mono";
+      src: url("FiraMono-subset.ttf") format("truetype");
+      font-display: block;
+    }
+
+    :root {
+      /* Цвета меню игры: заголовок TITLE_COLOR, подсказки HINT_COLOR, панели PANEL_COLOR (src/run.rs, src/hud.rs). */
+      --title: rgb(255 217 77);
+      --hint: rgb(204 204 204);
+      --dim: rgb(204 204 204 / 0.55);
+      --panel: rgb(0 0 0 / 0.65);
+      --danger: rgb(255 89 64);
+      --mono: "Space Guard Mono", "Fira Mono", ui-monospace, Menlo, Consolas, monospace;
+    }
+
     /* Игра занимает всю страницу: холст растягивается по окну, полос прокрутки нет. */
     html, body {
       margin: 0;
@@ -12,8 +29,6 @@
       height: 100%;
       overflow: hidden;
       background: #000;
-      color: #ccc;
-      font: 16px system-ui, sans-serif;
     }
     #space-guard {
       display: block;
@@ -21,38 +36,254 @@
       height: 100%;
       outline: none;
     }
-    #status {
+
+    /* Экран загрузки поверх игры. Пока игра не рисует, фон — ночное небо; когда она
+       запустилась, сквозь размытую дымку виден облёт планеты из меню. */
+    #loader {
       position: fixed;
       inset: 0;
       display: flex;
+      flex-direction: column;
       align-items: center;
       justify-content: center;
-      text-align: center;
       padding: 16px;
+      box-sizing: border-box;
+      font-family: var(--mono);
+      color: var(--hint);
+      text-transform: uppercase;
+      user-select: none;
+      cursor: default;
+      background:
+        radial-gradient(1px 1px at 12% 22%, #fff8 50%, transparent 51%),
+        radial-gradient(1px 1px at 78% 14%, #fff6 50%, transparent 51%),
+        radial-gradient(1.5px 1.5px at 64% 72%, #fff7 50%, transparent 51%),
+        radial-gradient(1px 1px at 28% 81%, #fff5 50%, transparent 51%),
+        radial-gradient(1px 1px at 88% 58%, #fff6 50%, transparent 51%),
+        radial-gradient(1.5px 1.5px at 42% 9%, #fff5 50%, transparent 51%),
+        radial-gradient(ellipse at 50% 120%, rgb(40 90 60 / 0.55), transparent 60%),
+        radial-gradient(ellipse at 50% 40%, #0b1424, #020409 75%);
+      transition: background-color 1.2s ease, opacity 0.7s ease, backdrop-filter 1.2s ease;
+    }
+    #loader.live {
+      background: rgb(2 4 9 / 0.72);
+      backdrop-filter: blur(18px) saturate(1.1);
+      -webkit-backdrop-filter: blur(18px) saturate(1.1);
+    }
+    #loader.leaving {
+      opacity: 0;
       pointer-events: none;
     }
-    #status[hidden] {
-      display: none;
+
+    .title {
+      margin: 0;
+      font-size: clamp(40px, 9vw, 96px);
+      font-weight: normal;
+      letter-spacing: 0.06em;
+      color: var(--title);
+      text-shadow: 0 0 24px rgb(255 217 77 / 0.35), 0 4px 0 rgb(0 0 0 / 0.6);
+    }
+    .subtitle {
+      margin: 8px 0 0;
+      font-size: clamp(13px, 1.8vw, 20px);
+      letter-spacing: 0.12em;
+      color: var(--hint);
+    }
+
+    .panel {
+      width: min(560px, 100%);
+      margin-top: clamp(32px, 7vh, 72px);
+      padding: 20px 22px 18px;
+      box-sizing: border-box;
+      background: var(--panel);
+      border: 1px solid rgb(255 255 255 / 0.08);
+      border-radius: 6px;
+    }
+    .row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 16px;
+      font-size: 13px;
+      letter-spacing: 0.08em;
+    }
+    #stage {
+      color: var(--title);
+    }
+    #percent {
+      font-size: 22px;
+      color: #fff;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .bar {
+      position: relative;
+      height: 6px;
+      margin: 12px 0 10px;
+      background: rgb(255 255 255 / 0.08);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    #fill {
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 0%;
+      background: linear-gradient(90deg, rgb(255 170 40), var(--title));
+      box-shadow: 0 0 12px rgb(255 217 77 / 0.6);
+      border-radius: 3px;
+      transition: width 0.25s ease-out;
+    }
+    /* Бегущий блик по полосе, пока идёт загрузка. */
+    #fill::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.55), transparent);
+      transform: translateX(-100%);
+      animation: shine 1.4s ease-in-out infinite;
+    }
+    #loader.ready #fill::after {
+      animation: none;
+    }
+    @keyframes shine {
+      to { transform: translateX(100%); }
+    }
+
+    #file {
+      min-height: 1.3em;
+      font-size: 11px;
+      letter-spacing: 0.04em;
+      text-transform: none;
+      color: var(--dim);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #counts {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid rgb(255 255 255 / 0.08);
+      font-size: 11px;
+      letter-spacing: 0.08em;
+    }
+    #counts div {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    #counts b {
+      font-weight: normal;
+      font-size: 14px;
+      color: #fff;
+      font-variant-numeric: tabular-nums;
+    }
+    #counts .done b {
+      color: var(--title);
+    }
+    #counts span {
+      color: var(--dim);
+    }
+
+    #tip {
+      min-height: 1.4em;
+      margin-top: 28px;
+      font-size: 13px;
+      letter-spacing: 0.1em;
+      color: var(--hint);
+      text-align: center;
+      white-space: pre;
+      transition: opacity 0.4s ease;
+    }
+    #tip.fade {
+      opacity: 0;
+    }
+
+    #start {
+      margin-top: 28px;
+      font-size: clamp(16px, 2.2vw, 24px);
+      letter-spacing: 0.12em;
+      color: #fff;
+      opacity: 0;
+      transform: translateY(6px);
+      transition: opacity 0.5s ease, transform 0.5s ease;
+    }
+    #loader.ready #start {
+      opacity: 1;
+      transform: none;
+      animation: pulse 1.6s ease-in-out 0.5s infinite;
+    }
+    #loader.ready {
+      cursor: pointer;
+    }
+    @keyframes pulse {
+      50% { opacity: 0.45; }
+    }
+
+    #loader.failed #stage,
+    #loader.failed #file {
+      color: var(--danger);
+    }
+
+    @media (max-width: 480px) {
+      #counts {
+        grid-template-columns: repeat(2, 1fr);
+      }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      #fill::after, #loader.ready #start {
+        animation: none;
+      }
     }
   </style>
 </head>
 <body>
   <canvas id="space-guard" tabindex="0"></canvas>
-  <div id="status">Загрузка…</div>
+
+  <div id="loader" role="dialog" aria-label="Space Guard loading">
+    <h1 class="title">SPACE GUARD</h1>
+    <p class="subtitle">Survive as long as you can</p>
+
+    <div class="panel" aria-live="polite">
+      <div class="row">
+        <span id="stage">Loading engine</span>
+        <span id="percent">0%</span>
+      </div>
+      <div class="bar"><div id="fill"></div></div>
+      <div class="row">
+        <span id="file">&nbsp;</span>
+        <span id="bytes"></span>
+      </div>
+      <div id="counts">
+        <div data-kind="sfx"><span>Sound FX</span><b>0/0</b></div>
+        <div data-kind="voice"><span>HQ radio</span><b>0/0</b></div>
+        <div data-kind="music"><span>Music</span><b>0/0</b></div>
+        <div data-kind="models"><span>Models</span><b>0/0</b></div>
+      </div>
+    </div>
+
+    <div id="tip"></div>
+    <div id="start">Click or press any key to start</div>
+  </div>
+
   <script>
-    // Браузер не даёт звуку играть до первого нажатия на странице: звук игры создаётся сразу
-    // при запуске и остаётся приостановленным навсегда. Запоминаем каждый AudioContext
-    // и будим его по нажатию клавиши, кнопки мыши или касанию. Отдельный обычный скрипт
-    // перед модулем: обвязка игры берёт AudioContext при импорте, раньше кода модуля.
-    const audioContexts = [];
-    const NativeAudioContext = window.AudioContext || window.webkitAudioContext;
-    if (NativeAudioContext) {
-      window.AudioContext = class extends NativeAudioContext {
-        constructor(...args) {
-          super(...args);
-          audioContexts.push(this);
-        }
-      };
+    // Выполняется до модуля игры: её обвязка берёт AudioContext и fetch при импорте.
+    (() => {
+      // --- Звук ---
+      // Браузер не даёт звуку играть до первого нажатия на странице: звук игры создаётся сразу
+      // при запуске и остаётся приостановленным. Запоминаем каждый AudioContext и будим его
+      // нажатием (на экране загрузки — тем же нажатием, что закрывает экран).
+      const audioContexts = [];
+      const NativeAudioContext = window.AudioContext || window.webkitAudioContext;
+      if (NativeAudioContext) {
+        window.AudioContext = class extends NativeAudioContext {
+          constructor(...args) {
+            super(...args);
+            audioContexts.push(this);
+          }
+        };
+      }
       const resumeAudio = () => {
         for (const context of audioContexts) {
           if (context.state !== "running") context.resume();
@@ -61,30 +292,288 @@
       for (const event of ["pointerdown", "keydown", "touchstart"]) {
         document.addEventListener(event, resumeAudio, { capture: true });
       }
-      window.spaceGuardAudio = audioContexts;
-    }
+
+      // --- Учёт загрузки ---
+      // Игра грузит ассеты через fetch. Обёртка считает байты каждого ответа по мере прихода;
+      // точные размеры файлов — из asset-sizes.json, его пишет scripts/build-web.sh
+      // (GitHub Pages сжимает ответы, и content-length не равен размеру файла).
+      const nativeFetch = window.fetch.bind(window);
+      const loader = {
+        sizes: null,          // { wasm, files: { "sfx/a.mp3": байты }, preload: [...] }
+        files: new Map(),     // путь от assets -> { kind, size, loaded, done }
+        wasm: { size: 0, loaded: 0, done: false },
+        current: "",
+        listeners: [],
+        lastActivity: performance.now(),
+        changed() {
+          this.lastActivity = performance.now();
+          for (const listener of this.listeners) listener();
+        },
+      };
+      window.spaceGuardLoader = loader;
+
+      const kindOf = (path) => path.split("/")[0];
+
+      // Тело ответа с подсчётом байтов. Новый Response отдаёт игре те же данные.
+      function counted(response, entry, contentType) {
+        if (!response.body) {
+          entry.done = true;
+          loader.changed();
+          return response;
+        }
+        const reader = response.body.getReader();
+        const stream = new ReadableStream({
+          async pull(controller) {
+            try {
+              const { done, value } = await reader.read();
+              if (done) {
+                entry.done = true;
+                if (!entry.size) entry.size = entry.loaded;
+                loader.changed();
+                controller.close();
+                return;
+              }
+              entry.loaded += value.byteLength;
+              loader.changed();
+              controller.enqueue(value);
+            } catch (error) {
+              entry.done = true;
+              loader.changed();
+              controller.error(error);
+            }
+          },
+          cancel(reason) {
+            entry.done = true;
+            loader.changed();
+            return reader.cancel(reason);
+          },
+        });
+        const headers = new Headers();
+        headers.set("Content-Type", contentType || response.headers.get("Content-Type") || "application/octet-stream");
+        return new Response(stream, { status: response.status, statusText: response.statusText, headers });
+      }
+
+      window.fetch = async (input, init) => {
+        const url = typeof input === "string" ? input : input.url;
+        const match = /(?:^|\/)assets\/(.+?)(?:\?.*)?$/.exec(new URL(url, location.href).pathname);
+        if (!match) return nativeFetch(input, init);
+        const path = decodeURIComponent(match[1]);
+        let entry = loader.files.get(path);
+        if (!entry) {
+          entry = { kind: kindOf(path), size: loader.sizes?.files[path] || 0, loaded: 0, done: false };
+          loader.files.set(path, entry);
+        } else {
+          entry.loaded = 0;
+          entry.done = false;
+          entry.pending = false;
+        }
+        loader.current = path;
+        loader.changed();
+        try {
+          const response = await nativeFetch(input, init);
+          if (!response.ok) {
+            entry.done = true;
+            entry.failed = true;
+            loader.changed();
+            return response;
+          }
+          return counted(response, entry);
+        } catch (error) {
+          entry.done = true;
+          entry.failed = true;
+          loader.changed();
+          throw error;
+        }
+      };
+
+      // Сам модуль игры (WASM) — с подсчётом байтов.
+      loader.fetchWasm = async (url) => {
+        loader.current = url;
+        const response = await nativeFetch(url);
+        if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
+        return counted(response, loader.wasm, "application/wasm");
+      };
+
+      loader.fetchSizes = async () => {
+        try {
+          const response = await nativeFetch("asset-sizes.json", { cache: "no-cache" });
+          loader.sizes = await response.json();
+          loader.wasm.size = loader.sizes.wasm || 0;
+          for (const [path, entry] of loader.files) entry.size ||= loader.sizes.files[path] || 0;
+          // Звуки игра запрашивает все сразу при старте: они известны заранее.
+          for (const path of loader.sizes.preload || []) {
+            if (!loader.files.has(path)) {
+              loader.files.set(path, { kind: kindOf(path), size: loader.sizes.files[path] || 0, loaded: 0, done: false, pending: true });
+            }
+          }
+        } catch {
+          loader.sizes = { wasm: 0, files: {}, preload: [] };
+        }
+        loader.changed();
+      };
+      loader.resumeAudio = resumeAudio;
+    })();
   </script>
+
   <script type="module">
     import init from "./space_guard.js";
 
-    const status = document.getElementById("status");
+    const loader = window.spaceGuardLoader;
     const canvas = document.getElementById("space-guard");
-    // Клавиши сразу идут в игру, без щелчка по холсту.
-    canvas.focus();
+    const screen = document.getElementById("loader");
+    const stage = document.getElementById("stage");
+    const percent = document.getElementById("percent");
+    const fill = document.getElementById("fill");
+    const file = document.getElementById("file");
+    const bytes = document.getElementById("bytes");
+    const tip = document.getElementById("tip");
+    const counts = Object.fromEntries(
+      [...document.querySelectorAll("#counts [data-kind]")].map((cell) => [cell.dataset.kind, cell]),
+    );
+
     canvas.addEventListener("contextmenu", (event) => event.preventDefault());
 
+    // Подсказки — те же, что в меню игры, и несколько правил из неё.
+    const tips = [
+      "WASD - drive    Mouse - aim",
+      "Left button - fire",
+      "1-6 or mouse wheel - switch weapon",
+      "Hold Space - repair",
+      "Esc - pause    Q on pause - graphics quality",
+      "Five seconds without damage - the rover repairs itself",
+      "Sound on - headphones recommended",
+    ];
+    let tipIndex = 0;
+    function nextTip() {
+      tip.classList.add("fade");
+      setTimeout(() => {
+        tip.textContent = tips[tipIndex++ % tips.length];
+        tip.classList.remove("fade");
+      }, 400);
+    }
+    tip.textContent = tips[tipIndex++];
+    const tipTimer = setInterval(nextTip, 4500);
+
+    const megabytes = (value) => (value / 1048576).toFixed(1);
+    const stageNames = {
+      sfx: "Loading sound effects",
+      voice: "Loading HQ radio",
+      music: "Loading music",
+      models: "Loading 3D models",
+    };
+
+    let gameStarted = false;  // игра открыла окно и рисует
+    let failed = false;
+    let ready = false;
+    let shown = 0;            // показанная доля: полоса не ползёт назад
+    let quietSince = 0;
+
+    function render() {
+      if (failed) return;
+      const files = [...loader.files.values()];
+      const total = loader.wasm.size + files.reduce((sum, entry) => sum + (entry.size || entry.loaded), 0);
+      const loaded = loader.wasm.loaded + files.reduce((sum, entry) => sum + (entry.done ? (entry.size || entry.loaded) : entry.loaded), 0);
+      const share = total > 0 ? Math.min(loaded / total, 1) : 0;
+      const cap = ready ? 1 : 0.99;
+      shown = Math.max(shown, Math.min(share, cap));
+      const value = Math.round(shown * 100);
+      percent.textContent = `${value}%`;
+      fill.style.width = `${shown * 100}%`;
+      bytes.textContent = total ? `${megabytes(loaded)} / ${megabytes(total)} MB` : "";
+
+      for (const [kind, cell] of Object.entries(counts)) {
+        const group = files.filter((entry) => entry.kind === kind);
+        const done = group.filter((entry) => entry.done).length;
+        cell.querySelector("b").textContent = `${done}/${group.length}`;
+        cell.classList.toggle("done", group.length > 0 && done === group.length);
+      }
+
+      if (ready) {
+        stage.textContent = "Ready";
+        file.textContent = "All systems online";
+      } else if (!loader.wasm.done) {
+        stage.textContent = "Loading engine";
+        file.textContent = "space_guard_bg.wasm";
+      } else if (!gameStarted) {
+        stage.textContent = "Starting engine";
+        file.textContent = "WebGPU";
+      } else {
+        const kind = loader.current.split("/")[0];
+        stage.textContent = stageNames[kind] || "Loading";
+        file.textContent = loader.current;
+      }
+    }
+
+    // Готово, когда игра рисует, все звуки пришли и новых запросов нет полсекунды.
+    function checkReady() {
+      if (ready || failed || !gameStarted || !loader.sizes) return;
+      const now = performance.now();
+      // Страховка: файл, который игра так и не запросила, не держит экран дольше 5 с тишины.
+      const stalled = now - loader.lastActivity > 5000;
+      const busy = [...loader.files.values()].some((entry) => !entry.done && !(stalled && entry.pending));
+      if (busy) {
+        quietSince = 0;
+        return;
+      }
+      if (!quietSince) quietSince = now;
+      if (now - quietSince < 600) return;
+      ready = true;
+      screen.classList.add("ready");
+      render();
+    }
+
+    let frame = 0;
+    loader.listeners.push(() => {
+      if (!frame) frame = requestAnimationFrame(() => { frame = 0; render(); });
+    });
+    setInterval(checkReady, 200);
+
+    // Игра проставляет холсту размер, когда открывает окно: дальше фон экрана — размытая игра.
+    new MutationObserver(() => {
+      if (gameStarted) return;
+      gameStarted = true;
+      screen.classList.add("live");
+      render();
+    }).observe(canvas, { attributes: true, attributeFilter: ["width", "height"] });
+
+    function fail(message) {
+      failed = true;
+      screen.classList.add("failed");
+      stage.textContent = "Cannot start";
+      file.textContent = message;
+      clearInterval(tipTimer);
+      tip.textContent = "";
+    }
+
+    // Закрыть экран: то же нажатие будит звук. Клавиша, закрывшая экран, в игру не идёт.
+    function enter() {
+      if (!ready) return;
+      ready = false;
+      loader.resumeAudio();
+      screen.classList.add("leaving");
+      window.removeEventListener("keydown", onKey, true);
+      setTimeout(() => screen.remove(), 800);
+      canvas.focus();
+    }
+    function onKey(event) {
+      if (event.metaKey || event.ctrlKey || event.altKey || /^F\d+$/.test(event.key)) return;
+      event.stopImmediatePropagation();
+      event.preventDefault();
+      if (!event.repeat) enter();
+    }
+    window.addEventListener("keydown", onKey, true);
+    screen.addEventListener("pointerdown", enter);
+
+    render();
     if (!navigator.gpu) {
-      status.textContent = "Браузер без WebGPU: откройте игру в свежем Chrome, Edge или Safari.";
+      fail("This browser has no WebGPU. Open the game in a recent Chrome, Edge or Safari.");
     } else {
-      // Игра проставляет холсту размер, когда открывает окно: тогда надпись убирается.
-      new MutationObserver(() => { status.hidden = true; })
-        .observe(canvas, { attributes: true, attributeFilter: ["width", "height"] });
-      init().catch((error) => {
+      await loader.fetchSizes();
+      init({ module_or_path: loader.fetchWasm("space_guard_bg.wasm") }).catch((error) => {
         // Bevy выходит из init через исключение управления потоком: это не ошибка.
         if (!String(error).includes("Using exceptions for control flow")) {
-          status.hidden = false;
-          status.textContent = "Ошибка запуска: " + error;
           console.error(error);
+          fail(String(error));
         }
       });
     }

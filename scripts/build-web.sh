@@ -43,7 +43,7 @@ mkdir -p "$out"
 # Таблица имён функций — половина файла (80 МБ), без неё в стеке паники нет имён.
 wasm-bindgen --target web --no-typescript --remove-name-section --out-dir "$out" --out-name space_guard \
     "target/wasm32-unknown-unknown/$profile/space_guard.wasm"
-cp web/index.html "$out/index.html"
+cp web/* "$out/"
 
 # Ассеты рядом со страницей: загрузчик Bevy берёт их по HTTP из ./assets.
 # На APFS копия — клон (`cp -c`): мгновенно и без лишнего места на диске.
@@ -54,6 +54,33 @@ else
     cp -R assets "$out/assets"
 fi
 rm -rf "$out/assets/voice/raw"
+
+# Размеры файлов для экрана загрузки (web/index.html): GitHub Pages сжимает ответы, и полосе
+# загрузки нужны настоящие размеры. preload — звуки из списков: игра запрашивает их все при старте.
+python3 - "$out" <<'PY'
+import json, os, sys
+out = sys.argv[1]
+assets = os.path.join(out, "assets")
+files = {}
+for directory, _, names in os.walk(assets):
+    for name in names:
+        path = os.path.join(directory, name)
+        files[os.path.relpath(path, assets).replace(os.sep, "/")] = os.path.getsize(path)
+preload = []
+for folder, listing in (("sfx", "sounds.json"), ("voice", "lines.json"), ("music", "tracks.json")):
+    with open(os.path.join(assets, folder, listing), encoding="utf-8") as handle:
+        for entry in json.load(handle).get("lines", []):
+            path = f"{folder}/{entry.get('file', '')}"
+            if entry.get("file") and path in files:
+                preload.append(path)
+manifest = {
+    "wasm": os.path.getsize(os.path.join(out, "space_guard_bg.wasm")),
+    "files": files,
+    "preload": sorted(set(preload)),
+}
+with open(os.path.join(out, "asset-sizes.json"), "w", encoding="utf-8") as handle:
+    json.dump(manifest, handle, separators=(",", ":"))
+PY
 
 echo "готово: $out ($(du -sh "$out/space_guard_bg.wasm" | cut -f1) wasm)"
 if [[ $serve == 1 ]]; then
