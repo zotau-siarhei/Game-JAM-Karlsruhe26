@@ -58,11 +58,14 @@
   R2 — левая кнопка мыши, крест — пробел), поэтому новой команде с клавиатуры достаточно добавить
   строку в `virtual_for`; аналоговое — ресурс `PadInput`, устройство — `InputDevice`, подсказка
   экрана для обоих устройств — компонент `DeviceHint`. На macOS ввод геймпада идёт через
-  GameController (`src/gc_input.rs`): gilrs там кнопок DualShock 4 не получает.
+  GameController (`src/gamepad/macos.rs`): gilrs там кнопок DualShock 4 не получает; на Linux и
+  Windows — gilrs самого Bevy.
 - Вибрация и световая панель — `src/haptics.rs`: событие толкает микшер `ResMut<Rumble>`
   (`kick(сильный, слабый)`), отправку в геймпад делает бэкенд. На macOS это CoreHaptics через
-  GameController, и только обычный `CHHapticPatternPlayer`: продвинутый у геймпадов PlayStation
-  не работает.
+  GameController (`src/haptics/macos.rs`), и только обычный `CHHapticPatternPlayer`: продвинутый
+  у геймпадов PlayStation не работает. На Linux и Windows — `GamepadRumbleRequest` через gilrs
+  (`src/haptics/bevy_rumble.rs`), на Linux световая панель — `/sys/class/leds`
+  (`src/haptics/linux_light.rs`; без правила udev писать туда может только root).
 - Мини-карта — `src/minimap.rs`: новой сущности с меткой добавь запрос в `update_markers`.
 - Волны — `src/waves.rs`: угроза `Threat`, директор волн, все числа баланса в `waves::balance`.
   Врага ставит сообщение `SpawnEnemy { place }` из `src/enemy.rs`, десантную капсулу — `DropCapsule { angle }`

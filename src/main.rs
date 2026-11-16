@@ -31,7 +31,6 @@ mod explosion_fx;
 mod fire;
 mod frame;
 mod gamepad;
-mod gc_input;
 mod haptics;
 mod hq;
 mod grass;
@@ -133,7 +132,7 @@ fn main() {
         // Замер ставит отметки и в рендер-потоке, поэтому тоже здесь.
         .add_plugins(perf::PerfPlugin)
         .add_plugins((fade::FadePlugin, loading::LoadingPlugin))
-        .add_plugins((gc_input::GcInputPlugin, gamepad::GamepadPlugin, haptics::HapticsPlugin))
+        .add_plugins((gamepad::GamepadPlugin, haptics::HapticsPlugin))
         .add_plugins(game_plugins)
         .add_systems(Startup, spawn_light)
         .run();

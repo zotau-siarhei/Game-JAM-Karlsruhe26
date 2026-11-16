@@ -15,6 +15,9 @@ use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
 use bevy::window::{CursorOptions, PrimaryWindow};
 
+#[cfg(target_os = "macos")]
+mod macos;
+
 use crate::aim::{AimPoint, MAX_AIM_RANGE};
 use crate::camera::GameCamera;
 use crate::combat::Health;
@@ -44,6 +47,9 @@ pub struct GamepadPlugin;
 
 impl Plugin for GamepadPlugin {
     fn build(&self, app: &mut App) {
+        // Ввод на macOS — через GameController, на остальных платформах его даёт gilrs в Bevy.
+        #[cfg(target_os = "macos")]
+        macos::build(app);
         app.init_resource::<InputDevice>()
             .init_resource::<PadStyle>()
             .init_resource::<PadInput>()
