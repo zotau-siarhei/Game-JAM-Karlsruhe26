@@ -105,7 +105,9 @@ cargo test                                  # тесты
 - Сборка нативная: сейчас macOS на Apple Silicon, позже Linux. Есть и браузерная (WASM, WebGPU):
   `scripts/build-web.sh --serve` собирает в `target/web` и открывает на http://localhost:8080,
   страница — `web/index.html`, игра на всё окно; на ней же экран загрузки: считает запросы к
-  `assets/` по манифесту `asset-sizes.json` из скрипта сборки, нажатие «старт» будит звук браузера. Нужны `rustup target add wasm32-unknown-unknown`
+  `assets/` по манифесту `asset-sizes.json` из скрипта сборки, нажатие «старт» будит звук браузера.
+  Для Safari и iOS (WebKit) страница переписывает шейдеры перед компиляцией: PBR Bevy 0.20 кладёт
+  текстуру в `let`, WebKit такое отклоняет. Паника или ошибка рендера видна прямо на экране загрузки. Нужны `rustup target add wasm32-unknown-unknown`
   и `wasm-bindgen-cli` той же версии, что `wasm-bindgen` в `Cargo.lock`. В браузере нет файлов
   и `std::time`: списки ассетов, часы и проверка файлов — через `src/platform.rs`, рекорды и
   настройки живут только до перезагрузки страницы. `std::time::Instant` не использовать:

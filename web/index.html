@@ -293,6 +293,47 @@
         document.addEventListener(event, resumeAudio, { capture: true });
       }
 
+      // --- Шейдеры для WebKit (Safari, все браузеры на iOS) ---
+      // Шейдеры PBR в Bevy 0.20 кладут текстуру и сэмплер в let:
+      //   let texture = pbr_bindings::base_color_texture;
+      // Chrome это пропускает, WebKit отклоняет («'texture_2d<f32>' cannot be used as the type
+      // of a 'let'»), и Bevy останавливает игру. Перед компиляцией подставляем саму глобальную
+      // текстуру вместо такого let — в пределах блока, где он объявлен.
+      function inlineHandleLets(code) {
+        const handles = new Set();
+        const globalVar = /\bvar\s+(\w+)\s*:\s*(?:texture_|sampler|binding_array)/g;
+        for (let m; (m = globalVar.exec(code)); ) handles.add(m[1]);
+        if (!handles.size) return code;
+        const letHandle = /\blet\s+(\w+)\s*=\s*([A-Za-z_]\w*(?:\[[^\];]*\])?)\s*;/g;
+        let out = "";
+        let from = 0;
+        for (let m; (m = letHandle.exec(code)); ) {
+          const [whole, name, value] = m;
+          if (!handles.has(value.split("[")[0])) continue;
+          // Конец блока, в котором объявлен let: первая непарная закрывающая скобка.
+          let depth = 0;
+          let end = code.length;
+          for (let i = m.index + whole.length; i < code.length; i++) {
+            if (code[i] === "{") depth++;
+            else if (code[i] === "}" && depth-- === 0) { end = i; break; }
+          }
+          const scope = code.slice(m.index + whole.length, end)
+            .replace(new RegExp(`(?<![.\\w])${name}\\b`, "g"), value);
+          code = code.slice(0, m.index) + scope + code.slice(end);
+          letHandle.lastIndex = m.index;
+        }
+        return code;
+      }
+      if (window.GPUDevice) {
+        const createShaderModule = GPUDevice.prototype.createShaderModule;
+        GPUDevice.prototype.createShaderModule = function (descriptor) {
+          if (typeof descriptor?.code === "string") {
+            descriptor = { ...descriptor, code: inlineHandleLets(descriptor.code) };
+          }
+          return createShaderModule.call(this, descriptor);
+        };
+      }
+
       // --- Учёт загрузки ---
       // Игра грузит ассеты через fetch. Обёртка считает байты каждого ответа по мере прихода;
       // точные размеры файлов — из asset-sizes.json, его пишет scripts/build-web.sh
@@ -412,6 +453,37 @@
         loader.changed();
       };
       loader.resumeAudio = resumeAudio;
+
+      // Паника Rust и ошибки JS: паника приходит в console.error, а игра после неё стоит.
+      // Экран загрузки показывает причину, иначе на телефоне без консоли не понять, что случилось.
+      loader.errors = [];
+      const report = (message) => {
+        loader.errors.push(String(message));
+        loader.changed();
+      };
+      const nativeError = console.error.bind(console);
+      console.error = (...args) => {
+        const text = args.map(String).join(" ");
+        if (text.includes("panicked at")) report(text);
+        nativeError(...args);
+      };
+      // Ошибку рендера Bevy пишет через console.log и после неё останавливает игру.
+      let lastRenderError = "";
+      const nativeLog = console.log.bind(console);
+      console.log = (...args) => {
+        const text = String(args[0] ?? "").replace(/%c/g, "");
+        const caught = /Caught rendering error: (.*)/.exec(text);
+        if (caught) lastRenderError = caught[1];
+        if (text.includes("Quitting the application")) {
+          report(`Rendering error: ${lastRenderError || text}`);
+        }
+        nativeLog(...args);
+      };
+      window.addEventListener("error", (event) => report(event.message || event.error));
+      window.addEventListener("unhandledrejection", (event) => {
+        const text = String(event.reason);
+        if (!text.includes("Using exceptions for control flow")) report(text);
+      });
     })();
   </script>
 
@@ -470,6 +542,10 @@
 
     function render() {
       if (failed) return;
+      if (loader.errors.length) {
+        fail(shortError(loader.errors[0]));
+        return;
+      }
       const files = [...loader.files.values()];
       const total = loader.wasm.size + files.reduce((sum, entry) => sum + (entry.size || entry.loaded), 0);
       const loaded = loader.wasm.loaded + files.reduce((sum, entry) => sum + (entry.done ? (entry.size || entry.loaded) : entry.loaded), 0);
@@ -528,6 +604,13 @@
     });
     setInterval(checkReady, 200);
 
+    // Сторож: движок скачан, а окно игры так и не открылось.
+    setInterval(() => {
+      if (!failed && loader.wasm.done && !gameStarted && performance.now() - loader.lastActivity > 30000) {
+        fail("The engine did not start. Your browser or device may not support everything the game needs (WebGPU).");
+      }
+    }, 1000);
+
     // Игра проставляет холсту размер, когда открывает окно: дальше фон экрана — размытая игра.
     new MutationObserver(() => {
       if (gameStarted) return;
@@ -536,11 +619,20 @@
       render();
     }).observe(canvas, { attributes: true, attributeFilter: ["width", "height"] });
 
+    // Первые строки паники: где упало и почему, без стека.
+    function shortError(text) {
+      const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
+      const body = lines.filter((line) => !/^(Stack:|Error$|at )/.test(line)).slice(0, 3).join(" ");
+      return body.replace(/^panicked at [^:]*\/src\//, "panicked at ").slice(0, 400);
+    }
+
     function fail(message) {
       failed = true;
       screen.classList.add("failed");
       stage.textContent = "Cannot start";
       file.textContent = message;
+      file.style.whiteSpace = "normal";
+      percent.textContent = "";
       clearInterval(tipTimer);
       tip.textContent = "";
     }
@@ -569,13 +661,24 @@
       fail("This browser has no WebGPU. Open the game in a recent Chrome, Edge or Safari.");
     } else {
       await loader.fetchSizes();
-      init({ module_or_path: loader.fetchWasm("space_guard_bg.wasm") }).catch((error) => {
-        // Bevy выходит из init через исключение управления потоком: это не ошибка.
-        if (!String(error).includes("Using exceptions for control flow")) {
+      // Обрыв сети посреди загрузки движка (в Safari — «Load failed») — ещё две попытки.
+      const start = (attempt) => {
+        loader.wasm.loaded = 0;
+        loader.wasm.done = false;
+        init({ module_or_path: loader.fetchWasm("space_guard_bg.wasm") }).catch((error) => {
+          const text = String(error);
+          // Bevy выходит из init через исключение управления потоком: это не ошибка.
+          if (text.includes("Using exceptions for control flow")) return;
+          if (!gameStarted && attempt < 3 && /Load failed|NetworkError|network|Failed to fetch/i.test(text)) {
+            console.warn(`Загрузка движка оборвалась (${text}), попытка ${attempt + 1}`);
+            start(attempt + 1);
+            return;
+          }
           console.error(error);
-          fail(String(error));
-        }
-      });
+          fail(text);
+        });
+      };
+      start(1);
     }
   </script>
 </body>
