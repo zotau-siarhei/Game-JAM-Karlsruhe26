@@ -414,11 +414,20 @@
         }
         return code;
       }
+      // --- Тени точечных источников (Android, Adreno) ---
+      // Компилятор шейдеров Adreno (Vulkan) падает на textureSampleCompareLevel по массиву
+      // кубических карт глубины: процесс видеокарты Chrome умирает на первом же PBR-конвейере,
+      // игра теряет устройство («A valid external Instance reference no longer exists»).
+      // У всех точечных источников в игре тени выключены, выборка всё равно дала бы 1.0 —
+      // её и подставляем, во всех браузерах.
+      function dropPointShadowSampling(code) {
+        return code.replace(/textureSampleCompareLevel\(\s*\w*point_shadow_textures\b[^;]*\)(?=\s*;)/g, "1.0");
+      }
       if (window.GPUDevice) {
         const createShaderModule = GPUDevice.prototype.createShaderModule;
         GPUDevice.prototype.createShaderModule = function (descriptor) {
           if (typeof descriptor?.code === "string") {
-            descriptor = { ...descriptor, code: inlineHandleLets(descriptor.code) };
+            descriptor = { ...descriptor, code: dropPointShadowSampling(inlineHandleLets(descriptor.code)) };
           }
           return createShaderModule.call(this, descriptor);
         };

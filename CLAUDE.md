@@ -131,8 +131,12 @@ cargo test                                  # тесты
   страница — `web/index.html`, игра на всё окно; на ней же экран загрузки: считает запросы к
   `assets/` по манифесту `asset-sizes.json` из скрипта сборки, нажатие «старт» будит звук браузера.
   Скрипт уменьшает текстуры внутри моделей до 1024 пикселей (`scripts/web_textures.py`, нужен Pillow:
-  `python3-pil` на Ubuntu, на macOS берётся через `uv`): 2048×2048 не помещаются в видеопамять
-  телефона, и Chrome на Android теряет устройство GPU. Исходники в `assets/` не меняются.
+  `python3-pil` на Ubuntu, на macOS берётся через `uv`): телефону меньше видеопамяти и загрузки.
+  Исходники в `assets/` не меняются. Страница заменяет в шейдерах выборку тени точечного источника
+  (`textureSampleCompareLevel` по массиву кубических карт) на 1.0: на Adreno (Android) компилятор
+  шейдеров на ней падает и Chrome теряет устройство GPU. Поэтому точечным источникам тени не включать.
+  Телефон по USB: `adb reverse tcp:8080 tcp:8080`, консоль Chrome — `adb forward tcp:9222
+  localabstract:chrome_devtools_remote` и CDP.
   Для Safari и iOS (WebKit) страница переписывает шейдеры перед компиляцией: PBR Bevy 0.20 кладёт
   текстуру в `let`, WebKit такое отклоняет. Паника или ошибка рендера видна прямо на экране загрузки. Нужны `rustup target add wasm32-unknown-unknown`
   и `wasm-bindgen-cli` той же версии, что `wasm-bindgen` в `Cargo.lock`. В браузере нет файлов
