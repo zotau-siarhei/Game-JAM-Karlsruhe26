@@ -83,8 +83,8 @@ jobs:
 
       # .cargo/config.toml линкует на Linux через clang и mold: так собираются
       # build-скрипты и proc-macro под сам раннер.
-      - name: clang и mold
-        run: sudo apt-get update && sudo apt-get install -y clang mold
+      - name: clang, mold и Pillow
+        run: sudo apt-get update && sudo apt-get install -y clang mold python3-pil
 
       # wasm-bindgen-cli той же версии, что крейт wasm-bindgen в Cargo.lock.
       - name: Версия wasm-bindgen

@@ -17,9 +17,9 @@ use std::collections::HashMap;
 
 use crate::combat::FlashedMesh;
 
-use bevy::asset::{LoadState, RecursiveDependencyLoadState};
+use bevy::asset::{LoadState, RecursiveDependencyLoadState, RenderAssetUsages};
 use bevy::ecs::system::SystemParam;
-use bevy::gltf::{Gltf, GltfMesh};
+use bevy::gltf::{Gltf, GltfLoaderSettings, GltfMesh};
 use bevy::prelude::*;
 use serde::Deserialize;
 
@@ -114,6 +114,12 @@ struct Model {
     /// Путь к файлу для загрузчика: от каталога `assets`.
     path: String,
     state: ModelState,
+}
+
+/// Текстуры и материалы моделей живут только в видеопамяти: копия картинок в памяти игры
+/// после передачи в видеокарту освобождается. В браузере на телефоне это сотни мегабайт.
+fn texture_in_gpu_only(settings: &mut GltfLoaderSettings) {
+    settings.load_materials = RenderAssetUsages::RENDER_WORLD;
 }
 
 /// Модели по идентификатору.
@@ -213,8 +219,14 @@ impl ModelBank {
         let model = self.models.get_mut(id)?;
         if matches!(model.state, ModelState::Idle) {
             model.state = ModelState::Loading(Handles {
-                gltf: asset_server.load(model.path.clone()),
-                scene: asset_server.load(GltfAssetLabel::Scene(0).from_asset(model.path.clone())),
+                gltf: asset_server
+                    .load_builder()
+                    .with_settings(texture_in_gpu_only)
+                    .load(model.path.clone()),
+                scene: asset_server
+                    .load_builder()
+                    .with_settings(texture_in_gpu_only)
+                    .load(GltfAssetLabel::Scene(0).from_asset(model.path.clone())),
             });
         }
         match &model.state {

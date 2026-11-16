@@ -55,6 +55,18 @@ else
 fi
 rm -rf "$out/assets/voice/raw"
 
+# Текстуры моделей не больше 1024 пикселей: 2048×2048 на телефоне не помещаются в видеопамять,
+# и WebGPU на Android теряет устройство (DeviceLost). Заодно скачивать вчетверо меньше.
+textures=(scripts/web_textures.py "$out/assets" target/web-textures 1024)
+if python3 -c "import PIL" 2>/dev/null; then
+    python3 -I "${textures[@]}"
+elif command -v uv >/dev/null; then
+    uv run --quiet --no-project --with pillow python -I "${textures[@]}"
+else
+    echo "нужен Pillow: brew install uv (или pip install pillow), на Ubuntu apt install python3-pil" >&2
+    exit 1
+fi
+
 # Размеры файлов для экрана загрузки (web/index.html): GitHub Pages сжимает ответы, и полосе
 # загрузки нужны настоящие размеры. preload — звуки из списков: игра запрашивает их все при старте.
 python3 - "$out" <<'PY'

@@ -130,6 +130,9 @@ cargo test                                  # тесты
   `scripts/build-web.sh --serve` собирает в `target/web` и открывает на http://localhost:8080,
   страница — `web/index.html`, игра на всё окно; на ней же экран загрузки: считает запросы к
   `assets/` по манифесту `asset-sizes.json` из скрипта сборки, нажатие «старт» будит звук браузера.
+  Скрипт уменьшает текстуры внутри моделей до 1024 пикселей (`scripts/web_textures.py`, нужен Pillow:
+  `python3-pil` на Ubuntu, на macOS берётся через `uv`): 2048×2048 не помещаются в видеопамять
+  телефона, и Chrome на Android теряет устройство GPU. Исходники в `assets/` не меняются.
   Для Safari и iOS (WebKit) страница переписывает шейдеры перед компиляцией: PBR Bevy 0.20 кладёт
   текстуру в `let`, WebKit такое отклоняет. Паника или ошибка рендера видна прямо на экране загрузки. Нужны `rustup target add wasm32-unknown-unknown`
   и `wasm-bindgen-cli` той же версии, что `wasm-bindgen` в `Cargo.lock`. В браузере нет файлов
