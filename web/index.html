@@ -578,6 +578,7 @@
     let gameStarted = false;  // игра открыла окно и рисует
     let failed = false;
     let ready = false;
+    let compiling = false;
     let shown = 0;            // показанная доля: полоса не ползёт назад
     let quietSince = 0;
 
@@ -614,6 +615,10 @@
       } else if (!gameStarted) {
         stage.textContent = "Starting engine";
         file.textContent = "WebGPU";
+      } else if (compiling) {
+        // Игра рисует всё, что бывает в бою, заранее: так в бою нет фризов на первом взрыве.
+        stage.textContent = "Compiling shaders";
+        file.textContent = "Warming up every effect so the battle runs smooth";
       } else {
         const kind = loader.current.split("/")[0];
         stage.textContent = stageNames[kind] || "Loading";
@@ -629,6 +634,16 @@
       const stalled = now - loader.lastActivity > 5000;
       const busy = [...loader.files.values()].some((entry) => !entry.done && !(stalled && entry.pending));
       if (busy) {
+        quietSince = 0;
+        return;
+      }
+      // Файлы пришли, а игра ещё компилирует шейдеры (src/prewarm.rs пишет spaceGuardWarm).
+      const warm = window.spaceGuardWarm === true;
+      if (compiling !== !warm) {
+        compiling = !warm;
+        render();
+      }
+      if (!warm) {
         quietSince = 0;
         return;
       }

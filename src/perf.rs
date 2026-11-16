@@ -413,6 +413,7 @@ fn log_bench(
     lights: Query<&ViewVisibility, With<PointLight>>,
     mut clock: ResMut<BenchClock>,
     mut exit: MessageWriter<AppExit>,
+    pipelines: Res<crate::prewarm::PipelineWatch>,
 ) {
     if !bench.on {
         return;
@@ -428,8 +429,9 @@ fn log_bench(
         t.log = Window::default();
         drop(t);
         let lit = lights.iter().filter(|v| v.get()).count();
+        let (late, late_ms) = pipelines.late();
         info!(
-            "Bench {:.0} s: FPS {:.1}, frame {:.2} ms, worst {:.1} ms, quality {:?}; {}",
+            "Bench {:.0} s: FPS {:.1}, frame {:.2} ms, worst {:.1} ms, quality {:?}; {}; late pipelines {late} ({late_ms:.0} ms)",
             clock.total,
             s.fps,
             s.frame,

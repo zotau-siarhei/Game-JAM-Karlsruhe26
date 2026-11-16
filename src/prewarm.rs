@@ -1,0 +1,490 @@
+//! Прогрев конвейеров рендера: всё, что может появиться в кадре, один раз рисуется до игры.
+//!
+//! Bevy собирает конвейер (пайплайн) для каждой новой пары «раскладка меша + ключ материала»
+//! и для каждого эффекта частиц, когда объект впервые попадает в кадр. На macOS и в браузере
+//! компиляция синхронная: кадр стоит, пока шейдер собирается, — это фриз при первом враге,
+//! взрыве или пламени. Поэтому при запуске (и после смены качества) каждый класс меша ставится
+//! с каждым классом материала, плюс сцены всех моделей, эффекты частиц и материалы пламени.
+//! Объекты крошечные и стоят под рельефом на луче взгляда камеры: в кадре и в каскадах теней
+//! они есть, а видно их не будет.
+//!
+//! Конвейер, собранный после прогрева, — поздний: он пишется в лог с меткой и временем,
+//! а число поздних конвейеров попадает в сводку `--bench` (`src/perf.rs`).
+//!
+//! `SPACE_GUARD_NO_PREWARM=1` выключает прогрев: так видно, сколько конвейеров собирается в игре.
+
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
+
+use bevy::asset::AssetEventSystems;
+use bevy::mesh::PrimitiveTopology;
+use bevy::pbr::StandardMaterialKey;
+use bevy::platform::time::Instant;
+use bevy::prelude::*;
+use bevy::render::render_resource::{PipelineCache, PipelineDescriptor};
+use bevy::render::{Render, RenderApp, RenderSystems};
+use bevy_hanabi::prelude::{EffectAsset, EffectMaterial, ParticleEffect};
+
+use crate::camera::{Focus, GameCamera};
+use crate::fire::FlameMaterial;
+use crate::models::ModelBank;
+use crate::quality::Quality;
+use crate::terrain::Terrain;
+
+/// Масштаб объектов прогрева: размер не влияет на конвейер.
+const SCALE: f32 = 0.01;
+/// Насколько за фокус по лучу взгляда стоят меши и модели, м: около 3 м под рельефом.
+const MESH_DEPTH: f32 = 4.0;
+/// То же для эффектов частиц: частицы разлетаются, им нужно глубже.
+const EFFECT_DEPTH: f32 = 40.0;
+/// Столько кадров подряд без новых конвейеров — прогрев закончен.
+const QUIET_FRAMES: u32 = 10;
+/// Предел прогрева, с.
+const TIMEOUT: f32 = 30.0;
+
+/// Плагин прогрева.
+pub struct PrewarmPlugin;
+
+impl Plugin for PrewarmPlugin {
+    fn build(&self, app: &mut App) {
+        let watch = PipelineWatch::default();
+        let disabled = std::env::var("SPACE_GUARD_NO_PREWARM").is_ok_and(|v| !v.is_empty() && v != "0");
+        let mut prewarm = Prewarm::default();
+        if disabled {
+            info!("Прогрев шейдеров выключен (SPACE_GUARD_NO_PREWARM)");
+            prewarm.done = true;
+            watch.lock().warm = true;
+            crate::platform::set_warm(true);
+        }
+        app.insert_resource(watch.clone())
+            .insert_resource(prewarm)
+            .init_resource::<Catalog>()
+            .add_systems(
+                PostUpdate,
+                (catalog_meshes, catalog_materials).after(AssetEventSystems),
+            )
+            .add_systems(
+                Update,
+                (restart_on_quality, warm, follow_camera)
+                    .chain()
+                    .in_set(crate::frame::GameSet::Presentation),
+            );
+        if let Some(render) = app.get_sub_app_mut(RenderApp) {
+            render.insert_resource(watch).add_systems(
+                Render,
+                compile_pipelines
+                    .after(RenderSystems::Prepare)
+                    .before(RenderSystems::Render),
+            );
+        }
+    }
+}
+
+/// Состояние конвейеров из рендер-мира для основного.
+#[derive(Default)]
+pub struct WatchState {
+    /// Всего конвейеров в кэше.
+    total: usize,
+    /// Ждут компиляции (шейдер ещё не загружен).
+    waiting: usize,
+    /// Новых конвейеров в последнем кадре рендера.
+    fresh: usize,
+    /// Прогрев закончен: новые конвейеры — поздние.
+    warm: bool,
+    /// Поздних конвейеров и время их компиляции, мс.
+    late: usize,
+    late_ms: f32,
+}
+
+/// Общий для основного и рендер-мира ресурс состояния конвейеров.
+#[derive(Resource, Clone, Default)]
+pub struct PipelineWatch(Arc<Mutex<WatchState>>);
+
+impl PipelineWatch {
+    fn lock(&self) -> std::sync::MutexGuard<'_, WatchState> {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Поздних конвейеров после прогрева и сколько миллисекунд кадров ушло на их компиляцию.
+    pub fn late(&self) -> (usize, f32) {
+        let state = self.lock();
+        (state.late, state.late_ms)
+    }
+}
+
+/// Рендер-мир: компилирует очередь конвейеров сам (позже это сделал бы Bevy в
+/// `RenderSystems::Render`), меряет время и замечает новые конвейеры.
+fn compile_pipelines(mut cache: ResMut<PipelineCache>, watch: Res<PipelineWatch>) {
+    let start = Instant::now();
+    cache.process_queue();
+    let ms = start.elapsed().as_secs_f32() * 1000.0;
+    let total = cache.pipelines().count();
+    let mut state = watch.lock();
+    let fresh = total.saturating_sub(state.total);
+    if fresh > 0 && state.warm {
+        let labels: Vec<String> = cache.pipelines().skip(state.total).map(|p| label(&p.descriptor)).collect();
+        warn!("Поздний конвейер: {} за {ms:.1} мс", labels.join(", "));
+        state.late += fresh;
+        state.late_ms += ms;
+    }
+    state.fresh = fresh;
+    state.total = total;
+    state.waiting = cache.waiting_pipelines().count();
+}
+
+fn label(descriptor: &PipelineDescriptor) -> String {
+    let label = match descriptor {
+        PipelineDescriptor::RenderPipelineDescriptor(d) => d.label.as_deref(),
+        PipelineDescriptor::ComputePipelineDescriptor(d) => d.label.as_deref(),
+        PipelineDescriptor::MeshPipelineDescriptor(d) => d.label.as_deref(),
+    };
+    label.unwrap_or("без метки").to_owned()
+}
+
+/// Класс меша для конвейера: топология, атрибуты вершин и морф-цели.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+struct LayoutClass {
+    topology: PrimitiveTopology,
+    attributes: Vec<&'static str>,
+    morph: bool,
+}
+
+impl LayoutClass {
+    /// Класс меша. `None` — данные меша уже отданы видеокарте.
+    fn of(mesh: &Mesh) -> Option<Self> {
+        let mut attributes: Vec<&'static str> = mesh.try_attributes().ok()?.map(|(a, _)| a.name).collect();
+        attributes.sort_unstable();
+        Some(Self {
+            topology: mesh.primitive_topology(),
+            attributes,
+            morph: mesh.has_morph_targets(),
+        })
+    }
+
+    fn has_uv(&self) -> bool {
+        self.attributes.contains(&Mesh::ATTRIBUTE_UV_0.name)
+    }
+
+    /// Меш со скелетом или морф-целями рисуется только со своими компонентами (`SkinnedMesh`,
+    /// `MorphWeights`), иначе группа привязок не совпадёт с конвейером. Такие меши есть только
+    /// в моделях glTF, а модели прогреваются своими сценами.
+    fn standalone(&self) -> bool {
+        !self.morph
+            && !self.attributes.contains(&Mesh::ATTRIBUTE_JOINT_INDEX.name)
+            && !self.attributes.contains(&Mesh::ATTRIBUTE_JOINT_WEIGHT.name)
+    }
+
+    /// Можно ли рисовать меш этого класса материалом этого класса. Точки и линии несовместимы
+    /// со сдвигом глубины: такой конвейер wgpu отвергает, и Bevy закрывает игру.
+    fn fits(&self, material: &MaterialClass) -> bool {
+        if !self.standalone() {
+            return false;
+        }
+        let triangles = matches!(self.topology, PrimitiveTopology::TriangleList | PrimitiveTopology::TriangleStrip);
+        triangles || material.key & StandardMaterialKey::DEPTH_BIAS.bits() == 0
+    }
+}
+
+/// Класс материала для конвейера: ключ `StandardMaterial` и режим прозрачности.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+struct MaterialClass {
+    key: u64,
+    alpha: &'static str,
+}
+
+impl MaterialClass {
+    fn of(material: &StandardMaterial) -> Self {
+        let alpha = match material.alpha_mode {
+            AlphaMode::Opaque => "opaque",
+            AlphaMode::Mask(_) => "mask",
+            AlphaMode::Blend => "blend",
+            AlphaMode::Premultiplied => "premultiplied",
+            AlphaMode::AlphaToCoverage => "coverage",
+            AlphaMode::Add => "add",
+            AlphaMode::Multiply => "multiply",
+        };
+        Self {
+            key: StandardMaterialKey::from(material).bits(),
+            alpha,
+        }
+    }
+}
+
+/// Представители классов: по одному мешу и материалу на класс. Меш с данными только на
+/// видеокарте классифицируется в кадре создания, пока данные ещё в основном мире.
+#[derive(Resource, Default)]
+struct Catalog {
+    meshes: HashMap<LayoutClass, Handle<Mesh>>,
+    materials: HashMap<MaterialClass, Handle<StandardMaterial>>,
+}
+
+fn catalog_meshes(
+    mut events: MessageReader<AssetEvent<Mesh>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut catalog: ResMut<Catalog>,
+) {
+    for event in events.read() {
+        let (AssetEvent::Added { id } | AssetEvent::Modified { id }) = *event else {
+            continue;
+        };
+        let Some(class) = meshes.get(id).and_then(LayoutClass::of) else {
+            continue;
+        };
+        if !catalog.meshes.contains_key(&class) {
+            if let Some(handle) = meshes.get_strong_handle(id) {
+                catalog.meshes.insert(class, handle);
+            }
+        }
+    }
+}
+
+fn catalog_materials(
+    mut events: MessageReader<AssetEvent<StandardMaterial>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut catalog: ResMut<Catalog>,
+    prewarm: Res<Prewarm>,
+) {
+    for event in events.read() {
+        let (AssetEvent::Added { id } | AssetEvent::Modified { id }) = *event else {
+            continue;
+        };
+        let Some(class) = materials.get(id).map(MaterialClass::of) else {
+            continue;
+        };
+        if !catalog.materials.contains_key(&class) {
+            if prewarm.done {
+                // Его конвейеры соберутся в игре: такой материал стоит создавать при старте.
+                warn!("Материал нового класса после прогрева: {class:?}, цвет {:?}", materials.get(id).map(|m| m.base_color));
+            }
+            if let Some(handle) = materials.get_strong_handle(id) {
+                catalog.materials.insert(class, handle);
+            }
+        }
+    }
+}
+
+/// Что уже стоит в прогреве.
+#[derive(PartialEq, Eq, Hash)]
+enum Warmed {
+    Pair(LayoutClass, MaterialClass),
+    Flame(LayoutClass),
+    Effect(AssetId<EffectAsset>),
+    Scene(AssetId<WorldAsset>),
+}
+
+/// Ход прогрева.
+#[derive(Resource, Default)]
+struct Prewarm {
+    done: bool,
+    warmed: HashSet<Warmed>,
+    /// Корни объектов прогрева: меши и модели, эффекты частиц.
+    roots: Option<(Entity, Entity)>,
+    quiet: u32,
+    started: Option<f32>,
+    /// Конвейеров в кэше на начало прогрева.
+    pipelines_before: usize,
+}
+
+/// Смена качества: другой ключ вида — прогрев заново.
+fn restart_on_quality(quality: Res<Quality>, mut prewarm: ResMut<Prewarm>, watch: Res<PipelineWatch>) {
+    if !quality.is_changed() || quality.is_added() || prewarm.started.is_none() {
+        return;
+    }
+    info!("Прогрев шейдеров заново: качество {:?}", *quality);
+    prewarm.done = false;
+    prewarm.warmed.clear();
+    prewarm.quiet = 0;
+    prewarm.started = None;
+    watch.lock().warm = false;
+    crate::platform::set_warm(false);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn warm(
+    mut commands: Commands,
+    mut prewarm: ResMut<Prewarm>,
+    catalog: Res<Catalog>,
+    mut bank: ResMut<ModelBank>,
+    asset_server: Res<AssetServer>,
+    mut effects: ResMut<Assets<EffectAsset>>,
+    mut flames: ResMut<Assets<FlameMaterial>>,
+    watch: Res<PipelineWatch>,
+    time: Res<Time<Real>>,
+) {
+    if prewarm.done {
+        return;
+    }
+    let now = time.elapsed_secs();
+    let prewarm = &mut *prewarm;
+    if prewarm.started.is_none() {
+        prewarm.started = Some(now);
+        prewarm.pipelines_before = watch.lock().total;
+        bank.request_all(&asset_server);
+    }
+    let (mesh_root, effect_root) = *prewarm.roots.get_or_insert_with(|| {
+        let root = |commands: &mut Commands, name: &str| {
+            commands
+                .spawn((Name::new(name.to_owned()), Transform::default(), Visibility::default()))
+                .id()
+        };
+        (root(&mut commands, "Прогрев: меши"), root(&mut commands, "Прогрев: частицы"))
+    });
+
+    let small = Transform::from_scale(Vec3::splat(SCALE));
+    let mut added = 0;
+    let mut add = |prewarm: &mut Prewarm, what: Warmed| -> bool {
+        let new = prewarm.warmed.insert(what);
+        added += usize::from(new);
+        new
+    };
+
+    let flame_id = flames.ids().next();
+    let flame = flame_id.and_then(|id| flames.get_strong_handle(id));
+    for (layout, mesh) in &catalog.meshes {
+        for (class, material) in &catalog.materials {
+            if layout.fits(class) && add(prewarm, Warmed::Pair(layout.clone(), *class)) {
+                commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone()), small, ChildOf(mesh_root)));
+            }
+        }
+        if layout.has_uv() && layout.standalone() {
+            if let Some(flame) = &flame {
+                if add(prewarm, Warmed::Flame(layout.clone())) {
+                    commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(flame.clone()), small, ChildOf(mesh_root)));
+                }
+            }
+        }
+    }
+    let effect_ids: Vec<AssetId<EffectAsset>> = effects.ids().collect();
+    for id in effect_ids {
+        if !add(prewarm, Warmed::Effect(id)) {
+            continue;
+        }
+        let Some(handle) = effects.get_strong_handle(id) else {
+            continue;
+        };
+        // Конвейер зависит от раскладки слотов текстур, а не от картинок: годится любая.
+        let slots = effects.get(id).map_or(0, |effect| effect.texture_layout().layout.len());
+        let mut entity = commands.spawn((ParticleEffect::new(handle), Transform::default(), ChildOf(effect_root)));
+        if slots > 0 {
+            entity.insert(EffectMaterial {
+                images: vec![Handle::<Image>::default(); slots],
+            });
+        }
+    }
+    for scene in bank.ready_scenes() {
+        if add(prewarm, Warmed::Scene(scene.id())) {
+            commands.spawn((WorldAssetRoot(scene.clone()), small, ChildOf(mesh_root)));
+        }
+    }
+
+    let state = watch.lock();
+    let busy = added > 0 || state.fresh > 0 || state.waiting > 0 || bank.loading() > 0;
+    prewarm.quiet = if busy { 0 } else { prewarm.quiet + 1 };
+    let started = prewarm.started.unwrap_or(now);
+    let timed_out = now - started > TIMEOUT;
+    if prewarm.quiet < QUIET_FRAMES && !timed_out {
+        return;
+    }
+    if timed_out {
+        warn!(
+            "Прогрев шейдеров не закончился за {TIMEOUT} с: ждут {} конвейеров, грузится моделей {}",
+            state.waiting,
+            bank.loading()
+        );
+    }
+    info!(
+        "Прогрев шейдеров: {} конвейеров за {:.1} с ({} классов мешей, {} классов материалов, {} объектов)",
+        state.total.saturating_sub(prewarm.pipelines_before),
+        now - started,
+        catalog.meshes.len(),
+        catalog.materials.len(),
+        prewarm.warmed.len()
+    );
+    drop(state);
+    watch.lock().warm = true;
+    crate::platform::set_warm(true);
+    prewarm.done = true;
+    if let Some((meshes, effects)) = prewarm.roots.take() {
+        commands.entity(meshes).despawn();
+        commands.entity(effects).despawn();
+    }
+}
+
+/// Объекты прогрева стоят на луче взгляда камеры за фокусом, под рельефом.
+fn follow_camera(
+    prewarm: Res<Prewarm>,
+    focus: Res<Focus>,
+    terrain: Option<Res<Terrain>>,
+    camera: Query<&Transform, (With<GameCamera>, Without<ChildOf>)>,
+    mut roots: Query<&mut Transform, Without<GameCamera>>,
+) {
+    let (Some((meshes, effects)), Ok(eye)) = (prewarm.roots, camera.single()) else {
+        return;
+    };
+    let ground = terrain.map_or(focus.0.y, |t| t.height_at(focus.0.x, focus.0.z));
+    let target = Vec3::new(focus.0.x, ground, focus.0.z);
+    let forward = (target - eye.translation).normalize_or(Vec3::NEG_Y);
+    for (root, depth) in [(meshes, MESH_DEPTH), (effects, EFFECT_DEPTH)] {
+        if let Ok(mut transform) = roots.get_mut(root) {
+            transform.translation = target + forward * depth;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::asset::RenderAssetUsages;
+
+    #[test]
+    fn меши_одной_раскладки_в_одном_классе() {
+        let cube = Mesh::from(Cuboid::new(1.0, 2.0, 3.0));
+        let sphere = Mesh::from(Sphere::new(1.0));
+        assert_eq!(LayoutClass::of(&cube), LayoutClass::of(&sphere));
+        let bare = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0f32; 3]; 3]);
+        assert_ne!(LayoutClass::of(&cube), LayoutClass::of(&bare));
+        assert!(LayoutClass::of(&cube).unwrap().has_uv());
+        assert!(!LayoutClass::of(&bare).unwrap().has_uv());
+    }
+
+    #[test]
+    fn класс_материала_по_ключу_и_прозрачности() {
+        let red = StandardMaterial::from(Color::srgb(1.0, 0.0, 0.0));
+        let blue = StandardMaterial::from(Color::srgb(0.0, 0.0, 1.0));
+        assert_eq!(MaterialClass::of(&red), MaterialClass::of(&blue));
+        let glass = StandardMaterial {
+            alpha_mode: AlphaMode::Blend,
+            ..red.clone()
+        };
+        assert_ne!(MaterialClass::of(&red), MaterialClass::of(&glass));
+        let masked = |cutoff| StandardMaterial {
+            alpha_mode: AlphaMode::Mask(cutoff),
+            ..default()
+        };
+        assert_eq!(MaterialClass::of(&masked(0.3)), MaterialClass::of(&masked(0.7)));
+    }
+
+    #[test]
+    fn точки_не_рисуются_материалом_со_сдвигом_глубины() {
+        let points = LayoutClass {
+            topology: PrimitiveTopology::PointList,
+            attributes: vec![Mesh::ATTRIBUTE_POSITION.name],
+            morph: false,
+        };
+        let plain = MaterialClass::of(&StandardMaterial::default());
+        let biased = MaterialClass::of(&StandardMaterial {
+            depth_bias: 5.0,
+            ..default()
+        });
+        assert!(points.fits(&plain));
+        assert!(!points.fits(&biased));
+        let triangles = LayoutClass::of(&Mesh::from(Cuboid::default())).unwrap();
+        assert!(triangles.fits(&biased));
+        let skinned = LayoutClass {
+            attributes: vec![Mesh::ATTRIBUTE_POSITION.name, Mesh::ATTRIBUTE_JOINT_INDEX.name],
+            ..triangles
+        };
+        assert!(!skinned.fits(&plain));
+    }
+}

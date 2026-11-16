@@ -46,6 +46,7 @@ mod pickups;
 mod props;
 mod perf;
 mod platform;
+mod prewarm;
 mod puddles;
 mod quality;
 mod rails;
@@ -172,6 +173,7 @@ fn game_plugins(app: &mut App) {
             tank_look::TankLookPlugin,
             CameraPlugin,
             quality::QualityPlugin,
+            prewarm::PrewarmPlugin,
             aim::AimPlugin,
             explosion::ExplosionPlugin,
             explosion_fx::ExplosionFxPlugin,

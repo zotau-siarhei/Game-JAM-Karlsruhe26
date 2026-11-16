@@ -171,6 +171,34 @@ impl ModelBank {
         bank
     }
 
+    /// Ставит на загрузку все модели списка: прогрев (`src/prewarm.rs`) берёт их заранее,
+    /// чтобы первый объект с моделью не ждал файла и шейдеров.
+    pub fn request_all(&mut self, asset_server: &AssetServer) {
+        let ids: Vec<String> = self.models.keys().cloned().collect();
+        for id in ids {
+            self.request(asset_server, &id);
+        }
+    }
+
+    /// Сцены загруженных моделей.
+    pub fn ready_scenes(&self) -> Vec<Handle<WorldAsset>> {
+        self.models
+            .values()
+            .filter_map(|model| match &model.state {
+                ModelState::Ready(handles) => Some(handles.scene.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Сколько моделей ещё грузится.
+    pub fn loading(&self) -> usize {
+        self.models
+            .values()
+            .filter(|model| matches!(model.state, ModelState::Loading(_)))
+            .count()
+    }
+
     /// Сцена модели, её положение относительно низа объекта и признак «уже загружена».
     /// Первый запрос ставит файл на загрузку. `None` — модели нет, нужен запасной облик.
     fn request(&mut self, asset_server: &AssetServer, id: &str) -> Option<(Handle<WorldAsset>, Transform, bool)> {

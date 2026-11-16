@@ -74,6 +74,19 @@ pub fn quality_hint() -> Option<String> {
     }
 }
 
+/// Сообщает странице браузерной версии, закончен ли прогрев шейдеров (`window.spaceGuardWarm`):
+/// экран загрузки ждёт его, прежде чем предложить начать. Нативу некому сообщать.
+pub fn set_warm(warm: bool) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = js_sys::Reflect::set(&js_sys::global(), &"spaceGuardWarm".into(), &warm.into());
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = warm;
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn asset_path(dir: &str, file: &str) -> std::path::PathBuf {
     bevy::asset::io::file::FileAssetReader::get_base_path()
