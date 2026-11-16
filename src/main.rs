@@ -50,6 +50,7 @@ mod quality;
 mod rails;
 mod railway;
 mod records;
+mod regen;
 mod repair;
 mod resident_anim;
 mod residents;
@@ -130,6 +131,8 @@ fn game_plugins(app: &mut App) {
         enemy_look::EnemyLookPlugin,
         // Анимация вне экрана не считается, дальняя — реже.
         anim_lod::AnimLodPlugin,
+        // Здоровье само растёт, если лунохода давно не ранили.
+        regen::RegenPlugin,
     ))
         // Посёлки, объекты поверхности и разрушение.
         .add_plugins((

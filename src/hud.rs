@@ -4,10 +4,12 @@
 //! Интерфейс забега прячется в меню одной системой: корню любой панели забега достаточно
 //! компонента [`RunUi`].
 
+use bevy::color::Mix;
 use bevy::prelude::*;
 
 use crate::combat::{Health, SurvivalTime};
 use crate::frame::GameSet;
+use crate::regen::Regen;
 use crate::rover::Rover;
 use crate::run::GameState;
 use crate::weapons::CurrentWeapon;
@@ -184,7 +186,14 @@ pub fn format_time(seconds: f32) -> String {
     format!("{}:{:02}.{}", tenths / 600, tenths / 10 % 60, tenths % 10)
 }
 
+/// Насколько полоса здоровья светлеет при восстановлении: 0–25 % белого, ~1,5 Гц.
+fn regen_glow(seconds: f32) -> f32 {
+    0.125 * (1.0 + (seconds * 1.5 * std::f32::consts::TAU).sin())
+}
+
 fn update_health_bar(
+    time: Res<Time>,
+    regen: Res<Regen>,
     rover: Query<&Health, With<Rover>>,
     mut fill: Query<(&mut Node, &mut BackgroundColor), With<HealthFill>>,
     mut text: Query<&mut Text, With<HealthText>>,
@@ -195,7 +204,13 @@ fn update_health_bar(
     let fraction = health.fraction();
     for (mut node, mut color) in &mut fill {
         node.width = Val::Percent(fraction * 100.0);
-        color.0 = health_color(fraction);
+        let base = health_color(fraction);
+        // Пока здоровье само растёт, полоса мягко пульсирует светлее своего цвета.
+        color.0 = if regen.active {
+            Color::from(base.to_srgba().mix(&Srgba::WHITE, regen_glow(time.elapsed_secs())))
+        } else {
+            base
+        };
     }
     for mut text in &mut text {
         let label = format!("{:.0}", health.current.ceil());
