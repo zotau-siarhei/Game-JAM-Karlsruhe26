@@ -151,6 +151,7 @@ cargo test                                  # тесты
   Workflow `.github/workflows/web.yml` раз в 4 часа собирает main (`--release`), если после последней
   выкладки были коммиты. Сборка не чаще раза в 4 часа при любом запуске, ручной (Actions → web → Run
   workflow) внутри этого окна ничего не собирает: серверы GitHub не нагружаем, вручную не запускать.
+  Исключение — прямая просьба Sergei Zotov: `gh workflow run web.yml -f force=true` собирает сразу.
 - Целевое железо — MacBook Air M2, игра должна идти на нём плавно.
 - На Linux линкует mold (`.cargo/config.toml`), его надо поставить: `pacman -S mold`.
 - Кэш компиляции — sccache через `scripts/rustc-wrapper.sh` (`.cargo/config.toml`): ставится

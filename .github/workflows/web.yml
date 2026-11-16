@@ -11,6 +11,11 @@ on:
   schedule:
     - cron: "0 */4 * * *"
   workflow_dispatch:
+    inputs:
+      force:
+        description: "Собрать сейчас, не дожидаясь 4 часов с прошлой сборки (только по просьбе Sergei Zotov)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -56,6 +61,11 @@ jobs:
           done < <(gh run list -R "$GITHUB_REPOSITORY" --workflow web.yml --limit 30 \
             --json databaseId,createdAt --jq '.[] | "\(.databaseId) \(.createdAt)"')
 
+          if [ "${{ inputs.force }}" = "true" ]; then
+            echo "ручной запуск с force: собираем без ожидания"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ -n "$last_built" ] && [ $((now - last_built)) -lt "$MIN_INTERVAL" ]; then
             echo "прошлая сборка $(( (now - last_built) / 60 )) мин назад: не чаще раза в 4 часа, пропускаем"
             echo "changed=false" >> "$GITHUB_OUTPUT"
