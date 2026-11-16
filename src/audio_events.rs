@@ -7,14 +7,15 @@ use bevy::prelude::*;
 
 use crate::airstrike::Strike;
 use crate::alarm::Alarm;
-use crate::arsenal::AmmoRanOut;
-use crate::boss::Boss;
-use crate::buildings::BuildingDestroyed;
+use crate::arsenal::{AmmoRanOut, WeaponDenied};
+use crate::boss::{Boss, SpawnBoss};
+use crate::buildings::{BreakDoor, BuildingDestroyed};
 use crate::birds::BirdsTookOff;
 use crate::bullet::FireBullet;
 use crate::casings::CasingClink;
 use crate::capsule::{Capsule, FALL_SECONDS, MARK_SECONDS};
 use crate::collapse::CollapseHouse;
+use crate::comic::ComicShown;
 use crate::combat::{Damage, Died, Health, SurvivalTime, Team};
 use crate::enemy::Enemy;
 use crate::explosion::Explosion;
@@ -23,18 +24,23 @@ use crate::hq::{HqMemory, HqTone, VoiceCue};
 use crate::laser::Beam;
 use crate::lava::CrustBreached;
 use crate::mortar::{FLIGHT_TIME, Shell};
+use crate::obstacles::Rammed;
 use crate::music::{MusicState, Track};
-use crate::pickups::Popup;
+use crate::pickups::WeaponPicked;
 use crate::upgrades::WeaponUpgraded;
 use crate::props::{Prop, PropKind};
 use crate::puddles::WaterSplash;
 use crate::records::{Records, records_path};
 use crate::repair::{MedkitPicked, RepairChanged};
-use crate::residents::ResidentDied;
+use crate::residents::{ResidentDied, ResidentScared};
 use crate::rockets::Rocket;
-use crate::rover::Rover;
+use crate::rover::{Rover, RoverMotion};
 use crate::run::{GameState, RunStarted, WorldRebuilt};
 use crate::sound::PlaySound;
+use crate::sound_list::{Dice, base_id};
+use crate::trains::Car;
+use crate::voice::VoicePlayback;
+use crate::weapons::CurrentWeapon;
 use crate::waves::WaveStarted;
 
 /// Доля здоровья, ниже которой урон считается критическим.
@@ -60,6 +66,53 @@ const ROVER_HIT_SOUND_GAP: f32 = 0.3;
 
 /// Повод `hit` — не чаще раза в столько секунд, иначе он забивает редкие поводы.
 const HIT_CUE_GAP: f32 = 12.0;
+
+/// Вскрик испуганного жителя — не чаще раза в столько секунд: паника охватывает посёлок разом.
+const SCARED_SOUND_GAP: f32 = 0.5;
+
+/// «Пуф» гибели жителей — не больше стольких за кадр.
+const POOF_PER_FRAME: usize = 2;
+
+/// Сирена Службы звучит не дальше стольких метров от лунохода: машина появляется дальше слышимости.
+const SIREN_DISTANCE: f32 = 30.0;
+
+/// Серия убийств рвётся, если следующее убийство не случилось за столько секунд.
+const STREAK_GAP: f32 = 4.0;
+
+/// Хитмаркер серии — не чаще раза в столько секунд.
+const HITMARKER_GAP: f32 = 15.0;
+
+/// «Бонк» — только от препятствий не меньше этого радиуса (дом, валун) и не чаще раза в `BONK_GAP` с.
+const BONK_RADIUS: f32 = 1.4;
+const BONK_GAP: f32 = 5.0;
+
+/// Мощные взрывы чаще этого, с, — серия: следующие звучат короткими вариантами.
+const BIG_SERIES_GAP: f32 = 0.6;
+
+/// Взрыв мощнее этого (гибель босса и лунохода) получает поверх ещё и долгий раскат.
+const HUGE_EXPLOSION_POWER: f32 = 2.0;
+
+/// Дома, рухнувшие чаще этого, с, звучат короткими вариантами обвала.
+const COLLAPSE_SERIES_GAP: f32 = 2.0;
+
+/// Вражеский снаряд мортиры ближе этого к луноходу — писк тревоги, м.
+const ALERT_DISTANCE: f32 = 8.0;
+
+/// Сколько секунд игрок не трогает управление и стоит, прежде чем штаб спросит, не уснул ли он.
+const IDLE_SECONDS: f32 = 20.0;
+
+/// Через сколько секунд после брейнрот-реплики штаб её комментирует.
+const BRAINROT_REPLY_DELAY: f32 = 4.5;
+
+/// Реплики станции брейнрота: после первой из них за забег штаб отзывается `brainrot_comment`.
+const BRAINROT_LINES: [&str; 6] = [
+    "airstrike_call_2",
+    "mortar_fire_meme",
+    "rockets_fire_meme",
+    "service_arrives_2",
+    "weapon_pickup_3",
+    "mortar_reload",
+];
 
 /// Сколько секунд без врагов боевая музыка ещё держится, прежде чем смениться передышкой.
 const LULL_DELAY: f32 = 6.0;
@@ -96,6 +149,31 @@ struct AudioMemory {
     best_record: Option<f64>,
     /// О новом рекорде уже сказано.
     record_announced: bool,
+    /// Секунд до следующего вскрика жителя.
+    scared_cooldown: f32,
+    /// Серия убийств игрока и секунд с последнего из них.
+    streak: u32,
+    since_kill: f32,
+    /// Секунд до следующего хитмаркера серии и до следующего «бонка».
+    hitmarker_cooldown: f32,
+    bonk_cooldown: f32,
+    /// Какие виды оружия уже подбирали за забег: первая встреча — своя реплика.
+    picked: [bool; 6],
+    /// Пролёты самолётов авиаудара: сколько секунд до начала звука.
+    flybys: Vec<f32>,
+    /// Секунд с последнего мощного взрыва и с последнего обвала дома.
+    since_big_explosion: f32,
+    since_collapse: f32,
+    /// Секунд без касания управления, пока луноход стоит.
+    idle: f32,
+    /// В прошлом кадре враги были.
+    enemies_seen: bool,
+    /// Реплика, звучавшая в прошлом кадре.
+    last_line: Option<String>,
+    /// Отложенный ответ штаба: сколько секунд ждать и какой повод.
+    reply: Option<(f32, &'static str)>,
+    /// Брейнрот за забег уже прокомментирован.
+    brainrot_commented: bool,
 }
 
 /// Подключает озвучку игровых событий.
@@ -107,6 +185,18 @@ impl Plugin for AudioEventsPlugin {
             .add_systems(OnEnter(GameState::Menu), menu_music)
             .add_systems(Update, sound_trains.in_set(GameSet::Presentation))
             .add_systems(Update, (sound_casings, sound_birds, sound_splashes).in_set(GameSet::Presentation))
+            .add_systems(
+                Update,
+                (
+                    sound_comics,
+                    sound_denied,
+                    sound_rams,
+                    sound_boss_fall,
+                    voice_replies,
+                    voice_idle.run_if(in_state(GameState::Playing)),
+                )
+                    .in_set(GameSet::Presentation),
+            )
             .add_systems(OnExit(GameState::Menu), click)
             .add_systems(OnExit(GameState::GameOver), click)
             .add_systems(OnEnter(GameState::Paused), pause_blip)
@@ -118,7 +208,7 @@ impl Plugin for AudioEventsPlugin {
                 (
                     (forget_run, announce_run_start).chain().in_set(GameSet::Reset),
                     // Читает компоненты погибшего врага: пока он ещё существует.
-                    voice_enemies.in_set(GameSet::Death),
+                    (voice_enemies, sound_train_cars).in_set(GameSet::Death),
                 ),
             )
             .add_systems(
@@ -231,23 +321,45 @@ fn voice_rover_death(
     rover: Query<(), With<Rover>>,
     mut cues: MessageWriter<VoiceCue>,
     mut music: ResMut<MusicState>,
+    mut sounds: MessageWriter<PlaySound>,
 ) {
     if died.read().any(|message| rover.contains(message.entity)) {
         cues.write(VoiceCue::new("death"));
+        sounds.write(PlaySound::new("meme_oof"));
         music.track = Track::GameOver;
     }
 }
 
+/// Повод серии убийств, если серия только что достигла порога: реплика и мем-звук.
+fn streak_cue(streak: u32) -> Option<(&'static str, &'static str)> {
+    match streak {
+        3 => Some(("streak3", "meme_hitmarker")),
+        5 => Some(("streak5", "meme_airhorn")),
+        10 => Some(("streak10", "meme_airhorn")),
+        _ => None,
+    }
+}
+
 /// Новая волна — реплика о ней; гибель врага — звук и редкий комментарий лунохода, гибель
-/// босса — важная реплика.
+/// босса — важная реплика. Убийства игрока подряд, не реже раза в [`STREAK_GAP`] с, — серия:
+/// на 3, 5 и 10 вместо обычного комментария звучит реплика серии с мем-звуком.
+#[allow(clippy::too_many_arguments)]
 fn voice_enemies(
+    time: Res<Time>,
     mut waves: MessageReader<WaveStarted>,
     mut died: MessageReader<Died>,
     enemies: Query<(), With<Enemy>>,
     bosses: Query<(), With<Boss>>,
+    mut memory: ResMut<AudioMemory>,
     mut sounds: MessageWriter<PlaySound>,
     mut cues: MessageWriter<VoiceCue>,
 ) {
+    let dt = time.delta_secs();
+    memory.since_kill += dt;
+    memory.hitmarker_cooldown = (memory.hitmarker_cooldown - dt).max(0.0);
+    if memory.since_kill > STREAK_GAP {
+        memory.streak = 0;
+    }
     if waves.read().count() > 0 {
         cues.write(VoiceCue::new("wave_start"));
     }
@@ -258,8 +370,37 @@ fn voice_enemies(
         sounds.write(PlaySound::at("enemy_death", message.position));
         if bosses.contains(message.entity) {
             cues.write(VoiceCue::new("boss_dead"));
-        } else {
-            cues.write(VoiceCue::new("kill"));
+            continue;
+        }
+        let by_player = message.killer == Team::Player;
+        if by_player {
+            memory.streak += 1;
+            memory.since_kill = 0.0;
+        }
+        match streak_cue(memory.streak).filter(|_| by_player) {
+            Some((cue, meme)) => {
+                cues.write(VoiceCue::new(cue));
+                let hitmarker = meme == "meme_hitmarker";
+                if !hitmarker || memory.hitmarker_cooldown <= 0.0 {
+                    if hitmarker {
+                        memory.hitmarker_cooldown = HITMARKER_GAP;
+                    }
+                    sounds.write(PlaySound::new(meme));
+                }
+            }
+            None => {
+                cues.write(VoiceCue::new("kill"));
+            }
+        }
+    }
+}
+
+/// Вагон поезда уничтожен — короткий грохот там, где он стоял. Сход всего поезда звучит
+/// отдельно, в [`sound_trains`].
+fn sound_train_cars(mut died: MessageReader<Died>, cars: Query<(), With<Car>>, mut sounds: MessageWriter<PlaySound>) {
+    for death in died.read() {
+        if cars.contains(death.entity) {
+            sounds.write(PlaySound::at("train_crash_short", death.position));
         }
     }
 }
@@ -281,13 +422,30 @@ fn voice_alarm(alarm: Res<Alarm>, mut memory: ResMut<AudioMemory>, mut cues: Mes
     }
 }
 
-/// Гибель жителя — реплика штаба и вклад в объём разрушений.
+/// Испуг жителя — вскрик, не чаще раза в [`SCARED_SOUND_GAP`] с. Гибель жителя — мультяшный «пуф»,
+/// реплика штаба и вклад в объём разрушений.
 fn voice_residents(
+    time: Res<Time>,
+    mut scared: MessageReader<ResidentScared>,
     mut deaths: MessageReader<ResidentDied>,
     mut memory: ResMut<AudioMemory>,
+    mut sounds: MessageWriter<PlaySound>,
     mut cues: MessageWriter<VoiceCue>,
 ) {
-    let count = deaths.read().count();
+    memory.scared_cooldown = (memory.scared_cooldown - time.delta_secs()).max(0.0);
+    for fright in scared.read() {
+        if memory.scared_cooldown <= 0.0 {
+            memory.scared_cooldown = SCARED_SOUND_GAP;
+            sounds.write(PlaySound::at("resident_scared", fright.position));
+        }
+    }
+    let mut count = 0;
+    for death in deaths.read() {
+        if count < POOF_PER_FRAME {
+            sounds.write(PlaySound::at("resident_poof", death.position));
+        }
+        count += 1;
+    }
     if count > 0 {
         memory.destruction += RESIDENT_WEIGHT * count as f32;
         cues.write(VoiceCue::new("resident_died"));
@@ -372,7 +530,7 @@ fn music_for(boss_alive: bool, enemies: bool, calm: f32, current: Track) -> Trac
     }
 }
 
-/// Музыка следует за врагами и боссом.
+/// Музыка следует за врагами и боссом. Когда враги кончились, луноход радостно пищит.
 fn music_follows_enemies(
     time: Res<Time>,
     enemies: Query<(), With<Enemy>>,
@@ -380,12 +538,18 @@ fn music_follows_enemies(
     rover: Query<&Health, With<Rover>>,
     mut memory: ResMut<AudioMemory>,
     mut music: ResMut<MusicState>,
+    mut cues: MessageWriter<VoiceCue>,
 ) {
     let alive = rover.iter().any(|health| !health.is_dead());
     if !alive || matches!(music.track, Track::Silence | Track::GameOver) {
         return;
     }
     let enemies = !enemies.is_empty();
+    // Последний враг пал — луноход радостно пищит.
+    if memory.enemies_seen && !enemies {
+        cues.write(VoiceCue::new("beep_happy"));
+    }
+    memory.enemies_seen = enemies;
     memory.calm = if enemies { 0.0 } else { memory.calm + time.delta_secs() };
     let boss_alive = bosses.iter().any(|health| !health.is_dead());
     let wanted = music_for(boss_alive, enemies, memory.calm, music.track);
@@ -424,15 +588,23 @@ fn sound_shots(mut shots: MessageReader<FireBullet>, mut sounds: MessageWriter<P
 }
 
 /// Выстрел мортиры, своей или вражеской: хлопок у ствола, а перед падением — свист там,
-/// куда летит снаряд. Свист снаряда, летящего в луноход, слышен громче всего.
+/// куда летит снаряд. Свист снаряда, летящего в луноход, слышен громче всего. Вражеский
+/// снаряд, который упадёт рядом с луноходом, — повод для писка тревоги.
 fn sound_shells(
     time: Res<Time>,
     shells: Query<(&Transform, &Shell), Added<Shell>>,
+    rover: Query<&Transform, With<Rover>>,
     mut memory: ResMut<AudioMemory>,
     mut sounds: MessageWriter<PlaySound>,
+    mut cues: MessageWriter<VoiceCue>,
 ) {
+    let rover = rover.iter().next().map(|t| t.translation);
     for (transform, shell) in &shells {
         sounds.write(PlaySound::at("mortar_fire", transform.translation));
+        let close = rover.is_some_and(|r| r.with_y(0.0).distance(shell.target().with_y(0.0)) < ALERT_DISTANCE);
+        if shell.team() != Team::Player && close {
+            cues.write(VoiceCue::new("beep_alert"));
+        }
         memory.whistles.push(((FLIGHT_TIME - WHISTLE_LEAD).max(0.0), shell.target()));
     }
     let dt = time.delta_secs();
@@ -512,10 +684,13 @@ fn sound_rockets(rockets: Query<&Transform, Added<Rocket>>, mut sounds: MessageW
     }
 }
 
-/// Импульс лазера — разряд у лунохода. Вызов авиаудара — пролёт самолёта и подтверждение штаба.
+/// Импульс лазера — разряд у лунохода. Вызов авиаудара — подтверждение штаба, а когда самолёт
+/// появляется (через [`airstrike::DELAY`](crate::airstrike::DELAY) с), — гул его пролёта.
 fn sound_special_weapons(
+    time: Res<Time>,
     beams: Query<(), Added<Beam>>,
     strikes: Query<(), Added<Strike>>,
+    mut memory: ResMut<AudioMemory>,
     mut sounds: MessageWriter<PlaySound>,
     mut cues: MessageWriter<VoiceCue>,
 ) {
@@ -523,32 +698,86 @@ fn sound_special_weapons(
         sounds.write(PlaySound::new("laser_fire"));
     }
     for _ in &strikes {
-        sounds.write(PlaySound::new("airstrike_flyby"));
+        memory.flybys.push(crate::airstrike::DELAY);
         cues.write(VoiceCue::new("airstrike_call"));
+    }
+    let dt = time.delta_secs();
+    memory.flybys.retain_mut(|delay| {
+        *delay -= dt;
+        if *delay > 0.0 {
+            return true;
+        }
+        sounds.write(PlaySound::new("airstrike_flyby"));
+        false
+    });
+}
+
+/// Реплика первого за забег подбора вида оружия. У пулемёта своей нет — общий восторг.
+fn first_pickup_cue(weapon: CurrentWeapon) -> &'static str {
+    match weapon {
+        CurrentWeapon::Mortar => "weapon_mortar",
+        CurrentWeapon::Rockets | CurrentWeapon::HomingRockets => "weapon_rockets",
+        CurrentWeapon::Laser => "weapon_laser",
+        CurrentWeapon::Airstrike => "weapon_airstrike",
+        CurrentWeapon::MachineGun => "weapon_pickup",
     }
 }
 
-/// Подбор ящика или трофея: звон и реплика лунохода. Надпись подбора появляется ровно при подборе.
+/// Реплика повторного подбора: пополнение боезапаса. `roll` — случайное число от 0 до 1.
+fn refill_cue(weapon: CurrentWeapon, roll: f32) -> &'static str {
+    let own = match weapon {
+        CurrentWeapon::Mortar => Some("mortar_reload"),
+        CurrentWeapon::Rockets | CurrentWeapon::HomingRockets => Some("rockets_reload"),
+        _ => None,
+    };
+    match (own, roll) {
+        (Some(cue), r) if r < 0.4 => cue,
+        (_, r) if r < 0.7 => "ammo_crate",
+        _ => "weapon_pickup",
+    }
+}
+
+/// Подбор ящика или трофея: звон и реплика лунохода. Первый за забег ящик вида — своя реплика
+/// о нём; следующие — лязг перезарядки и реплика о пополнении.
 fn sound_pickups(
-    popups: Query<(), Added<Popup>>,
+    mut picked: MessageReader<WeaponPicked>,
+    mut memory: ResMut<AudioMemory>,
+    mut dice: ResMut<Dice>,
     mut sounds: MessageWriter<PlaySound>,
     mut cues: MessageWriter<VoiceCue>,
 ) {
-    for _ in &popups {
+    for pick in picked.read() {
         sounds.write(PlaySound::new("pickup"));
-        cues.write(VoiceCue::new("weapon_pickup"));
+        let seen = &mut memory.picked[pick.weapon as usize];
+        if pick.new || !*seen {
+            *seen = true;
+            cues.write(VoiceCue::new(first_pickup_cue(pick.weapon)));
+        } else {
+            sounds.write(PlaySound::new("reload"));
+            cues.write(VoiceCue::new(refill_cue(pick.weapon, dice.range(0.0, 1.0))));
+        }
     }
 }
 
-/// Золотой ящик: звон подбора и восторг механика «UPGRADE!».
+/// Золотой ящик: джингл улучшения и восторг механика; когда улучшать нечего и боезапас
+/// пополнен до предела — лязг перезарядки и реплика о боеприпасах.
 fn sound_upgrades(
     mut upgraded: MessageReader<WeaponUpgraded>,
     mut sounds: MessageWriter<PlaySound>,
     mut cues: MessageWriter<VoiceCue>,
 ) {
-    for _ in upgraded.read() {
-        sounds.write(PlaySound::new("pickup"));
-        cues.write(VoiceCue::new("weapon_pickup"));
+    for upgrade in upgraded.read() {
+        match upgrade {
+            WeaponUpgraded::Level { .. } => {
+                sounds.write(PlaySound::new("upgrade"));
+                cues.write(VoiceCue::new("weapon_upgrade"));
+            }
+            WeaponUpgraded::Refill { .. } => {
+                sounds.write(PlaySound::new("upgrade"));
+                sounds.write(PlaySound::new("reload"));
+                cues.write(VoiceCue::new("ammo_crate"));
+            }
+        }
     }
 }
 
@@ -579,31 +808,70 @@ fn explosion_sound(power: f32) -> &'static str {
     }
 }
 
-/// Взрыв — звук по мощности в месте взрыва. Мощный взрыв игрока — повод для штаба. Первый
-/// кратер объясняет обучение (`src/intro.rs`): там реплика ждёт, пока штаб замолчит.
+/// Мощный взрыв в серии (бомбы авиаудара идут подряд) звучит коротким вариантом, чтобы
+/// раскаты не забивали предел группы и друг друга.
+fn in_series(sound: &'static str, since_big: f32) -> &'static str {
+    if sound == "explosion_big" && since_big < BIG_SERIES_GAP {
+        "explosion_big_short"
+    } else {
+        sound
+    }
+}
+
+/// Взрыв — звук по мощности в месте взрыва; под самым мощным — ещё и долгий раскат. Мощный взрыв
+/// игрока — повод для штаба. Первый кратер объясняет обучение (`src/intro.rs`): там реплика
+/// ждёт, пока штаб замолчит.
 fn sound_explosions(
+    time: Res<Time>,
     mut explosions: MessageReader<Explosion>,
+    mut memory: ResMut<AudioMemory>,
     mut sounds: MessageWriter<PlaySound>,
     mut cues: MessageWriter<VoiceCue>,
 ) {
+    memory.since_big_explosion += time.delta_secs();
     for explosion in explosions.read() {
-        sounds.write(PlaySound::at(explosion_sound(explosion.power), explosion.position));
+        let sound = explosion_sound(explosion.power);
+        let played = in_series(sound, memory.since_big_explosion);
+        if sound == "explosion_big" {
+            memory.since_big_explosion = 0.0;
+        }
+        sounds.write(PlaySound::at(played, explosion.position));
+        if explosion.power > HUGE_EXPLOSION_POWER {
+            sounds.write(PlaySound::at("explosion_long", explosion.position));
+        }
         if explosion.source_team == Team::Player && explosion.power > BIG_EXPLOSION_POWER {
             cues.write(VoiceCue::new("big_explosion"));
         }
     }
 }
 
-/// Дом рушится — грохот там, где он стоял; разрушенный дом — повод для штаба.
+/// Дом рушится — грохот там, где он стоял; дома, рухнувшие один за другим, звучат короткими
+/// вариантами. Выбитая дверь — короткий обвал. Разрушенный дом — повод для штаба.
+#[allow(clippy::too_many_arguments)]
 fn sound_buildings(
+    time: Res<Time>,
     mut collapses: MessageReader<CollapseHouse>,
+    mut doors: MessageReader<BreakDoor>,
     mut destroyed: MessageReader<BuildingDestroyed>,
+    houses: Query<&GlobalTransform>,
     mut memory: ResMut<AudioMemory>,
     mut sounds: MessageWriter<PlaySound>,
     mut cues: MessageWriter<VoiceCue>,
 ) {
+    memory.since_collapse += time.delta_secs();
     for collapse in collapses.read() {
-        sounds.write(PlaySound::at("building_collapse", collapse.base));
+        let sound = if memory.since_collapse < COLLAPSE_SERIES_GAP {
+            "building_collapse_short"
+        } else {
+            "building_collapse"
+        };
+        memory.since_collapse = 0.0;
+        sounds.write(PlaySound::at(sound, collapse.base));
+    }
+    for door in doors.read() {
+        if let Ok(house) = houses.get(door.house) {
+            sounds.write(PlaySound::at("building_collapse_short", house.translation()));
+        }
     }
     let count = destroyed.read().count();
     if count > 0 {
@@ -612,11 +880,22 @@ fn sound_buildings(
     }
 }
 
-/// Служба защиты жителей приехала по тревоге — штаб предупреждает.
-fn voice_service(mut arrived: MessageReader<crate::service::ServiceArrived>, mut cues: MessageWriter<VoiceCue>) {
-    if arrived.read().count() > 0 {
-        cues.write(VoiceCue::new("service_arrives"));
-    }
+/// Служба защиты жителей приехала по тревоге — сирена со стороны приезда и предупреждение штаба.
+/// Машина появляется дальше слышимости, поэтому сирена звучит не дальше [`SIREN_DISTANCE`] м.
+fn voice_service(
+    mut arrived: MessageReader<crate::service::ServiceArrived>,
+    rover: Query<&Transform, With<Rover>>,
+    mut sounds: MessageWriter<PlaySound>,
+    mut cues: MessageWriter<VoiceCue>,
+) {
+    let Some(arrival) = arrived.read().last() else {
+        return;
+    };
+    let at = rover.single().map_or(arrival.position, |r| {
+        r.translation + (arrival.position - r.translation).clamp_length_max(SIREN_DISTANCE)
+    });
+    sounds.write(PlaySound::at("service_siren", at));
+    cues.write(VoiceCue::new("service_arrives"));
 }
 
 /// Начался перехват — штаб предупреждает о перехватчиках, не чаще раза в
@@ -648,10 +927,135 @@ fn sound_interceptor_hits(
     }
 }
 
-/// Боезапас кончился на последнем выстреле — штаб замечает, что стрелять нечем.
-fn voice_weapon_denied(mut denied: MessageReader<AmmoRanOut>, mut cues: MessageWriter<VoiceCue>) {
+/// Боезапас кончился на последнем выстреле — холостой щелчок, и штаб замечает, что стрелять нечем.
+fn voice_weapon_denied(
+    mut denied: MessageReader<AmmoRanOut>,
+    mut sounds: MessageWriter<PlaySound>,
+    mut cues: MessageWriter<VoiceCue>,
+) {
     if denied.read().count() > 0 {
+        sounds.write(PlaySound::new("dry_fire"));
         cues.write(VoiceCue::new("ammo_empty"));
+    }
+}
+
+/// Мем-звук под комикс-надпись: редкость уже посчитана в `src/comic.rs`.
+fn comic_sound(caption: &str) -> Option<&'static str> {
+    match caption {
+        "BOMBARDIRO!" | "KA-BOOM!" => Some("meme_boom"),
+        "TUNG TUNG TUNG" => Some("meme_tung"),
+        "WOMP WOMP" => Some("meme_womp"),
+        "6-7" => Some("meme_beep"),
+        _ => None,
+    }
+}
+
+/// Комикс-надпись показана — под неё мем-звук.
+fn sound_comics(mut shown: MessageReader<ComicShown>, mut sounds: MessageWriter<PlaySound>) {
+    for comic in shown.read() {
+        if let Some(sound) = comic_sound(comic.caption) {
+            sounds.write(PlaySound::new(sound));
+        }
+    }
+}
+
+/// Игрок выбрал оружие, из которого нечем стрелять: звук ошибки и обиженный писк лунохода.
+fn sound_denied(
+    mut denied: MessageReader<WeaponDenied>,
+    mut sounds: MessageWriter<PlaySound>,
+    mut cues: MessageWriter<VoiceCue>,
+) {
+    if denied.read().count() > 0 {
+        sounds.write(PlaySound::new("meme_error"));
+        cues.write(VoiceCue::new("beep_sad"));
+    }
+}
+
+/// Луноход снёс корпусом крупное препятствие — мультяшный «бонк», не чаще раза в [`BONK_GAP`] с.
+fn sound_rams(
+    time: Res<Time>,
+    mut rammed: MessageReader<Rammed>,
+    mut memory: ResMut<AudioMemory>,
+    mut sounds: MessageWriter<PlaySound>,
+) {
+    memory.bonk_cooldown = (memory.bonk_cooldown - time.delta_secs()).max(0.0);
+    for ram in rammed.read() {
+        if ram.radius >= BONK_RADIUS && memory.bonk_cooldown <= 0.0 {
+            memory.bonk_cooldown = BONK_GAP;
+            sounds.write(PlaySound::at("meme_bonk", ram.position));
+        }
+    }
+}
+
+/// Босс падает с неба — нарастающий свист падения.
+fn sound_boss_fall(mut requests: MessageReader<SpawnBoss>, mut sounds: MessageWriter<PlaySound>) {
+    if requests.read().count() > 0 {
+        sounds.write(PlaySound::new("boss_fall"));
+    }
+}
+
+/// Ответ штаба на реплику, которая только что кончилась: на вопль о критическом уроне — сразу,
+/// на первую за забег брейнрот-реплику — через [`BRAINROT_REPLY_DELAY`] с.
+fn reply_to(line: &str, brainrot_commented: bool) -> Option<(f32, &'static str)> {
+    if base_id(line) == "crit" {
+        Some((0.0, "crit_reply"))
+    } else if !brainrot_commented && BRAINROT_LINES.contains(&line) {
+        Some((BRAINROT_REPLY_DELAY, "brainrot_comment"))
+    } else {
+        None
+    }
+}
+
+/// Следит за репликами: когда реплика кончилась, штаб может на неё ответить.
+fn voice_replies(
+    time: Res<Time>,
+    playing: Query<&VoicePlayback>,
+    mut memory: ResMut<AudioMemory>,
+    mut cues: MessageWriter<VoiceCue>,
+) {
+    let now = playing.iter().next().map(|line| line.id.clone());
+    if now.is_none()
+        && let Some(ended) = memory.last_line.take()
+        && memory.reply.is_none()
+        && let Some(reply) = reply_to(&ended, memory.brainrot_commented)
+    {
+        if reply.1 == "brainrot_comment" {
+            memory.brainrot_commented = true;
+        }
+        memory.reply = Some(reply);
+    }
+    if now.is_some() {
+        memory.last_line = now;
+    }
+    let dt = time.delta_secs();
+    if let Some((delay, cue)) = memory.reply.as_mut() {
+        *delay -= dt;
+        if *delay <= 0.0 {
+            cues.write(VoiceCue::new(*cue));
+            memory.reply = None;
+        }
+    }
+}
+
+/// Игрок долго не трогает управление и стоит — штаб спрашивает, не уснул ли он.
+fn voice_idle(
+    time: Res<Time>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    rover: Query<&RoverMotion, With<Rover>>,
+    mut memory: ResMut<AudioMemory>,
+    mut cues: MessageWriter<VoiceCue>,
+) {
+    let touched = keys.get_pressed().next().is_some() || mouse.get_pressed().next().is_some();
+    let moving = rover.iter().any(|motion| motion.speed.abs() > 0.1);
+    if touched || moving {
+        memory.idle = 0.0;
+        return;
+    }
+    memory.idle += time.delta_secs();
+    if memory.idle >= IDLE_SECONDS {
+        memory.idle = 0.0;
+        cues.write(VoiceCue::new("idle"));
     }
 }
 
@@ -728,6 +1132,29 @@ mod tests {
 
     use crate::sound_list::{in_group, parse_list};
 
+    /// Поводы, которые шлёт озвучка.
+    const CUES: [&str; 50] = [
+        "run_start", "crit", "crit_reply", "hit", "death", "wave_start", "kill", "boss_dead", "boss_appears",
+        "airstrike_call", "weapon_pickup", "weapon_upgrade", "weapon_mortar", "weapon_rockets", "weapon_laser",
+        "weapon_airstrike", "ammo_crate", "mortar_reload", "rockets_reload", "big_explosion", "house_destroyed",
+        "ammo_empty", "repair_start", "repair_done", "medkit", "resident_died", "alarm_rising", "record",
+        "tut_shoot", "tut_mortar", "first_crater", "tut_repair", "tut_pickup", "tut_alarm", "interceptors",
+        "service_arrives", "train_incoming", "train_derailed", "streak3", "streak5", "streak10", "idle",
+        "brainrot_comment", "beep_happy", "beep_sad", "beep_alert", "mortar_fire_meme", "rockets_fire_meme",
+        "mg_reload", "intro",
+    ];
+
+    /// Звуки, которые шлёт озвучка, и звук мотора лунохода из `src/sound.rs`.
+    const SOUNDS: [&str; 47] = [
+        "rover_hit", "enemy_death", "mg_fire", "mortar_fire", "mortar_whistle", "tree_fall", "rock_break",
+        "capsule_fall", "rocket_fire", "laser_fire", "airstrike_flyby", "pickup", "hit", "explosion_small",
+        "explosion", "explosion_big", "explosion_big_short", "explosion_long", "building_collapse",
+        "building_collapse_short", "ui_click", "ui_pause", "repair", "interceptor_hit", "train_horn", "train_crash",
+        "train_crash_short", "casing_clink", "splash", "birds_takeoff", "service_siren", "resident_scared",
+        "resident_poof", "upgrade", "reload", "dry_fire", "boss_fall", "meme_boom", "meme_airhorn", "meme_hitmarker",
+        "meme_oof", "meme_bonk", "meme_beep", "meme_womp", "meme_error", "meme_tung", "rover_engine",
+    ];
+
     #[test]
     fn hq_tone_rises_with_destruction() {
         assert_eq!(tone_for(0.0), 1);
@@ -764,22 +1191,9 @@ mod tests {
     /// Каждый повод и звук, который шлёт озвучка, есть в списках.
     #[test]
     fn cues_and_sounds_exist_in_lists() {
-        let cues = [
-            "run_start", "crit", "hit", "death", "wave_start", "kill", "boss_dead", "boss_appears",
-            "airstrike_call", "weapon_pickup", "big_explosion", "house_destroyed", "ammo_empty",
-            "repair_start", "repair_done", "medkit", "resident_died", "alarm_rising", "record",
-            "tut_shoot", "tut_mortar", "first_crater", "tut_repair", "tut_pickup", "tut_alarm",
-            "interceptors",
-        ];
-        let sounds = [
-            "rover_hit", "enemy_death", "mg_fire", "mortar_fire", "mortar_whistle", "tree_fall",
-            "rock_break", "capsule_fall", "rocket_fire", "laser_fire", "airstrike_flyby", "pickup",
-            "hit", "explosion_small", "explosion", "explosion_big", "building_collapse", "ui_click",
-            "ui_pause", "repair", "interceptor_hit",
-        ];
         let lists = [
-            (&cues[..], include_str!("../assets/voice/lines.json")),
-            (&sounds[..], include_str!("../assets/sfx/sounds.json")),
+            (&CUES[..], include_str!("../assets/voice/lines.json")),
+            (&SOUNDS[..], include_str!("../assets/sfx/sounds.json")),
         ];
         for (ids, json) in lists {
             let entries = parse_list(json).unwrap();
@@ -787,6 +1201,61 @@ mod tests {
                 assert!(entries.iter().any(|entry| in_group(&entry.id, id)), "нет записей «{id}»");
             }
         }
+    }
+
+    /// Обратная проверка: каждая запись списков звучит в игре — её группа есть среди поводов
+    /// и звуков. Неиспользуемый файл в `assets` роняет тест.
+    #[test]
+    fn every_list_entry_is_used() {
+        let lists = [
+            (&CUES[..], include_str!("../assets/voice/lines.json")),
+            (&SOUNDS[..], include_str!("../assets/sfx/sounds.json")),
+        ];
+        for (ids, json) in lists {
+            for entry in parse_list(json).unwrap() {
+                assert!(ids.iter().any(|id| in_group(&entry.id, id)), "запись «{}» нигде не звучит", entry.id);
+            }
+        }
+    }
+
+    #[test]
+    fn серии_убийств_на_3_5_и_10() {
+        assert_eq!(streak_cue(3), Some(("streak3", "meme_hitmarker")));
+        assert_eq!(streak_cue(5), Some(("streak5", "meme_airhorn")));
+        assert_eq!(streak_cue(10), Some(("streak10", "meme_airhorn")));
+        assert_eq!(streak_cue(4), None);
+    }
+
+    #[test]
+    fn подбор_оружия_даёт_свои_реплики() {
+        assert_eq!(first_pickup_cue(CurrentWeapon::HomingRockets), "weapon_rockets");
+        assert_eq!(first_pickup_cue(CurrentWeapon::Airstrike), "weapon_airstrike");
+        assert_eq!(refill_cue(CurrentWeapon::Mortar, 0.1), "mortar_reload");
+        assert_eq!(refill_cue(CurrentWeapon::Laser, 0.1), "ammo_crate");
+        assert_eq!(refill_cue(CurrentWeapon::Rockets, 0.9), "weapon_pickup");
+    }
+
+    #[test]
+    fn мем_звуки_под_надписи() {
+        assert_eq!(comic_sound("KA-BOOM!"), Some("meme_boom"));
+        assert_eq!(comic_sound("TUNG TUNG TUNG"), Some("meme_tung"));
+        assert_eq!(comic_sound("6-7"), Some("meme_beep"));
+        assert_eq!(comic_sound("BRUH"), None);
+    }
+
+    #[test]
+    fn штаб_отвечает_на_вопль_и_брейнрот() {
+        assert_eq!(reply_to("crit_4", false), Some((0.0, "crit_reply")));
+        assert_eq!(reply_to("crit_reply_1", false), None);
+        assert_eq!(reply_to("weapon_pickup_3", false), Some((BRAINROT_REPLY_DELAY, "brainrot_comment")));
+        assert_eq!(reply_to("weapon_pickup_3", true), None);
+    }
+
+    #[test]
+    fn серия_мощных_взрывов_звучит_коротко() {
+        assert_eq!(in_series("explosion_big", BIG_SERIES_GAP * 0.5), "explosion_big_short");
+        assert_eq!(in_series("explosion_big", BIG_SERIES_GAP * 2.0), "explosion_big");
+        assert_eq!(in_series("explosion", 0.0), "explosion");
     }
 
     #[test]

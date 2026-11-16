@@ -53,7 +53,7 @@ const MAX_BOUNCES: u8 = 2;
 const REST_SPEED: f32 = 0.5;
 
 /// Звон гильз лунохода не чаще этого, с.
-const CLINK_PERIOD: f32 = 1.0 / 8.0;
+const CLINK_PERIOD: f32 = 0.25;
 
 /// Плагин гильз.
 pub struct CasingsPlugin;

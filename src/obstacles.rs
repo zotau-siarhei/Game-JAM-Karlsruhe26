@@ -16,7 +16,7 @@ use bevy::prelude::*;
 
 use crate::combat::{Collider, Damage, Health, Team};
 use crate::enemy::Enemy;
-use crate::frame::GameSet;
+use crate::frame::{GameSet, RunMessages};
 use crate::rover::{Rover, RoverMotion};
 use std::f32::consts::{PI, TAU};
 use crate::settlements::Footprint;
@@ -40,7 +40,7 @@ pub struct ObstaclesPlugin;
 
 impl Plugin for ObstaclesPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<ObstacleGrid>().add_systems(
+        app.init_resource::<ObstacleGrid>().add_run_message::<Rammed>().add_systems(
             Update,
             (
                 // До симуляции: машины, жители и пули этого кадра обходят свежую сетку.
@@ -292,6 +292,14 @@ pub fn segment_hit<'a>(
     best.map(|(s, entity)| (entity, from.lerp(to, s as f32 / steps as f32)))
 }
 
+/// Луноход снёс корпусом препятствие: где и какого размера. По нему звучит «бонк».
+#[derive(Message, Debug, Clone, Copy)]
+pub struct Rammed {
+    pub position: Vec3,
+    /// Радиус описанной окружности препятствия, м.
+    pub radius: f32,
+}
+
 /// Выталкивает луноход и машины из препятствий.
 /// Луноход сбивает препятствия со здоровьем на своём пути: деревья падают от него,
 /// камни и кристаллы разлетаются, дома рушатся. Враги не сбиваются.
@@ -304,6 +312,7 @@ fn ram_obstacles(
     grid: Res<ObstacleGrid>,
     obstacles: Query<(Entity, &Obstacle, &Health), Without<Enemy>>,
     mut damages: MessageWriter<Damage>,
+    mut rammed: MessageWriter<Rammed>,
 ) {
     let (mut transform, mut motion, collider) = rover.into_inner();
     let radius = collider.map_or(DEFAULT_VEHICLE_RADIUS, |c| c.radius);
@@ -340,6 +349,10 @@ fn ram_obstacles(
             target: entity,
             amount: health.current + 1.0,
             source_team: Team::Player,
+        });
+        rammed.write(Rammed {
+            position: Vec3::new(center.x, transform.translation.y, center.y),
+            radius: r,
         });
     }
     transform.translation.x = p.x;

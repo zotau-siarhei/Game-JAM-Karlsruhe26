@@ -95,6 +95,7 @@ pub struct ResidentsPlugin;
 impl Plugin for ResidentsPlugin {
     fn build(&self, app: &mut App) {
         app.add_run_message::<ResidentDied>()
+            .add_run_message::<ResidentScared>()
             .init_resource::<Danger>()
             .add_systems(Startup, create_assets)
             .add_systems(
@@ -126,7 +127,12 @@ impl Plugin for ResidentsPlugin {
 /// Житель погиб: на это подпишется тревога.
 #[derive(Message, Debug, Clone, Copy)]
 pub struct ResidentDied {
-    #[allow(dead_code)]
+    pub position: Vec3,
+}
+
+/// Спокойный житель увидел опасность и запаниковал: повод для вскрика.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct ResidentScared {
     pub position: Vec3,
 }
 
@@ -453,6 +459,7 @@ fn react_to_danger(
     settlements: Res<Settlements>,
     houses: Query<(Entity, &House, &Transform), Without<Resident>>,
     mut residents: Query<(&Transform, &mut Resident)>,
+    mut scared_out: MessageWriter<ResidentScared>,
 ) {
     if danger.points.is_empty() {
         return;
@@ -472,6 +479,7 @@ fn react_to_danger(
         resident.mood = Mood::Panic(PANIC_TIME);
         if was_calm {
             resident.contagious = CONTAGION_TIME;
+            scared_out.write(ResidentScared { position: transform.translation });
         }
         // Ближайший целый дом в 30 м.
         let shelter = houses

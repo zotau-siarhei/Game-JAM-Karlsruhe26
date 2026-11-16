@@ -266,7 +266,6 @@ pub struct SpawnService {
 #[derive(Message, Debug, Clone, Copy)]
 pub struct ServiceArrived {
     /// Где появилась первая машина.
-    #[allow(dead_code)]
     pub position: Vec3,
 }
 

@@ -79,6 +79,7 @@ impl Plugin for PickupsPlugin {
         app.init_resource::<CrateDirector>()
             .add_run_message::<SpawnLoot>()
             .add_run_message::<SpawnUpgrade>()
+            .add_run_message::<WeaponPicked>()
             .add_systems(Startup, create_pickup_assets)
             .add_systems(
                 Update,
@@ -129,6 +130,14 @@ struct Sparkle {
 #[derive(Component)]
 pub struct CarriedWeapon {
     pub weapon: CurrentWeapon,
+}
+
+/// Подобран ящик оружия: какого вида и впервые ли за забег. По нему звучат звон и реплика.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct WeaponPicked {
+    pub weapon: CurrentWeapon,
+    /// Этого вида у лунохода не было.
+    pub new: bool,
 }
 
 /// Всплывающая надпись подбора.
@@ -386,6 +395,7 @@ fn collect(
     items: Query<(Entity, &Transform, &Pickup, Has<GoldenCrate>), Without<Parachuting>>,
     rover: Single<(&Transform, &Health), With<Rover>>,
     mut upgrades: MessageWriter<UpgradePicked>,
+    mut picked: MessageWriter<WeaponPicked>,
 ) {
     let (rover, health) = *rover;
     if health.is_dead() {
@@ -410,6 +420,10 @@ fn collect(
             continue;
         }
         commands.entity(entity).despawn();
+        picked.write(WeaponPicked {
+            weapon: pickup.weapon,
+            new,
+        });
         let label = if new {
             format!("NEW: {}", pickup.weapon.name())
         } else {

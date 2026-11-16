@@ -72,6 +72,8 @@ const LIMITS: &[(&str, usize)] = &[
     ("mortar_", 4),
     ("rocket_", 3),
     ("hit", 3),
+    // Длинный раскат — только под самыми мощными взрывами; стоит выше общего `explosion`.
+    ("explosion_long", 2),
     ("explosion", 5),
     ("building_", 3),
     ("tree_", 3),
@@ -79,7 +81,31 @@ const LIMITS: &[(&str, usize)] = &[
     ("capsule_", 3),
     ("resident_", 4),
     ("ui_", 2),
+    // Гильзы и всплески идут пачками: больше двух сразу не слышно.
+    ("casing_", 2),
+    ("splash", 2),
+    ("birds_", 2),
+    ("airstrike_", 2),
+    // Подписи и мемы звучат по одному.
+    ("meme_", 1),
+    ("service_", 1),
+    ("upgrade", 1),
+    ("reload", 1),
+    ("dry_", 1),
+    ("boss_", 1),
 ];
+
+/// Мелодичные звуки: без разброса высоты, иначе джингл и сирена фальшивят.
+const NO_PITCH_SPREAD: &[&str] = &["upgrade", "service_siren", "meme_womp", "meme_error", "meme_beep"];
+
+/// Разброс высоты для группы: у мелодичных его нет.
+fn pitch_spread(group: &str) -> (f32, f32) {
+    if NO_PITCH_SPREAD.iter().any(|prefix| group.starts_with(prefix)) {
+        (1.0, 1.0)
+    } else {
+        SPEED_SPREAD
+    }
+}
 
 /// Подключает загрузку звуков и их воспроизведение по сообщению [`PlaySound`].
 pub struct SoundPlugin;
@@ -353,7 +379,8 @@ fn play_sounds(
         let world = is_world_sound(&request.id);
         *in_group.entry(request.id.clone()).or_default() += 1;
         in_world += usize::from(world);
-        let pitch = dice.range(SPEED_SPREAD.0, SPEED_SPREAD.1);
+        let (low, high) = pitch_spread(&request.id);
+        let pitch = if low < high { dice.range(low, high) } else { low };
         // Замедление времени растягивает звук мира.
         let speed = if world { pitch * time_stretch(&time) } else { pitch };
         let instance = SoundInstance {
@@ -493,6 +520,16 @@ mod tests {
         assert_eq!(limit_for("tree_fall"), 3);
         assert_eq!(limit_for("rock_break"), 3);
         assert_eq!(limit_for("capsule_fall"), 3);
+        assert_eq!(limit_for("explosion_long"), 2);
+        assert_eq!(limit_for("casing_clink"), 2);
+        assert_eq!(limit_for("meme_tung"), 1);
+    }
+
+    #[test]
+    fn мелодичные_звуки_без_разброса_высоты() {
+        assert_eq!(pitch_spread("upgrade"), (1.0, 1.0));
+        assert_eq!(pitch_spread("meme_womp"), (1.0, 1.0));
+        assert_eq!(pitch_spread("explosion"), SPEED_SPREAD);
     }
 
     #[test]

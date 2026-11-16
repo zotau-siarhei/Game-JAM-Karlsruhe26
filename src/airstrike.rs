@@ -26,7 +26,7 @@ const MARK_WIDTH: f32 = 6.0;
 const SECOND_PLANE_DELAY: f32 = 0.4;
 
 /// Через сколько после вызова появляется самолёт, с.
-const DELAY: f32 = 2.0;
+pub const DELAY: f32 = 2.0;
 
 /// Высота и скорость самолёта.
 const PLANE_HEIGHT: f32 = 25.0;

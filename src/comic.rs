@@ -48,11 +48,18 @@ pub struct ComicPlugin;
 impl Plugin for ComicPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ComicState>()
+            .add_message::<ComicShown>()
             .add_systems(
                 Update,
                 (pick_captions, upgrade_captions, float_captions).chain().in_set(GameSet::Presentation),
             );
     }
+}
+
+/// Мем-надпись показана: озвучка подкладывает под неё мем-звук (`src/audio_events.rs`).
+#[derive(Message, Debug, Clone, Copy)]
+pub struct ComicShown {
+    pub caption: &'static str,
 }
 
 /// Счётчики выстрелов и время до следующего показа каждой надписи.
@@ -85,6 +92,7 @@ fn pick_captions(
     mut lasers: MessageReader<FireLaser>,
     mut denied: MessageReader<WeaponDenied>,
     rover: Query<&Transform, With<Rover>>,
+    mut shown: MessageWriter<ComicShown>,
 ) {
     if started.read().count() > 0 {
         *state = ComicState::default();
@@ -130,6 +138,7 @@ fn pick_captions(
         state.cooldowns[index] = COOLDOWN;
         let (text, color) = CAPTIONS[index];
         spawn_caption(&mut commands, text, color, world, dice.range(-30.0, 30.0), LIFETIME, 44.0);
+        shown.write(ComicShown { caption: text });
     }
 }
 
