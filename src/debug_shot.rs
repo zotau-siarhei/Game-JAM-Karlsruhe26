@@ -9,7 +9,9 @@
 //! - `SPACE_GUARD_SCENE=enemies` — через 2 с забега перед луноходом в ряд встают враги всех
 //!   видов, кроме босса: сравнить их размер с луноходом (снимок на `SPACE_GUARD_SHOT_AT=3`);
 //! - `SPACE_GUARD_SCENE=shock` — перед луноходом встаёт перехватчик, а луноход всё время под
-//!   разрядом перехватчика: видны молнии на корпусе и электроды на носу.
+//!   разрядом перехватчика: видны молнии на корпусе и электроды на носу;
+//! - `SPACE_GUARD_SCENE=drive` — луноход сам едет с газом и на 3–5-й секунде поворачивает налево:
+//!   посмотреть колеи (`tracks`).
 
 use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
@@ -44,7 +46,7 @@ impl Plugin for DebugShotPlugin {
             taken: None,
             staged: false,
         })
-        .add_systems(Update, (press_start, stage_scene, keep_shocked, take_shot).before(GameSet::Screens));
+        .add_systems(Update, (press_start, stage_scene, keep_shocked, drive, take_shot).before(GameSet::Screens));
     }
 }
 
@@ -68,6 +70,26 @@ fn press_start(
 ) {
     if debug.autostart && *state.get() == GameState::Menu && time.elapsed_secs() > 1.0 {
         keys.press(KeyCode::Enter);
+    }
+}
+
+/// Сцена `drive`: газ всё время, с 3-й по 5-ю секунду забега — поворот налево.
+fn drive(
+    time: Res<Time>,
+    debug: Res<DebugShot>,
+    state: Res<State<GameState>>,
+    mut keys: ResMut<ButtonInput<KeyCode>>,
+    mut clock: Local<f32>,
+) {
+    if debug.scene.as_deref() != Some("drive") || *state.get() != GameState::Playing {
+        return;
+    }
+    *clock += time.delta_secs();
+    keys.press(KeyCode::KeyW);
+    if (3.0..5.0).contains(&*clock) {
+        keys.press(KeyCode::KeyA);
+    } else {
+        keys.release(KeyCode::KeyA);
     }
 }
 

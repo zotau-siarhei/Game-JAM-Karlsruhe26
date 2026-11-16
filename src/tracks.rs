@@ -58,8 +58,8 @@ const MAX_SEGMENTS: usize = 1500;
 const MAX_FOOTPRINTS: usize = 120;
 
 /// Глубина колеи гусениц и колёс, м.
-const TREADS_DEPTH: f32 = 0.2;
-const WHEELS_DEPTH: f32 = 0.12;
+const TREADS_DEPTH: f32 = 0.25;
+const WHEELS_DEPTH: f32 = 0.15;
 
 /// На сколько за край опоры спадает просадка до нуля, м: сетка рельефа — 1 м.
 const PRESS_EDGE: f32 = 0.7;
@@ -68,10 +68,10 @@ const PRESS_EDGE: f32 = 0.7;
 const PRESS_EPSILON: f32 = 0.01;
 
 /// Насколько вершина на полной глубине колеи смешивается с цветом голого грунта.
-const SOIL_MIX: f32 = 0.45;
+const SOIL_MIX: f32 = 0.75;
 
 /// Цвет голого грунта в колее, sRGB.
-const SOIL: Color = Color::srgb(0.33, 0.24, 0.15);
+const SOIL: Color = Color::srgb(0.3, 0.21, 0.12);
 
 /// Трава пропадает в полосе шире опоры на столько с каждой стороны, м.
 const GRASS_CLEAR: f32 = 0.3;
@@ -89,8 +89,8 @@ const LIFT: f32 = 0.04;
 const DEPTH_BIAS: f32 = 8.0;
 
 /// Непрозрачность следа: гусеницы, колёса, ступни.
-const TREADS_ALPHA: f32 = 0.55;
-const WHEELS_ALPHA: f32 = 0.6;
+const TREADS_ALPHA: f32 = 0.7;
+const WHEELS_ALPHA: f32 = 0.7;
 const FEET_ALPHA: f32 = 0.7;
 
 /// Цвет следа в линейном RGB: тёмный влажный грунт.
