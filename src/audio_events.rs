@@ -388,9 +388,11 @@ fn voice_enemies(
                     sounds.write(PlaySound::new(meme));
                 }
             }
-            None => {
+            // Враг, убитый своими, — не заслуга игрока: штаб молчит.
+            None if message.killer != Team::Enemy => {
                 cues.write(VoiceCue::new("kill"));
             }
+            None => {}
         }
     }
 }

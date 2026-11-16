@@ -112,12 +112,14 @@ pub enum Team {
 impl Team {
     /// Доля урона, которую атака этой команды наносит цели команды `target`.
     ///
-    /// Своя команда получает [`FRIENDLY_FIRE`]. Враги и Служба друг друга не ранят, Служба
-    /// бережёт жителей. Ничьих ранят все, и ничьё ранит всех полностью.
+    /// Своя команда получает [`FRIENDLY_FIRE`], но враги ранят друг друга полностью: их пули,
+    /// ракеты и взрывы задевают своих (enemy-friendly-fire). Враги и Служба друг друга не ранят,
+    /// Служба бережёт жителей. Ничьих ранят все, и ничьё ранит всех полностью.
     pub fn damage_share(self, target: Team) -> f32 {
         use Team::*;
         match (self, target) {
             (Enemy, Service) | (Service, Enemy) | (Service, Neutral) => 0.0,
+            (Enemy, Enemy) => 1.0,
             (Neutral, _) | (_, Neutral) => 1.0,
             (attacker, target) if attacker == target => FRIENDLY_FIRE,
             _ => 1.0,
@@ -129,6 +131,20 @@ impl Team {
         self.damage_share(target) >= 1.0
     }
 }
+
+/// Откуда выпущен снаряд: союзника, внутри которого выстрел начался, — самого стрелка — он не задевает.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct ShotFrom(pub Vec3);
+
+/// Пропускает ли выстрел команды `shot` цель команды `target` с центром `center` и радиусом
+/// `radius`: своего, внутри которого он начался (стрелок или стоящий вплотную), не задевает.
+pub fn spared_ally(shot: Team, target: Team, origin: Vec3, center: Vec3, radius: f32) -> bool {
+    shot == target && origin.distance(center) <= radius
+}
+
+/// Неуязвим для своей команды: так босс не ранит себя ударом приземления, а враги — босса.
+#[derive(Component, Debug, Clone, Copy, Default)]
+pub struct AllyProof;
 
 /// Круглый коллайдер для попаданий и тарана.
 #[derive(Component, Debug, Clone, Copy)]
@@ -323,14 +339,17 @@ fn apply_damage(
     immortal: Option<Res<Immortal>>,
     mut damages: MessageReader<Damage>,
     mut died: MessageWriter<Died>,
-    mut targets: Query<(&mut Health, Option<&GlobalTransform>, Has<Rover>)>,
+    mut targets: Query<(&mut Health, Option<&GlobalTransform>, Has<Rover>, Option<&Team>, Has<AllyProof>)>,
 ) {
     let immortal = immortal.is_some_and(|i| i.0);
     for damage in damages.read() {
-        let Ok((mut health, transform, rover)) = targets.get_mut(damage.target) else {
+        let Ok((mut health, transform, rover, team, ally_proof)) = targets.get_mut(damage.target) else {
             continue;
         };
         if health.is_dead() || damage.amount <= 0.0 {
+            continue;
+        }
+        if ally_proof && team == Some(&damage.source_team) {
             continue;
         }
         // Бессмертный луноход вспыхивает от попаданий, но здоровья не теряет.
@@ -503,8 +522,13 @@ mod tests {
             assert_eq!(attacker.damage_share(Player), 1.0);
             assert_eq!(Player.damage_share(attacker), 1.0);
             assert!(attacker.hostile_to(Player) && Player.hostile_to(attacker));
-            assert_eq!(attacker.damage_share(attacker), FRIENDLY_FIRE);
-            assert!(!attacker.hostile_to(attacker));
+        }
+        // Враги ранят друг друга полностью, у Службы и лунохода свой урон слабый.
+        assert_eq!(Enemy.damage_share(Enemy), 1.0);
+        assert!(Enemy.hostile_to(Enemy));
+        for team in [Player, Service] {
+            assert_eq!(team.damage_share(team), FRIENDLY_FIRE);
+            assert!(!team.hostile_to(team));
         }
         // Жителей ранят все, кроме Службы; лава ранит всех.
         assert_eq!(Player.damage_share(Neutral), 1.0);
@@ -513,6 +537,29 @@ mod tests {
         for target in [Player, Enemy, Service, Neutral] {
             assert_eq!(Neutral.damage_share(target), 1.0);
         }
+    }
+
+    #[test]
+    fn shot_spares_its_shooter_but_not_other_allies() {
+        use Team::*;
+        let muzzle = Vec3::new(0.0, 0.9, 0.0);
+        assert!(spared_ally(Enemy, Enemy, muzzle, Vec3::ZERO, 3.0));
+        assert!(!spared_ally(Enemy, Enemy, muzzle, Vec3::new(8.0, 0.0, 0.0), 3.0));
+        // Чужого, стоящего вплотную, выстрел не щадит.
+        assert!(!spared_ally(Player, Enemy, muzzle, Vec3::ZERO, 3.0));
+    }
+
+    #[test]
+    fn ally_proof_ignores_own_team_damage() {
+        let mut app = app_with_damage();
+        let boss = app.world_mut().spawn((Team::Enemy, AllyProof, Health::new(100.0))).id();
+        let current = |app: &App| app.world().get::<Health>(boss).unwrap().current;
+        app.world_mut().write_message(Damage { target: boss, amount: 40.0, source_team: Team::Enemy });
+        app.update();
+        assert_eq!(current(&app), 100.0);
+        app.world_mut().write_message(Damage { target: boss, amount: 40.0, source_team: Team::Player });
+        app.update();
+        assert_eq!(current(&app), 60.0);
     }
 
     #[test]

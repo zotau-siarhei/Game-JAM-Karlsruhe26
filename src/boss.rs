@@ -344,6 +344,8 @@ fn spawn_boss(
             RunScoped,
             Health::new(health),
             Team::Enemy,
+            // Свои босса не ранят: ни его удар приземления, ни выстрелы отряда.
+            crate::combat::AllyProof,
             Collider { radius: RADIUS },
             BossGait {
                 phase: 0.0,

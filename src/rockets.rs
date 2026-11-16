@@ -10,7 +10,7 @@ use bevy::prelude::*;
 use crate::aim::AimPoint;
 use crate::arsenal::Inventory;
 use crate::bullet::terrain_hit;
-use crate::combat::{Collider, Damage, Health, Team};
+use crate::combat::{Collider, Damage, Health, ShotFrom, Team, spared_ally};
 use crate::enemy::Enemy;
 use crate::explosion::Explosion;
 use crate::frame::{GameSet, RunMessages};
@@ -254,6 +254,7 @@ fn spawn_rocket(commands: &mut Commands, assets: &RocketAssets, origin: Vec3, ro
     commands
         .spawn((
             rocket,
+            ShotFrom(origin),
             RunScoped,
             NotShadowCaster,
             Mesh3d(assets.body.clone()),
@@ -477,7 +478,7 @@ fn fly_rockets(
     time: Res<Time>,
     terrain: Res<Terrain>,
     assets: Res<RocketAssets>,
-    mut rockets: Query<(Entity, &mut Transform, &mut Rocket)>,
+    mut rockets: Query<(Entity, &mut Transform, &mut Rocket, &ShotFrom)>,
     targets: Query<(Entity, &GlobalTransform, &Collider, &Team, &Health)>,
     enemies: Query<(Entity, &GlobalTransform, &Health), With<Enemy>>,
     obstacles: Query<(Entity, &Obstacle)>,
@@ -489,7 +490,7 @@ fn fly_rockets(
         return;
     }
     let mut puff_count = puffs.iter().count();
-    for (entity, mut transform, mut rocket) in &mut rockets {
+    for (entity, mut transform, mut rocket, launched) in &mut rockets {
         let from = transform.translation;
         let mut velocity = rocket.velocity;
         let mut explode_at_target = false;
@@ -557,7 +558,7 @@ fn fly_rockets(
         }
         let team = rocket.team;
         let struck = targets.iter().any(|(_, t, c, tm, h)| {
-            team.hostile_to(*tm) && !h.is_dead() && {
+            team.hostile_to(*tm) && !h.is_dead() && !spared_ally(team, *tm, launched.0, t.translation(), c.radius) && {
                 let p = t.translation();
                 let along = to - from;
                 let k = ((p - from).dot(along) / along.length_squared().max(1e-6)).clamp(0.0, 1.0);

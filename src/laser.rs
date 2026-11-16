@@ -13,7 +13,7 @@ use bevy::prelude::*;
 
 use crate::aim::AimPoint;
 use crate::arsenal::Inventory;
-use crate::combat::{Collider, Damage, Health, Team};
+use crate::combat::{Collider, Damage, Health, Team, spared_ally};
 use crate::frame::{GameSet, RunMessages};
 use crate::obstacles::Obstacle;
 use crate::rover::{self, Rover};
@@ -354,6 +354,10 @@ fn apply_laser_shots(
                 continue;
             }
             let p = transform.translation();
+            // Луч танка начинается у дула, на краю корпуса: самого танка он не задевает.
+            if spared_ally(shot.team, *team, start.with_y(p.y), p, collider.radius + 1.0) {
+                continue;
+            }
             if flat_distance(Vec2::new(p.x, p.z), a, b) <= collider.radius + (shot.half_width - TRENCH_HALF_WIDTH) {
                 damage.write(Damage {
                     target: entity,

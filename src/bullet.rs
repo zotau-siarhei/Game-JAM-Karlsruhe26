@@ -8,7 +8,7 @@
 
 use bevy::prelude::*;
 
-use crate::combat::{Collider, Damage, Health, Team};
+use crate::combat::{Collider, Damage, Health, ShotFrom, Team, spared_ally};
 use crate::frame::{GameSet, RunMessages};
 use crate::obstacles;
 use crate::run::RunScoped;
@@ -150,6 +150,7 @@ fn spawn_bullets(
                 damage: shot.damage,
                 heavy: shot.heavy,
             },
+            ShotFrom(shot.origin),
             Mesh3d(assets.mesh.clone()),
             MeshMaterial3d(material),
             Transform::from_translation(shot.origin).looking_to(direction, Vec3::Y),
@@ -189,7 +190,7 @@ fn move_bullets(
     mut commands: Commands,
     time: Res<Time>,
     terrain: Res<Terrain>,
-    mut bullets: Query<(Entity, &mut Transform, &mut Bullet)>,
+    mut bullets: Query<(Entity, &mut Transform, &mut Bullet, Option<&ShotFrom>)>,
     targets: Query<(Entity, &GlobalTransform, &Collider, &Team, &Health)>,
     mut damage: MessageWriter<Damage>,
     assets: Option<Res<BulletAssets>>,
@@ -201,7 +202,7 @@ fn move_bullets(
     if dt <= 0.0 {
         return;
     }
-    for (entity, mut transform, mut bullet) in &mut bullets {
+    for (entity, mut transform, mut bullet, shot_from) in &mut bullets {
         let from = transform.translation;
         let step = (bullet.velocity * dt).clamp_length_max(bullet.remaining);
         let mut to = from + step;
@@ -226,6 +227,10 @@ fn move_bullets(
         let hit = targets
             .iter()
             .filter(|(_, _, _, team, health)| bullet.team.hostile_to(**team) && !health.is_dead())
+            // Враги ранят друг друга, но пуля, вылетевшая из корпуса стрелка, его не задевает.
+            .filter(|(_, target, collider, team, _)| {
+                !shot_from.is_some_and(|o| spared_ally(bullet.team, **team, o.0, target.translation(), collider.radius))
+            })
             .filter(|(_, target, collider, _, _)| segment_hits(from, to, target.translation(), collider.radius))
             .min_by(|left, right| {
                 let left = left.1.translation().distance_squared(from);
@@ -439,7 +444,7 @@ mod tests {
     }
 
     #[test]
-    fn bullet_does_not_hurt_its_own_team() {
+    fn enemy_bullet_hits_another_enemy() {
         let (mut app, target) = app_with_bullets();
         let aim = app.world().get::<GlobalTransform>(target).unwrap().translation();
         let origin = Vec3::new(aim.x - 6.0, aim.y + 0.5, aim.z);
@@ -451,8 +456,28 @@ mod tests {
             heavy: false,
         };
         let entity = fly(&mut app, bullet, origin);
-        assert!(app.world().resource::<Taken>().0.is_empty());
-        // Пуля пролетела дальность или ушла в рельеф и исчезла.
+        assert_eq!(app.world().resource::<Taken>().0, vec![(target, 6.0)]);
         assert!(app.world().get_entity(entity).is_err());
+    }
+
+    #[test]
+    fn bullet_spares_the_enemy_it_was_fired_from() {
+        let (mut app, target) = app_with_bullets();
+        let aim = app.world().get::<GlobalTransform>(target).unwrap().translation();
+        // Пуля вылетает из корпуса врага и летит прочь: стрелок цел.
+        let origin = aim + Vec3::Y * 0.5;
+        let bullet = Bullet {
+            velocity: Vec3::X * BULLET_SPEED,
+            remaining: BULLET_RANGE,
+            team: Team::Enemy,
+            damage: 6.0,
+            heavy: false,
+        };
+        app.world_mut().spawn((Transform::from_translation(origin), bullet, ShotFrom(origin)));
+        for _ in 0..10 {
+            app.world_mut().resource_mut::<Time>().advance_by(std::time::Duration::from_millis(16));
+            app.update();
+        }
+        assert!(app.world().resource::<Taken>().0.is_empty());
     }
 }
