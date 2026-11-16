@@ -191,6 +191,14 @@ impl ModelBank {
             .collect()
     }
 
+    /// Сколько моделей поставлено на загрузку: грузятся, загружены или не загрузились.
+    pub fn requested(&self) -> usize {
+        self.models
+            .values()
+            .filter(|model| matches!(model.state, ModelState::Loading(_) | ModelState::Ready(_) | ModelState::Failed))
+            .count()
+    }
+
     /// Сколько моделей ещё грузится.
     pub fn loading(&self) -> usize {
         self.models

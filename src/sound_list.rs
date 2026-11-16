@@ -150,6 +150,13 @@ impl SoundList {
         self.entries.get(id)
     }
 
+    /// Ставит все звуки списка в учёт загрузки: игра не начнётся, пока они не загружены.
+    pub fn preload(&self, preload: &mut crate::loading::Preload) {
+        for sound in self.iter().filter_map(|loaded| loaded.sound.clone()) {
+            preload.track(sound);
+        }
+    }
+
     /// Все записи в порядке файла.
     pub fn iter(&self) -> impl Iterator<Item = &LoadedSound> {
         self.order.iter().filter_map(|id| self.entries.get(id))

@@ -45,7 +45,14 @@ impl Plugin for VoicePlugin {
             .add_message::<PlayVoice>()
             .add_systems(Startup, load_voice_lines)
             .add_systems(Update, silence_on_rebuild.in_set(GameSet::Reset))
-            .add_systems(Update, (play_voice, expire_lines).chain().in_set(GameSet::Presentation));
+            .add_systems(
+                Update,
+                (play_voice, expire_lines)
+                    .chain()
+                    // Пока идёт загрузка, штаб молчит (src/loading.rs).
+                    .run_if(not(in_state(crate::run::GameState::Loading)))
+                    .in_set(GameSet::Presentation),
+            );
     }
 }
 
@@ -107,8 +114,15 @@ fn line_expired(age: f64, silent_seconds: f64, has_sink: bool) -> bool {
 }
 
 /// Читает список реплик и ставит на загрузку те звуки, файлы которых уже есть.
-fn load_voice_lines(mut voice: ResMut<VoiceLines>, asset_server: Res<AssetServer>) {
+fn load_voice_lines(
+    mut voice: ResMut<VoiceLines>,
+    asset_server: Res<AssetServer>,
+    preload: Option<ResMut<crate::loading::Preload>>,
+) {
     voice.list = SoundList::load(&asset_server, VOICE_DIR, LIST_FILE, "Голос штаба");
+    if let Some(mut preload) = preload {
+        voice.list.preload(&mut preload);
+    }
 }
 
 /// Проигрывает запрошенную реплику. Из нескольких запросов за кадр звучит последний.

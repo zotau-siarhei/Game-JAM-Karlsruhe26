@@ -1,6 +1,8 @@
 //! Забег и экраны вокруг него: меню, гибель лунохода, экран конца забега и рестарт.
 //!
-//! Игра открывается в меню: планета летит под камерой, забега нет. Пауза останавливает
+//! Игра открывается загрузкой (`src/loading.rs`), после неё — меню: планета летит под камерой,
+//! забега нет. Начало забега, рестарт и выход в меню идут через затемнение (`src/fade.rs`):
+//! экран гаснет, мир перестраивается под чёрным занавесом, кадры выравниваются, экран проявляется. Пауза останавливает
 //! виртуальное время: всё, что считает по `Time`, замирает само, а игровая симуляция стоит во
 //! всех состояниях, кроме `Playing` (см. `frame::GameSet`).
 //!
@@ -18,6 +20,7 @@ use bevy::window::WindowFocused;
 use crate::camera::Focus;
 use crate::combat::{Died, Health, SurvivalTime, Team, ROVER_MAX_HEALTH};
 use crate::explosion::Explosion;
+use crate::fade::{Appear, Curtain};
 use crate::frame::GameSet;
 use crate::hud::format_time;
 use crate::records::{self, Record, RecordPlaced, Records};
@@ -37,6 +40,20 @@ const ROVER_RIDE_HEIGHT: f32 = crate::rover::RIDE_HEIGHT * crate::rover::ROVER_S
 /// (WASD, пробел, цифры оружия), не затирают имя и не начинают новый забег.
 const GAME_OVER_INPUT_DELAY: f32 = 0.8;
 
+/// Затемнение перед перестройкой мира и проявление после неё, с.
+const CLOSE_SECONDS: f32 = 0.35;
+const OPEN_SECONDS: f32 = 0.6;
+/// Мир под занавесом «осел»: не меньше стольких кадров после перестройки и столько кадров подряд
+/// короче [`STEADY_FRAME`], но не дольше [`SETTLE_LIMIT`] секунд.
+const SETTLE_FRAMES: u32 = 8;
+const STEADY_FRAMES: u32 = 5;
+const STEADY_FRAME: f32 = 0.05;
+const SETTLE_LIMIT: f32 = 1.5;
+/// Время проявления экранов, с.
+const MENU_APPEAR: f32 = 0.5;
+const PAUSE_APPEAR: f32 = 0.15;
+const GAME_OVER_APPEAR: f32 = 0.6;
+
 /// Скорость, с которой планета летит под камерой в меню, м/с.
 const MENU_FLIGHT: Vec3 = Vec3::new(5.0, 0.0, -2.5);
 
@@ -49,6 +66,7 @@ impl Plugin for RunPlugin {
             .init_resource::<Death>()
             .init_resource::<RunResult>()
             .init_resource::<PauseChoice>()
+            .init_resource::<Transition>()
             .insert_resource(RecordsTable::load())
             .add_message::<WorldRebuilt>()
             .add_message::<RunStarted>()
@@ -66,6 +84,7 @@ impl Plugin for RunPlugin {
                     (game_over_input, draw_game_over)
                         .chain()
                         .run_if(in_state(GameState::GameOver)),
+                    run_transition,
                 )
                     .in_set(GameSet::Screens),
             )
@@ -83,8 +102,11 @@ impl Plugin for RunPlugin {
 /// Состояние игры.
 #[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum GameState {
-    /// Стартовый экран: планета летит под камерой, забега нет.
+    /// Загрузка при запуске: под чёрным занавесом грузятся звуки и модели, прогреваются шейдеры.
+    /// Ничего не звучит, меню не показано (`src/loading.rs`).
     #[default]
+    Loading,
+    /// Стартовый экран: планета летит под камерой, забега нет.
     Menu,
     /// Идёт забег.
     Playing,
@@ -242,6 +264,7 @@ struct RunWorld<'w, 's> {
     started: MessageWriter<'w, RunStarted>,
     next: ResMut<'w, NextState<GameState>>,
     mouse: ResMut<'w, ButtonInput<MouseButton>>,
+    transition: ResMut<'w, Transition>,
     scoped: Query<'w, 's, Entity, With<RunScoped>>,
     chunks: Query<'w, 's, Entity, With<ChunkMesh>>,
     rover: Query<
@@ -290,11 +313,17 @@ impl RunWorld<'_, '_> {
         self.rebuilt.write(WorldRebuilt { seed: seed.0 });
     }
 
-    /// Новый забег на новом рельефе.
+    /// Новый забег на новом рельефе — через затемнение.
     fn start_run(&mut self) {
+        // Нажатие, которое начало забег, не стреляет: кнопка считается отпущенной до нового нажатия.
+        self.mouse.reset_all();
+        self.transition.request(Action::StartRun);
+    }
+
+    /// Новый забег сейчас: занавес уже закрыт.
+    fn start_run_now(&mut self) {
         self.reset(Visibility::Inherited);
         self.started.write(RunStarted);
-        // Нажатие, которое начало забег, не стреляет: кнопка считается отпущенной до нового нажатия.
         self.mouse.reset_all();
         self.next.set(GameState::Playing);
     }
@@ -305,10 +334,98 @@ impl RunWorld<'_, '_> {
         self.next.set(GameState::Playing);
     }
 
-    /// Выход в меню: мир забега убран, планета снова летит под камерой.
+    /// Выход в меню через затемнение.
     fn open_menu(&mut self) {
+        self.transition.request(Action::OpenMenu);
+    }
+
+    /// Выход в меню сейчас: мир забега убран, планета снова летит под камерой.
+    fn open_menu_now(&mut self) {
         self.reset(Visibility::Hidden);
         self.next.set(GameState::Menu);
+    }
+}
+
+/// Что сделать за закрытым занавесом.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Action {
+    StartRun,
+    OpenMenu,
+}
+
+/// Ход перехода через затемнение.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+enum Stage {
+    #[default]
+    Idle,
+    /// Занавес закрывается.
+    Closing(Action),
+    /// Мир перестроен, ждём, пока кадры выровняются.
+    Settling { frames: u32, steady: u32, waited: f32 },
+}
+
+/// Переход между меню и забегом: пока он идёт, экраны не принимают ввод.
+#[derive(Resource, Debug, Default)]
+pub struct Transition {
+    stage: Stage,
+}
+
+impl Transition {
+    /// Заказать переход; повторный заказ во время перехода не действует.
+    fn request(&mut self, action: Action) {
+        if self.stage == Stage::Idle {
+            self.stage = Stage::Closing(action);
+        }
+    }
+
+    /// Идёт переход.
+    pub fn busy(&self) -> bool {
+        self.stage != Stage::Idle
+    }
+
+    /// Шаг перехода за кадр длиной `dt`: что выполнить сейчас и пора ли открывать занавес.
+    fn advance(&mut self, closed: bool, dt: f32) -> (Option<Action>, bool) {
+        match &mut self.stage {
+            Stage::Idle => (None, false),
+            Stage::Closing(action) => {
+                if !closed {
+                    return (None, false);
+                }
+                let action = *action;
+                self.stage = Stage::Settling {
+                    frames: 0,
+                    steady: 0,
+                    waited: 0.0,
+                };
+                (Some(action), false)
+            }
+            Stage::Settling { frames, steady, waited } => {
+                *frames += 1;
+                *waited += dt;
+                *steady = if dt < STEADY_FRAME { *steady + 1 } else { 0 };
+                let settled = (*frames >= SETTLE_FRAMES && *steady >= STEADY_FRAMES) || *waited > SETTLE_LIMIT;
+                if settled {
+                    self.stage = Stage::Idle;
+                }
+                (None, settled)
+            }
+        }
+    }
+}
+
+/// Ведёт переход: закрывает занавес, за ним перестраивает мир, ждёт ровных кадров и открывает.
+fn run_transition(time: Res<Time<Real>>, mut curtain: ResMut<Curtain>, mut world: RunWorld) {
+    if let Stage::Closing(_) = world.transition.stage {
+        curtain.close(CLOSE_SECONDS);
+    }
+    let (action, open) = world.transition.advance(curtain.is_closed(), time.delta_secs());
+    match action {
+        Some(Action::StartRun) => world.start_run_now(),
+        Some(Action::OpenMenu) => world.open_menu_now(),
+        None => {}
+    }
+    if open {
+        curtain.open(OPEN_SECONDS);
     }
 }
 
@@ -344,6 +461,9 @@ fn menu_input(
     mut world: RunWorld,
     mut exit: MessageWriter<AppExit>,
 ) {
+    if world.transition.busy() {
+        return;
+    }
     if keys.just_pressed(KeyCode::Escape) {
         exit.write(AppExit::Success);
         return;
@@ -399,7 +519,7 @@ const HINT_COLOR: Color = Color::srgb(0.8, 0.8, 0.8);
 fn show_menu(mut commands: Commands, records: Res<RecordsTable>) {
     let best = best_line(records.table.best());
     commands
-        .spawn((MenuScreen, screen_root(0.35)))
+        .spawn((MenuScreen, screen_root(0.35), Appear::over(MENU_APPEAR)))
         .with_children(|screen| {
             screen.spawn(screen_line("SPACE GUARD", 96.0, TITLE_COLOR));
             screen.spawn(screen_line("SURVIVE AS LONG AS YOU CAN", 26.0, Color::WHITE));
@@ -513,11 +633,13 @@ fn draw_game_over(
     if !result.is_changed() {
         return;
     }
+    // Первый показ проявляется, перерисовка при вводе имени — сразу.
+    let appear = if old.is_empty() { Appear::over(GAME_OVER_APPEAR) } else { Appear::shown() };
     for screen in &old {
         commands.entity(screen).despawn();
     }
     commands
-        .spawn((GameOverScreen, screen_root(0.62)))
+        .spawn((GameOverScreen, screen_root(0.62), appear))
         .with_children(|screen| {
             screen.spawn(screen_line("ROVER LOST", 56.0, Color::srgb(1.0, 0.35, 0.25)));
             screen.spawn(screen_line(format!("TIME  {}", format_time(result.seconds)), 34.0, Color::WHITE));
@@ -566,6 +688,9 @@ fn game_over_input(
     mut records: ResMut<RecordsTable>,
     mut world: RunWorld,
 ) {
+    if world.transition.busy() {
+        return;
+    }
     if result.input_delay > 0.0 {
         // Без отметки об изменении: экран перерисовывается только по вводу.
         result.bypass_change_detection().input_delay -= time.delta_secs();
@@ -651,7 +776,7 @@ fn resume_time(mut time: ResMut<Time<Virtual>>) {
 
 fn show_pause(mut commands: Commands) {
     commands
-        .spawn((PauseScreen, screen_root(0.62)))
+        .spawn((PauseScreen, screen_root(0.62), Appear::over(PAUSE_APPEAR)))
         .with_children(|screen| {
             screen.spawn(screen_line("PAUSED", 56.0, TITLE_COLOR));
             screen.spawn(screen_line("", 10.0, Color::NONE));
@@ -665,6 +790,9 @@ fn show_pause(mut commands: Commands) {
 
 /// Пауза: стрелки и Enter выбирают пункт, клавиша-подсказка срабатывает сразу.
 fn pause_input(keys: Res<ButtonInput<KeyCode>>, mut choice: ResMut<PauseChoice>, mut world: RunWorld) {
+    if world.transition.busy() {
+        return;
+    }
     if keys.any_just_pressed([KeyCode::ArrowUp, KeyCode::KeyW]) {
         choice.0 = moved_choice(choice.0, -1);
     }
@@ -686,7 +814,8 @@ fn pause_input(keys: Res<ButtonInput<KeyCode>>, mut choice: ResMut<PauseChoice>,
 /// Выбранный пункт паузы белый, остальные серые.
 fn highlight_pause_choice(choice: Res<PauseChoice>, mut items: Query<(&PauseItem, &mut TextColor)>) {
     for (item, mut color) in &mut items {
-        let wanted = if item.0 == choice.0 { Color::WHITE } else { HINT_COLOR };
+        // Прозрачность не трогаем: ей управляет проявление экрана.
+        let wanted = if item.0 == choice.0 { Color::WHITE } else { HINT_COLOR }.with_alpha(color.0.alpha());
         if color.0 != wanted {
             color.0 = wanted;
         }
@@ -748,6 +877,30 @@ mod tests {
         assert_eq!(key_char(KeyCode::Digit0), Some('0'));
         assert_eq!(key_char(KeyCode::Digit9), Some('9'));
         assert_eq!(key_char(KeyCode::Space), None);
+    }
+
+    #[test]
+    fn переход_один_на_несколько_нажатий_и_ждёт_ровных_кадров() {
+        let mut transition = Transition::default();
+        transition.request(Action::StartRun);
+        transition.request(Action::OpenMenu);
+        assert!(transition.busy());
+        // Занавес ещё закрывается: мир не трогаем.
+        assert_eq!(transition.advance(false, 0.016), (None, false));
+        // Закрылся: выполняется первый заказ, второй забыт.
+        assert_eq!(transition.advance(true, 0.016), (Some(Action::StartRun), false));
+        // Долгий кадр перестройки сбрасывает счёт ровных кадров.
+        for _ in 0..SETTLE_FRAMES {
+            assert_eq!(transition.advance(true, 0.1), (None, false));
+        }
+        let mut opened = false;
+        for _ in 0..STEADY_FRAMES {
+            let (action, open) = transition.advance(true, 0.016);
+            assert_eq!(action, None);
+            opened = open;
+        }
+        assert!(opened);
+        assert!(!transition.busy());
     }
 
     #[test]

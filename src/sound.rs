@@ -133,6 +133,8 @@ impl Plugin for SoundPlugin {
                     pause_world_sounds::<AudioSink>.run_if(in_state(GameState::Paused)),
                     pause_world_sounds::<SpatialAudioSink>.run_if(in_state(GameState::Paused)),
                 )
+                    // Пока идёт загрузка, ничего не звучит (src/loading.rs).
+                    .run_if(not(in_state(GameState::Loading)))
                     .in_set(crate::frame::GameSet::Presentation),
             )
             .add_systems(
@@ -289,8 +291,15 @@ fn is_world_sound(id: &str) -> bool {
     !id.starts_with("ui_")
 }
 
-fn load_sounds(mut sounds: ResMut<Sounds>, asset_server: Res<AssetServer>) {
+fn load_sounds(
+    mut sounds: ResMut<Sounds>,
+    asset_server: Res<AssetServer>,
+    preload: Option<ResMut<crate::loading::Preload>>,
+) {
     sounds.list = SoundList::load(&asset_server, SFX_DIR, LIST_FILE, "Звуки");
+    if let Some(mut preload) = preload {
+        sounds.list.preload(&mut preload);
+    }
 }
 
 /// Громкость звука на расстоянии `distance` метров от слушателя. `None` — слишком далеко.

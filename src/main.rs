@@ -46,6 +46,8 @@ mod pickups;
 mod props;
 mod perf;
 mod platform;
+mod fade;
+mod loading;
 mod prewarm;
 mod puddles;
 mod quality;
@@ -127,6 +129,7 @@ fn main() {
         .add_plugins(bevy_hanabi::HanabiPlugin)
         // Замер ставит отметки и в рендер-потоке, поэтому тоже здесь.
         .add_plugins(perf::PerfPlugin)
+        .add_plugins((fade::FadePlugin, loading::LoadingPlugin))
         .add_plugins(game_plugins)
         .add_systems(Startup, spawn_light)
         .run();

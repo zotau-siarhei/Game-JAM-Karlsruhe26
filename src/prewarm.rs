@@ -54,11 +54,11 @@ impl Plugin for PrewarmPlugin {
             info!("Прогрев шейдеров выключен (SPACE_GUARD_NO_PREWARM)");
             prewarm.done = true;
             watch.lock().warm = true;
-            crate::platform::set_warm(true);
         }
         app.insert_resource(watch.clone())
             .insert_resource(prewarm)
             .init_resource::<Catalog>()
+            .add_systems(Startup, add_templates)
             .add_systems(
                 PostUpdate,
                 (catalog_meshes, catalog_materials).after(AssetEventSystems),
@@ -263,6 +263,25 @@ fn catalog_materials(
     }
 }
 
+/// Материалы-образцы: классы, которые код создаёт посреди боя (вспышки, лучи, гаснущие
+/// осколки), а при старте их может не быть. Без текстур, с отсечением граней и без, во всех
+/// режимах прозрачности. Хранятся в каталоге и прогреваются вместе с остальными.
+fn add_templates(mut materials: ResMut<Assets<StandardMaterial>>, mut templates: Local<Vec<Handle<StandardMaterial>>>) {
+    for alpha_mode in [AlphaMode::Opaque, AlphaMode::Mask(0.5), AlphaMode::Blend, AlphaMode::Add] {
+        for cull_mode in [Some(bevy::render::render_resource::Face::Back), None] {
+            for unlit in [false, true] {
+                templates.push(materials.add(StandardMaterial {
+                    alpha_mode,
+                    cull_mode,
+                    double_sided: cull_mode.is_none(),
+                    unlit,
+                    ..default()
+                }));
+            }
+        }
+    }
+}
+
 /// Что уже стоит в прогреве.
 #[derive(PartialEq, Eq, Hash)]
 enum Warmed {
@@ -272,9 +291,9 @@ enum Warmed {
     Scene(AssetId<WorldAsset>),
 }
 
-/// Ход прогрева.
+/// Ход прогрева. Загрузка (`src/loading.rs`) ждёт его конца.
 #[derive(Resource, Default)]
-struct Prewarm {
+pub struct Prewarm {
     done: bool,
     warmed: HashSet<Warmed>,
     /// Корни объектов прогрева: меши и модели, эффекты частиц.
@@ -283,6 +302,13 @@ struct Prewarm {
     started: Option<f32>,
     /// Конвейеров в кэше на начало прогрева.
     pipelines_before: usize,
+}
+
+impl Prewarm {
+    /// Прогрев закончен.
+    pub fn done(&self) -> bool {
+        self.done
+    }
 }
 
 /// Смена качества: другой ключ вида — прогрев заново.
@@ -296,7 +322,6 @@ fn restart_on_quality(quality: Res<Quality>, mut prewarm: ResMut<Prewarm>, watch
     prewarm.quiet = 0;
     prewarm.started = None;
     watch.lock().warm = false;
-    crate::platform::set_warm(false);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -402,7 +427,6 @@ fn warm(
     );
     drop(state);
     watch.lock().warm = true;
-    crate::platform::set_warm(true);
     prewarm.done = true;
     if let Some((meshes, effects)) = prewarm.roots.take() {
         commands.entity(meshes).despawn();

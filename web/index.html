@@ -637,7 +637,7 @@
         quietSince = 0;
         return;
       }
-      // Файлы пришли, а игра ещё компилирует шейдеры (src/prewarm.rs пишет spaceGuardWarm).
+      // Файлы пришли, а игра ещё готовится: модели, шейдеры (src/loading.rs пишет spaceGuardWarm).
       const warm = window.spaceGuardWarm === true;
       if (compiling !== !warm) {
         compiling = !warm;
@@ -698,6 +698,9 @@
       if (!ready) return;
       ready = false;
       loader.resumeAudio();
+      // Игра ждёт этого нажатия, чтобы войти в меню (src/loading.rs): меню проявляется под
+      // гаснущим экраном загрузки, и звук меню начинается уже разбуженным.
+      window.spaceGuardEntered = true;
       screen.classList.add("leaving");
       window.removeEventListener("keydown", onKey, true);
       setTimeout(() => screen.remove(), 800);

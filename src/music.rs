@@ -135,8 +135,15 @@ struct MusicLayer {
     fading_out: bool,
 }
 
-fn load_tracks(mut player: ResMut<MusicPlayer>, asset_server: Res<AssetServer>) {
+fn load_tracks(
+    mut player: ResMut<MusicPlayer>,
+    asset_server: Res<AssetServer>,
+    preload: Option<ResMut<crate::loading::Preload>>,
+) {
     player.tracks = SoundList::load(&asset_server, MUSIC_DIR, LIST_FILE, "Музыка");
+    if let Some(mut preload) = preload {
+        player.tracks.preload(&mut preload);
+    }
 }
 
 /// Сдвигает `value` к `target` не больше чем на `step`.

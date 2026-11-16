@@ -74,8 +74,8 @@ pub fn quality_hint() -> Option<String> {
     }
 }
 
-/// Сообщает странице браузерной версии, закончен ли прогрев шейдеров (`window.spaceGuardWarm`):
-/// экран загрузки ждёт его, прежде чем предложить начать. Нативу некому сообщать.
+/// Сообщает странице браузерной версии, закончена ли загрузка игры (`window.spaceGuardWarm`):
+/// экран страницы ждёт её, прежде чем предложить начать. Нативу некому сообщать.
 pub fn set_warm(warm: bool) {
     #[cfg(target_arch = "wasm32")]
     {
@@ -84,6 +84,22 @@ pub fn set_warm(warm: bool) {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let _ = warm;
+    }
+}
+
+/// Игрок нажал «начать» на экране загрузки страницы (`window.spaceGuardEntered`): тогда игра
+/// входит в меню. У натива своей страницы нет — всегда да.
+pub fn entered() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        js_sys::Reflect::get(&js_sys::global(), &"spaceGuardEntered".into())
+            .ok()
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        true
     }
 }
 
