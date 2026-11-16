@@ -155,8 +155,8 @@ full body, A-pose, plain light grey background`. Image to 3D: Smart Topology 600
   отсюда `MODEL_HIPS` и `MODEL_CORE` в `src/boss.rs` при масштабе 8,5.
 
 ### Ящики, перехватчик, лазерная установка (2026-11-17, `laser-tank`)
-Картинка nano-banana-2 → Image to 3D meshy-t2.5 Smart Topology, текстура meshy-n1. Ждут одобрения в каталоге,
-в `models.json` пока не записаны: до этого игра рисует примитивы. Суффикс у всех:
+Картинка nano-banana-2 → Image to 3D meshy-t2.5 Smart Topology, текстура meshy-n1. Одобрены Sergei Zotov 17.11
+и записаны в `models.json`. Суффикс у всех:
 `semi-realistic hard-surface 3D game asset, single object, centered, 3/4 view from above, plain light grey background, no text, no logos, no red`.
 
 | id | треуг. | промпт (без суффикса) |
@@ -178,8 +178,8 @@ full body, A-pose, plain light grey background`. Image to 3D: Smart Topology 600
 ### Служба защиты жителей и щебень (2026-11-17)
 Машины Службы — как ящики: nano-banana-2 → meshy-t2.5 Smart Topology 4000, текстура meshy-n1. Белые с оранжевой
 полосой, без мигалок и надписей; на крыше пустая круглая площадка, тарелку антенны крутит код отдельной деталью.
-Кабина на −X (`rotation_y` = −π/2). Код ждёт их по id (`ServiceKind::model` в `src/service.rs`), без записи
-в `models.json` рисует примитивы.
+Кабина на −X (`rotation_y` = −π/2). Подключены по id (`ServiceKind::model` в `src/service.rs`); `scale` подобран
+по длине корпуса `HULL`, `offset_y` ставит колёса на землю.
 
 | id | треуг. | промпт (без общего суффикса из раздела выше) |
 |---|---|---|
@@ -194,7 +194,8 @@ sharp broken flat facets, low-poly game asset` (формы: почти куб, �
 задал матовый материал sRGB ≈ (0,46; 0,43; 0,39) ± 0,04. 256–264 треугольника, центр габарита в нуле, наибольший
 размер ≈ 0,96 — масштаб 0,15–0,35 даёт нужные метры.
 
-Все GLB, ждущие одобрения, лежат в `/home/user/space-guard-models-pending/`, показаны на странице
+Все модели этого раздела одобрены Sergei Zotov 17.11. Машины Службы — в `models.json`; щебень (`ballast_*`) ждёт
+кода насыпи и лежит в `/home/user/space-guard-models-pending/`. Страница с моделями —
 https://claude.ai/code/artifact/b4f12db9-9374-47a5-b089-e5152581f280 (каталог моделей `YUSgKihaVcM9EwQaE5S3Sv`
 аккаунту этой сессии недоступен).
 

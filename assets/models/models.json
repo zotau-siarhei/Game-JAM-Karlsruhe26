@@ -319,6 +319,86 @@
       "budget": 7000,
       "colors": ["#d79237", "#769cc3", "#5c84ae"],
       "top_colors": ["#db973b", "#000000", "#784c34"]
+    },
+    {
+      "id": "enemy_laser_turret",
+      "file": "enemy_laser_turret.glb",
+      "scale": 1.3,
+      "rotation_y": -1.5708,
+      "offset_y": 0.0,
+      "budget": 2500,
+      "colors": ["#2b2f30", "#090c09"],
+      "top_colors": ["#0c0e0c", "#262b2c"]
+    },
+    {
+      "id": "enemy_interceptor",
+      "file": "enemy_interceptor.glb",
+      "scale": 4.6,
+      "rotation_y": -1.5708,
+      "offset_y": 0.54,
+      "budget": 5200,
+      "colors": ["#020201", "#3a3938", "#4e4e4f", "#7b7c7c"],
+      "top_colors": ["#ada294", "#8c8178", "#7f502d"]
+    },
+    {
+      "id": "pickup_crate",
+      "file": "pickup_crate.glb",
+      "scale": 1.05,
+      "rotation_y": 0.0,
+      "offset_y": 0.5,
+      "budget": 1600,
+      "colors": ["#645742", "#5b5c5e", "#463d2a", "#1e1909"],
+      "top_colors": ["#615f5a", "#241a04", "#27251d", "#ddf2f6"]
+    },
+    {
+      "id": "pickup_golden",
+      "file": "pickup_golden.glb",
+      "scale": 1.05,
+      "rotation_y": 0.0,
+      "offset_y": 0.5,
+      "budget": 1600,
+      "colors": ["#cc9333", "#e0a842", "#b23b00"],
+      "top_colors": ["#ebb44d", "#dba13c", "#a84c01"]
+    },
+    {
+      "id": "pickup_medkit",
+      "file": "pickup_medkit.glb",
+      "scale": 1.7,
+      "rotation_y": 0.0,
+      "offset_y": 0.65,
+      "budget": 1600,
+      "colors": ["#dedee0"],
+      "top_colors": ["#e0e0e0", "#c3c3c3", "#919192"]
+    },
+    {
+      "id": "service_patrol",
+      "file": "service_patrol.glb",
+      "scale": 2.9,
+      "rotation_y": -1.5708,
+      "offset_y": 0.94,
+      "budget": 4200,
+      "colors": ["#10100f", "#c8c6c3", "#232325"],
+      "top_colors": ["#c8c6c4", "#b7b5b3", "#1f211f"]
+    },
+    {
+      "id": "service_transport",
+      "file": "service_transport.glb",
+      "scale": 3.1,
+      "rotation_y": -1.5708,
+      "offset_y": 0.66,
+      "budget": 4200,
+      "colors": ["#e2e4e8", "#1f1f24", "#88878e", "#b9bbc1"],
+      "top_colors": ["#ebebee", "#e06e01", "#c64f00"]
+    },
+    {
+      "id": "service_support",
+      "file": "service_support.glb",
+      "scale": 3.0,
+      "rotation_y": -1.5708,
+      "offset_y": 0.85,
+      "budget": 4200,
+      "colors": ["#dddedf", "#242625", "#c9c9cb", "#acacad"],
+      "top_colors": ["#e3e3e5", "#5d5f5b", "#1e1e19"]
     }
   ]
 }

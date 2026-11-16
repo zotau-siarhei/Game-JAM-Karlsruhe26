@@ -1,8 +1,8 @@
 ## 1. Модели Meshy
 
 - [x] 1.1 Картинки и 3D в Meshy: `pickup_crate`, `pickup_golden`, `pickup_medkit`, `enemy_interceptor`, `enemy_laser_turret` (nano-banana-2 → meshy-t2.5 + meshy-n1, бюджеты из design.md); промпты в `assets/models/MESHY_DESIGN.md`; проверка: файлы GLB, треугольники в бюджете — сделано: 105 кредитов, 2410 / 5108 / 1437 / 1570 / 1516 треугольников, страница для одобрения https://claude.ai/code/artifact/b4f12db9-9374-47a5-b089-e5152581f280 (каталог моделей этому аккаунту недоступен)
-- [ ] 1.2 Показать модели в каталоге моделей и получить одобрение Sergei Zotov; проверка: одобрение — страница для одобрения готова, файлы в `/home/user/space-guard-models-pending/`
-- [ ] 1.3 Одобренные модели — в `assets/models` и `models.json` с `scale`, `offset_y`, `rotation_y`; у лазерной установки начало координат — середина низа, дульный срез измерен; проверка: `cargo run`, сцена `enemies`
+- [x] 1.2 Показать модели в каталоге моделей и получить одобрение Sergei Zotov; проверка: одобрение — одобрены все 17.11 по странице https://claude.ai/code/artifact/b4f12db9-9374-47a5-b089-e5152581f280
+- [x] 1.3 Одобренные модели — в `assets/models` и `models.json` с `scale`, `offset_y`, `rotation_y`; у лазерной установки начало координат — середина низа, дульный срез измерен; проверка: `cargo run`, сцена `enemies` — сделано: 8 моделей в `assets/models` и `models.json` (машины Службы — п. 3.5); масштабы рассчитаны по габаритам, в игре не проверены
 
 ## 2. Танки
 
