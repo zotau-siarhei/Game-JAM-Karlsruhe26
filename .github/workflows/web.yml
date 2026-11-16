@@ -1,8 +1,10 @@
 # Браузерная сборка игры (WASM + WebGPU) и выкладка на GitHub Pages.
 #
 # Запускается раз в 4 часа по расписанию (на ветке main) и собирает, только если в main есть
-# коммиты после последней успешной сборки. Ручной запуск (Actions → web → Run workflow)
-# собирает всегда. Сборку делает тот же scripts/build-web.sh, что и локально.
+# коммиты после последней успешной выкладки. Сборка — не чаще раза в 4 часа при любом запуске,
+# и ручном тоже (Actions → web → Run workflow): если с начала прошлой сборки прошло меньше
+# 3 ч 50 мин, запуск ничего не собирает (10 минут — допуск на неточность расписания GitHub).
+# Сборку делает тот же scripts/build-web.sh, что и локально.
 name: web
 
 on:
@@ -32,24 +34,35 @@ jobs:
       - id: compare
         env:
           GH_TOKEN: ${{ github.token }}
+          # Не чаще раза в 4 часа; 10 минут — допуск на неточность расписания GitHub.
+          MIN_INTERVAL: 13800
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "ручной запуск: собираем"
-            echo "changed=true" >> "$GITHUB_OUTPUT"
+          now=$(date -u +%s)
+          last_built=""
+          last_deployed=""
+          # Прошлые запуски, кроме этого: когда последний раз собирали и с какого коммита выложили.
+          while read -r run created; do
+            [ "$run" = "$GITHUB_RUN_ID" ] && continue
+            jobs=$(gh run view -R "$GITHUB_REPOSITORY" "$run" --json jobs \
+              --jq '.jobs[] | "\(.name)=\(.conclusion)"')
+            # Сборка была (идёт, прошла или упала), если её задача не пропущена.
+            if [ -z "$last_built" ] && echo "$jobs" | grep -q '^build=' && ! echo "$jobs" | grep -qx 'build=skipped'; then
+              last_built=$(date -u -d "$created" +%s)
+            fi
+            if [ -z "$last_deployed" ] && echo "$jobs" | grep -qx 'deploy=success'; then
+              last_deployed=$(gh run view -R "$GITHUB_REPOSITORY" "$run" --json headSha --jq .headSha)
+            fi
+            [ -n "$last_built" ] && [ -n "$last_deployed" ] && break
+          done < <(gh run list -R "$GITHUB_REPOSITORY" --workflow web.yml --limit 30 \
+            --json databaseId,createdAt --jq '.[] | "\(.databaseId) \(.createdAt)"')
+
+          if [ -n "$last_built" ] && [ $((now - last_built)) -lt "$MIN_INTERVAL" ]; then
+            echo "прошлая сборка $(( (now - last_built) / 60 )) мин назад: не чаще раза в 4 часа, пропускаем"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # Последняя успешно выложенная сборка: запуск, где задача deploy прошла.
-          last=""
-          for run in $(gh run list -R "$GITHUB_REPOSITORY" --workflow web.yml --status success \
-              --limit 50 --json databaseId --jq '.[].databaseId'); do
-            if gh run view -R "$GITHUB_REPOSITORY" "$run" --json jobs \
-                --jq '.jobs[] | select(.name == "deploy") | .conclusion' | grep -qx success; then
-              last=$(gh run view -R "$GITHUB_REPOSITORY" "$run" --json headSha --jq .headSha)
-              break
-            fi
-          done
-          echo "main: $GITHUB_SHA, последняя сборка: ${last:-нет}"
-          if [ "$last" = "$GITHUB_SHA" ]; then
+          echo "main: $GITHUB_SHA, последняя выкладка: ${last_deployed:-нет}"
+          if [ "$last_deployed" = "$GITHUB_SHA" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"

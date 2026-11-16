@@ -122,7 +122,8 @@ cargo test                                  # тесты
   (`platform::quality_hint`); ступень можно задать и в адресе: `?quality=low|medium|high`.
 - Браузерная версия выкладывается на GitHub Pages: https://zotau-siarhei.github.io/Game-JAM-Karlsruhe26/
   Workflow `.github/workflows/web.yml` раз в 4 часа собирает main (`--release`), если после последней
-  выкладки были коммиты; вручную — Actions → web → Run workflow.
+  выкладки были коммиты. Сборка не чаще раза в 4 часа при любом запуске, ручной (Actions → web → Run
+  workflow) внутри этого окна ничего не собирает: серверы GitHub не нагружаем, вручную не запускать.
 - Целевое железо — MacBook Air M2, игра должна идти на нём плавно.
 - На Linux линкует mold (`.cargo/config.toml`), его надо поставить: `pacman -S mold`.
 - Кэш компиляции — sccache через `scripts/rustc-wrapper.sh` (`.cargo/config.toml`): ставится
