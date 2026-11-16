@@ -783,8 +783,9 @@ fn pause_on_escape_or_blur(
     mut focus: MessageReader<WindowFocused>,
     mut next: ResMut<NextState<GameState>>,
 ) {
-    // В прогоне замера окно может быть и не в фокусе.
-    let blurred = focus.read().any(|change| !change.focused) && !bench.is_some_and(|b| b.on);
+    // В прогоне замера и при отладочном автозапуске окно может быть и не в фокусе.
+    let unattended = bench.is_some_and(|b| b.on) || std::env::var_os("SPACE_GUARD_AUTOSTART").is_some();
+    let blurred = focus.read().any(|change| !change.focused) && !unattended;
     if blurred || keys.just_pressed(KeyCode::Escape) {
         next.set(GameState::Paused);
     }

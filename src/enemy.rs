@@ -364,6 +364,9 @@ struct EnemyAssets {
     interceptor_nose: Handle<Mesh>,
     nozzle: Handle<Mesh>,
     stripe: Handle<Mesh>,
+    prong: Handle<Mesh>,
+    electrode: Handle<Mesh>,
+    shock_material: Handle<StandardMaterial>,
     stripe_material: Handle<StandardMaterial>,
     rocketeer_material: Handle<StandardMaterial>,
     hull_material: Handle<StandardMaterial>,
@@ -387,6 +390,14 @@ fn create_enemy_assets(
         interceptor_nose: meshes.add(Cone::new(0.5, 1.2)),
         nozzle: meshes.add(Cylinder::new(0.18, 0.4)),
         stripe: meshes.add(Cuboid::new(0.12, 0.02, INTERCEPTOR_HULL.z * 0.9)),
+        prong: meshes.add(Cylinder::new(0.05, 1.0)),
+        electrode: meshes.add(Sphere::new(0.12)),
+        shock_material: materials.add(StandardMaterial {
+            base_color: crate::shock::ARC_COLOR,
+            emissive: crate::shock::ARC_GLOW,
+            unlit: true,
+            ..default()
+        }),
         stripe_material: materials.add(STRIPE_COLOR),
         rocketeer_material: materials.add(ROCKETEER_COLOR),
         hull_material: materials.add(HULL_COLOR),
@@ -608,6 +619,19 @@ fn spawn_interceptor_spare(spare: &mut crate::models::FallbackSpawner, assets: &
             .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
             .with_scale(Vec3::new(1.0, 1.0, hull.y / hull.x)),
     ));
+    // Электроды шокера: два штыря по бокам носа со светящимися шарами на концах.
+    for x in [-0.32, 0.32] {
+        spare.spawn((
+            Mesh3d(assets.prong.clone()),
+            dark(),
+            Transform::from_xyz(x, 0.05, -hull.z * 0.5 - 0.5).with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
+        ));
+        spare.spawn((
+            Mesh3d(assets.electrode.clone()),
+            MeshMaterial3d(assets.shock_material.clone()),
+            Transform::from_xyz(x, 0.05, -hull.z * 0.5 - 1.0),
+        ));
+    }
     for x in [-0.25, 0.25] {
         spare.spawn((
             Mesh3d(assets.nozzle.clone()),

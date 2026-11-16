@@ -7,7 +7,9 @@
 //! - `SPACE_GUARD_SCENE=fire` — через 2 с забега перед луноходом встают огни трёх размеров,
 //!   взрывы и горящие обломки;
 //! - `SPACE_GUARD_SCENE=enemies` — через 2 с забега перед луноходом в ряд встают враги всех
-//!   видов, кроме босса: сравнить их размер с луноходом (снимок на `SPACE_GUARD_SHOT_AT=3`).
+//!   видов, кроме босса: сравнить их размер с луноходом (снимок на `SPACE_GUARD_SHOT_AT=3`);
+//! - `SPACE_GUARD_SCENE=shock` — перед луноходом встаёт перехватчик, а луноход всё время под
+//!   разрядом перехватчика: видны молнии на корпусе и электроды на носу.
 
 use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
@@ -42,7 +44,7 @@ impl Plugin for DebugShotPlugin {
             taken: None,
             staged: false,
         })
-        .add_systems(Update, (press_start, stage_scene, take_shot).before(GameSet::Screens));
+        .add_systems(Update, (press_start, stage_scene, keep_shocked, take_shot).before(GameSet::Screens));
     }
 }
 
@@ -81,8 +83,9 @@ fn stage_scene(
     mut enemies: MessageWriter<SpawnEnemy>,
 ) {
     let enemies_scene = debug.scene.as_deref() == Some("enemies");
+    let shock_scene = debug.scene.as_deref() == Some("shock");
     let scene = debug.scene.as_deref();
-    if debug.staged || !matches!(scene, Some("fire" | "enemies")) || time.elapsed_secs() < 2.0 {
+    if debug.staged || !matches!(scene, Some("fire" | "enemies" | "shock")) || time.elapsed_secs() < 2.0 {
         return;
     }
     let Some(rover) = rover.iter().next() else {
@@ -93,6 +96,11 @@ fn stage_scene(
         let p = rover.translation + Vec3::new(x, 0.0, z);
         Vec3::new(p.x, terrain.height_at(p.x, p.z), p.z)
     };
+    if shock_scene {
+        let place = SpawnPlace::Point(ground(-4.0, -4.0));
+        enemies.write(SpawnEnemy { place, kind: EnemyKind::Interceptor });
+        return;
+    }
     if enemies_scene {
         let kinds = [
             EnemyKind::RamShooter,
@@ -130,6 +138,16 @@ fn stage_scene(
             color: Color::srgb(0.4, 0.3, 0.2),
             burning: true,
         });
+    }
+}
+
+/// Сцена `shock`: луноход всё время под разрядом перехватчика.
+fn keep_shocked(debug: Res<DebugShot>, mut rover: Query<&mut crate::rover::Impact, With<Rover>>) {
+    if debug.scene.as_deref() != Some("shock") {
+        return;
+    }
+    for mut impact in &mut rover {
+        impact.left = crate::waves::balance::IMPACT_MAX;
     }
 }
 

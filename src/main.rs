@@ -69,6 +69,7 @@ mod rover_look;
 mod tank_look;
 mod run;
 mod service;
+mod shock;
 mod settlements;
 mod sound;
 mod subsidence;
@@ -132,6 +133,7 @@ fn main() {
         .add_plugins(bevy_hanabi::HanabiPlugin)
         // Замер ставит отметки и в рендер-потоке, поэтому тоже здесь.
         .add_plugins(perf::PerfPlugin)
+        .add_plugins(shock::ShockPlugin)
         .add_plugins((fonts::FontsPlugin, fade::FadePlugin, loading::LoadingPlugin))
         .add_plugins((gamepad::GamepadPlugin, haptics::HapticsPlugin))
         .add_plugins(game_plugins)
