@@ -716,9 +716,9 @@ mod tests {
     }
 
     #[test]
-    fn first_level_rocket_kills_a_rocketeer_two_metres_away() {
-        use crate::enemy::{ENEMY_HEALTH, MORTAR_HEALTH, ROCKETEER_HEALTH};
-        for health in [ENEMY_HEALTH, MORTAR_HEALTH, ROCKETEER_HEALTH] {
+    fn first_level_rocket_kills_a_light_enemy_two_metres_away() {
+        use crate::enemy::{ENEMY_HEALTH, MORTAR_HEALTH};
+        for health in [ENEMY_HEALTH, MORTAR_HEALTH] {
             assert!(rocket_hit(Warhead::ROCKET, 2.0) >= health);
         }
     }

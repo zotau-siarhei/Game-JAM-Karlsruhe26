@@ -33,14 +33,6 @@
       "budget": 5000
     },
     {
-      "id": "enemy_rocket_robot",
-      "file": "enemy_rocket_robot.glb",
-      "scale": 1.1,
-      "rotation_y": 3.14159,
-      "offset_y": 0.0,
-      "budget": 6500
-    },
-    {
       "id": "enemy_wheel",
       "file": "enemy_wheel.glb",
       "scale": 1.05,

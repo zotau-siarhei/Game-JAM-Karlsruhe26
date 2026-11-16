@@ -78,10 +78,10 @@ pub mod balance {
     /// Каждая какая волна завершается боссом.
     pub const BOSS_EVERY: u32 = 4;
 
-    /// С какой угрозы появляются ракетчики.
-    pub const ROCKETEER_THREAT: f32 = 1.6;
+    /// С какой угрозы появляются ракетные танки.
+    pub const ROCKET_TANK_THREAT: f32 = 1.6;
 
-    /// С какой угрозы появляются тяжёлые танки.
+    /// С какой угрозы появляются лазерные танки.
     pub const TANK_THREAT: f32 = 2.5;
 
     /// Угроза: минуты забега плюс разрушения.
@@ -201,7 +201,7 @@ pub mod enemy_damage {
     /// Мощность снаряда залпа босса: см. [`MORTAR_POWER`].
     pub const BOSS_SALVO_POWER: f32 = 0.6;
 
-    // Ракеты ракетчика и веера босса бьют как ракеты игрока: мощность задана в `rockets.rs`.
+    // Ракеты ракетного танка и веера босса бьют как ракеты игрока: мощность задана в `rockets.rs`.
 }
 
 /// Подключает угрозу, директора волн и объявление волны.
@@ -253,11 +253,11 @@ fn available_kinds(threat: f32) -> Vec<(EnemyKind, u32)> {
     if threat >= balance::MORTAR_THREAT {
         kinds.push((EnemyKind::Mortar, 2));
     }
-    if threat >= balance::ROCKETEER_THREAT {
-        kinds.push((EnemyKind::Rocketeer, 3));
+    if threat >= balance::ROCKET_TANK_THREAT {
+        kinds.push((EnemyKind::HeavyTank, 4));
     }
     if threat >= balance::TANK_THREAT {
-        kinds.push((EnemyKind::HeavyTank, 5));
+        kinds.push((EnemyKind::LaserTank, 5));
     }
     kinds
 }
@@ -620,7 +620,7 @@ mod tests {
             n += 1;
             (n as f32 * 0.618).fract()
         };
-        let tanks = |wave: Vec<EnemyKind>| wave.iter().filter(|k| **k == EnemyKind::HeavyTank).count() as f32 / wave.len() as f32;
+        let tanks = |wave: Vec<EnemyKind>| wave.iter().filter(|k| **k == EnemyKind::LaserTank).count() as f32 / wave.len() as f32;
         let third = tanks(buy_wave(3.0, &mut even));
         let fifth = tanks(buy_wave(5.0, &mut even));
         assert!(fifth > third, "{third} {fifth}");

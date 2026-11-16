@@ -9,6 +9,7 @@ use bevy::prelude::*;
 
 use crate::combat::{Heal, Health, ROVER_MAX_HEALTH};
 use crate::frame::{GameSet, RunMessages};
+use crate::models::Models;
 use crate::rng::GameRng;
 use crate::rover::{self, Rover, SpeedFactor};
 use crate::run::{RunScoped, WorldRebuilt};
@@ -47,10 +48,13 @@ const MEDKIT_RING: (f32, f32) = (15.0, 30.0);
 pub const MEDKIT_HEAL: f32 = ROVER_MAX_HEALTH;
 
 /// С какого расстояния аптечка подбирается, м.
-const PICKUP_DISTANCE: f32 = 2.0;
+const PICKUP_DISTANCE: f32 = 2.8;
 
-/// Высота аптечки над поверхностью, м.
-const MEDKIT_HEIGHT: f32 = 0.7;
+/// Размер аптечки, м: заметна рядом с луноходом (3,6 × 3,0 м).
+const MEDKIT_SIZE: f32 = 1.6;
+
+/// Высота центра аптечки над поверхностью, м: чуть парит.
+const MEDKIT_HEIGHT: f32 = MEDKIT_SIZE * 0.5 + 0.25;
 
 /// Подключает ремонт и аптечки.
 pub struct RepairPlugin;
@@ -131,8 +135,8 @@ fn create_assets(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     commands.insert_resource(RepairAssets {
-        box_mesh: meshes.add(Cuboid::new(0.9, 0.9, 0.9)),
-        cross_mesh: meshes.add(Cuboid::new(0.7, 0.22, 0.96)),
+        box_mesh: meshes.add(Cuboid::new(MEDKIT_SIZE, MEDKIT_SIZE, MEDKIT_SIZE)),
+        cross_mesh: meshes.add(Cuboid::new(MEDKIT_SIZE * 0.78, MEDKIT_SIZE * 0.24, MEDKIT_SIZE * 1.07)),
         spark_mesh: meshes.add(Cuboid::new(0.08, 0.08, 0.08)),
         white: materials.add(StandardMaterial {
             base_color: Color::WHITE,
@@ -260,6 +264,7 @@ fn spawn_medkits(
     mut timer: ResMut<MedkitTimer>,
     mut dice: ResMut<GameRng>,
     assets: Res<RepairAssets>,
+    mut models: Models,
     terrain: Res<Terrain>,
     rover: Query<(&Transform, &Health), With<Rover>>,
     medkits: Query<(Entity, &Transform), (With<Medkit>, Without<Rover>)>,
@@ -294,29 +299,28 @@ fn spawn_medkits(
     let mut position = rover.translation + Vec3::new(angle.cos(), 0.0, angle.sin()) * distance;
     position.y = terrain.height_at(position.x, position.z) + MEDKIT_HEIGHT;
     commands
-        .spawn((
-            Medkit,
-            RunScoped,
-            Mesh3d(assets.box_mesh.clone()),
-            MeshMaterial3d(assets.white.clone()),
-            Transform::from_translation(position),
-        ))
+        .spawn((Medkit, RunScoped, Transform::from_translation(position), Visibility::default()))
         .with_children(|parent| {
-            // Красный крест из двух брусков, видимый сверху и с боков.
-            for turn in [0.0, std::f32::consts::FRAC_PI_2] {
-                parent.spawn((
-                    Mesh3d(assets.cross_mesh.clone()),
-                    MeshMaterial3d(assets.red.clone()),
-                    Transform::from_rotation(Quat::from_rotation_z(turn)),
-                ));
-                parent.spawn((
-                    Mesh3d(assets.cross_mesh.clone()),
-                    MeshMaterial3d(assets.red.clone()),
-                    Transform::from_rotation(
-                        Quat::from_rotation_x(std::f32::consts::FRAC_PI_2) * Quat::from_rotation_z(turn),
-                    ),
-                ));
-            }
+            // Модель стоит на дне куба аптечки; без неё — белый куб с крестом из двух брусков,
+            // видимым сверху и с боков.
+            let ground = Transform::from_xyz(0.0, -MEDKIT_SIZE * 0.5, 0.0);
+            models.spawn_visual(parent, "pickup_medkit", ground, |spare| {
+                spare.spawn((Mesh3d(assets.box_mesh.clone()), MeshMaterial3d(assets.white.clone())));
+                for turn in [0.0, std::f32::consts::FRAC_PI_2] {
+                    spare.spawn((
+                        Mesh3d(assets.cross_mesh.clone()),
+                        MeshMaterial3d(assets.red.clone()),
+                        Transform::from_rotation(Quat::from_rotation_z(turn)),
+                    ));
+                    spare.spawn((
+                        Mesh3d(assets.cross_mesh.clone()),
+                        MeshMaterial3d(assets.red.clone()),
+                        Transform::from_rotation(
+                            Quat::from_rotation_x(std::f32::consts::FRAC_PI_2) * Quat::from_rotation_z(turn),
+                        ),
+                    ));
+                }
+            });
         });
 }
 

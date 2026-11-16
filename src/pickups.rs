@@ -16,6 +16,7 @@ use crate::camera::GameCamera;
 use crate::combat::{Died, Health, SurvivalTime};
 use crate::enemy::HeavyTank;
 use crate::frame::{GameSet, RunMessages};
+use crate::models::Models;
 use crate::rng::GameRng;
 use crate::rover::Rover;
 use crate::run::{RunScoped, WorldRebuilt};
@@ -24,8 +25,8 @@ use crate::terrain::Terrain;
 use crate::upgrades::UpgradePicked;
 use crate::weapons::CurrentWeapon;
 
-/// Радиус подбора, м.
-const PICKUP_RADIUS: f32 = 2.0;
+/// Радиус подбора, м: от центра лунохода до центра ящика, ящик крупный.
+const PICKUP_RADIUS: f32 = 2.8;
 
 /// Как часто появляется ящик и сколько их может лежать рядом с луноходом.
 const CRATE_INTERVAL: f32 = 12.0;
@@ -62,10 +63,17 @@ const GOLDEN_FROM_TANK: f32 = 0.4;
 
 /// Искр вокруг золотого ящика и радиус их кружения, м.
 const SPARKLES: usize = 4;
-const SPARKLE_ORBIT: f32 = 1.0;
+const SPARKLE_ORBIT: f32 = 1.8;
 
+/// Размер ящика с оружием, м: заметен рядом с луноходом (3,6 × 3,0 м).
+const CRATE_SIZE: f32 = 2.0;
 /// Размер золотого ящика, м: чуть крупнее обычного.
-const GOLDEN_SIZE: f32 = 1.2;
+const GOLDEN_SIZE: f32 = 2.2;
+/// Размер светящегося трофея, м.
+const LOOT_SIZE: f32 = 1.2;
+/// Парашют над ящиком в долях размера ящика: высота центра купола и его размеры.
+const CANOPY_Y: f32 = 1.6;
+const CANOPY_SCALE: Vec3 = Vec3::new(1.1, 0.55, 1.1);
 
 /// Трофей врага живёт и мигает последние секунды.
 const LOOT_SECONDS: f32 = 20.0;
@@ -251,6 +259,7 @@ pub fn crate_weapons(seconds: f32) -> Vec<CurrentWeapon> {
 #[allow(clippy::too_many_arguments)]
 fn drop_crates(
     mut commands: Commands,
+    mut models: Models,
     time: Res<Time>,
     survival: Res<SurvivalTime>,
     inventory: Res<Inventory>,
@@ -302,7 +311,7 @@ fn drop_crates(
     let ground = terrain.height_at(place.x, place.z);
     if golden_due(survival.0, director.since_golden, dice.range(0.0, 1.0)) {
         director.since_golden = 0.0;
-        spawn_golden(&mut commands, &assets, Vec3::new(place.x, ground + DROP_HEIGHT, place.z), true);
+        spawn_golden(&mut commands, &mut models, &assets, Vec3::new(place.x, ground + DROP_HEIGHT, place.z), true);
         return;
     }
 
@@ -324,7 +333,7 @@ fn drop_crates(
             Mesh3d(assets.canopy.clone()),
             MeshMaterial3d(assets.canopy_material.clone()),
             NotShadowCaster,
-            Transform::from_xyz(0.0, 2.2, 0.0).with_scale(Vec3::new(1.6, 0.8, 1.6)),
+            Transform::from_xyz(0.0, CANOPY_Y, 0.0).with_scale(CANOPY_SCALE),
         ))
         .id();
     commands
@@ -337,17 +346,20 @@ fn drop_crates(
             Crate,
             Parachuting { canopy, sway: 0.0 },
             RunScoped,
-            Mesh3d(assets.cube.clone()),
-            MeshMaterial3d(assets.crate_material.clone()),
-            Transform::from_xyz(place.x, ground + DROP_HEIGHT, place.z).with_scale(Vec3::splat(1.1)),
+            Transform::from_xyz(place.x, ground + DROP_HEIGHT, place.z).with_scale(Vec3::splat(CRATE_SIZE)),
+            Visibility::default(),
         ))
         .add_child(canopy)
         .with_children(|c| {
+            // Ящик — единичный куб в масштабе ящика; модель стоит на его дне.
+            models.spawn_visual(c, "pickup_crate", Transform::from_xyz(0.0, -0.5, 0.0), |spare| {
+                spare.spawn((Mesh3d(assets.cube.clone()), MeshMaterial3d(assets.crate_material.clone())));
+            });
             // Полоса цвета оружия на крышке.
             c.spawn((
                 Mesh3d(assets.cube.clone()),
                 MeshMaterial3d(glow_of(&assets, weapon)),
-                Transform::from_xyz(0.0, 0.5, 0.0).with_scale(Vec3::new(1.05, 0.08, 0.3)),
+                Transform::from_xyz(0.0, 0.52, 0.0).with_scale(Vec3::new(0.9, 0.06, 0.2)),
             ));
         });
 }
@@ -474,6 +486,7 @@ fn float_popups(
 /// Погибший враг с оружием роняет светящийся трофей.
 fn drop_loot(
     mut commands: Commands,
+    mut models: Models,
     mut died: MessageReader<Died>,
     assets: Res<PickupAssets>,
     mut dice: ResMut<GameRng>,
@@ -485,7 +498,7 @@ fn drop_loot(
         };
         if tank && dice.range(0.0, 1.0) < GOLDEN_FROM_TANK {
             // Рядом с трофеем, чтобы не слиплись.
-            spawn_golden(&mut commands, &assets, transform.translation() + Vec3::new(1.8, 0.0, 0.0), false);
+            spawn_golden(&mut commands, &mut models, &assets, transform.translation() + Vec3::new(2.5, 0.0, 0.0), false);
         }
         if carried.weapon == CurrentWeapon::MachineGun {
             continue;
@@ -500,7 +513,7 @@ fn drop_loot(
             NotShadowCaster,
             Mesh3d(assets.cube.clone()),
             MeshMaterial3d(glow_of(&assets, carried.weapon)),
-            Transform::from_translation(transform.translation()).with_scale(Vec3::new(0.7, 0.7, 0.7)),
+            Transform::from_translation(transform.translation()).with_scale(Vec3::splat(LOOT_SIZE)),
             Visibility::default(),
         ));
     }
@@ -525,7 +538,7 @@ fn spawn_loot(mut commands: Commands, mut requests: MessageReader<SpawnLoot>, as
             NotShadowCaster,
             Mesh3d(assets.cube.clone()),
             MeshMaterial3d(glow_of(&assets, r.weapon)),
-            Transform::from_translation(r.position),
+            Transform::from_translation(r.position).with_scale(Vec3::splat(LOOT_SIZE)),
             Visibility::default(),
         ));
     }
@@ -537,9 +550,14 @@ pub struct SpawnUpgrade {
     pub position: Vec3,
 }
 
-fn spawn_upgrades(mut commands: Commands, mut requests: MessageReader<SpawnUpgrade>, assets: Res<PickupAssets>) {
+fn spawn_upgrades(
+    mut commands: Commands,
+    mut models: Models,
+    mut requests: MessageReader<SpawnUpgrade>,
+    assets: Res<PickupAssets>,
+) {
     for r in requests.read() {
-        spawn_golden(&mut commands, &assets, r.position, false);
+        spawn_golden(&mut commands, &mut models, &assets, r.position, false);
     }
 }
 
@@ -550,7 +568,7 @@ fn golden_due(survival: f32, since_golden: f32, roll: f32) -> bool {
 }
 
 /// Золотой ящик с кружащими искрами. С парашютом — падает с неба, без — лежит на месте.
-fn spawn_golden(commands: &mut Commands, assets: &PickupAssets, position: Vec3, parachute: bool) {
+fn spawn_golden(commands: &mut Commands, models: &mut Models, assets: &PickupAssets, position: Vec3, parachute: bool) {
     let id = commands
         .spawn((
             Pickup {
@@ -561,12 +579,13 @@ fn spawn_golden(commands: &mut Commands, assets: &PickupAssets, position: Vec3, 
             GoldenCrate,
             Crate,
             RunScoped,
-            Mesh3d(assets.cube.clone()),
-            MeshMaterial3d(assets.gold_material.clone()),
             Transform::from_translation(position).with_scale(Vec3::splat(GOLDEN_SIZE)),
             Visibility::default(),
         ))
         .with_children(|c| {
+            models.spawn_visual(c, "pickup_golden", Transform::from_xyz(0.0, -0.5, 0.0), |spare| {
+                spare.spawn((Mesh3d(assets.cube.clone()), MeshMaterial3d(assets.gold_material.clone())));
+            });
             for i in 0..SPARKLES {
                 c.spawn((
                     Sparkle {
@@ -586,7 +605,7 @@ fn spawn_golden(commands: &mut Commands, assets: &PickupAssets, position: Vec3, 
                 Mesh3d(assets.canopy.clone()),
                 MeshMaterial3d(assets.canopy_material.clone()),
                 NotShadowCaster,
-                Transform::from_xyz(0.0, 2.2, 0.0).with_scale(Vec3::new(1.6, 0.8, 1.6)),
+                Transform::from_xyz(0.0, CANOPY_Y, 0.0).with_scale(CANOPY_SCALE),
             ))
             .id();
         commands.entity(id).add_child(canopy).insert(Parachuting { canopy, sway: 0.0 });

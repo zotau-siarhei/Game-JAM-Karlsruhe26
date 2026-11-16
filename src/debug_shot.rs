@@ -7,7 +7,8 @@
 //! - `SPACE_GUARD_SCENE=fire` — через 2 с забега перед луноходом встают огни трёх размеров,
 //!   взрывы и горящие обломки;
 //! - `SPACE_GUARD_SCENE=enemies` — через 2 с забега перед луноходом в ряд встают враги всех
-//!   видов, кроме босса: сравнить их размер с луноходом (снимок на `SPACE_GUARD_SHOT_AT=3`);
+//!   видов, кроме босса, а по бокам лунохода золотой ящик и трофей: сравнить их размер с
+//!   луноходом (снимок на `SPACE_GUARD_SHOT_AT=3`);
 //! - `SPACE_GUARD_SCENE=shock` — перед луноходом встаёт перехватчик, а луноход всё время под
 //!   разрядом перехватчика: видны молнии на корпусе и электроды на носу;
 //! - `SPACE_GUARD_SCENE=drive` — луноход сам едет с газом и на 3–5-й секунде поворачивает налево:
@@ -24,6 +25,7 @@ use crate::enemy::{EnemyKind, SpawnEnemy, SpawnPlace};
 use crate::explosion::Explosion;
 use crate::fire::Fire;
 use crate::frame::GameSet;
+use crate::pickups::{SpawnLoot, SpawnUpgrade};
 use crate::rover::Rover;
 use crate::run::{GameState, RunScoped};
 use crate::terrain::Terrain;
@@ -131,6 +133,8 @@ fn stage_scene(
     mut explosions: MessageWriter<Explosion>,
     mut debris: MessageWriter<SpawnDebris>,
     mut enemies: MessageWriter<SpawnEnemy>,
+    mut upgrades: MessageWriter<SpawnUpgrade>,
+    mut loot: MessageWriter<SpawnLoot>,
 ) {
     let enemies_scene = debug.scene.as_deref() == Some("enemies");
     let shock_scene = debug.scene.as_deref() == Some("shock");
@@ -155,14 +159,20 @@ fn stage_scene(
         let kinds = [
             EnemyKind::RamShooter,
             EnemyKind::Mortar,
-            EnemyKind::Rocketeer,
             EnemyKind::HeavyTank,
+            EnemyKind::LaserTank,
             EnemyKind::Interceptor,
         ];
         for (i, kind) in kinds.into_iter().enumerate() {
             let place = SpawnPlace::Point(ground(-16.0 + i as f32 * 8.0, -9.0));
             enemies.write(SpawnEnemy { place, kind });
         }
+        // Золотой ящик и трофей рядом с луноходом: видно, какого они размера.
+        upgrades.write(SpawnUpgrade { position: ground(-5.0, 2.0) });
+        loot.write(SpawnLoot {
+            position: ground(5.0, 2.0),
+            weapon: crate::weapons::CurrentWeapon::Rockets,
+        });
         return;
     }
     // Огни трёх размеров в ряд перед луноходом.

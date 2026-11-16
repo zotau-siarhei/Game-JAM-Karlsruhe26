@@ -115,7 +115,7 @@ full body, A-pose, plain light grey background`. Image to 3D: Smart Topology 600
 | — (образец) | — | `A six-wheeled armored mortar carrier, enemy vehicle for a top-down action game, semi-realistic hard-surface 3D game asset: boxy dark graphite armored body, a short thick mortar tube on a turntable at the rear pointing up at 45 degrees, six big off-road wheels, amber-yellow warning stripes and small amber sensor lights, rugged military look, single vehicle, centered, 3/4 view from above, plain light grey background, no text, no logos, no red` |
 | `enemy_mortar` | 3594 | `Only the body of the same six-wheeled armored mortar carrier as in the reference image, as a separate game part: NO wheels at all, empty wheel arches, the body hovers with nothing under it, keep the mortar tube on its turntable at the rear, same dark graphite armor and amber-yellow markings, semi-realistic hard-surface 3D game asset, 3/4 view from above, plain light grey background, no text, no red` |
 | `enemy_wheel` | 1476 | `ONE single wheel of the same armored vehicle as in the reference image, as a separate game part: chunky black off-road tire with deep tread and a dark graphite steel rim with amber-yellow bolts, only one wheel, no vehicle, no axle, side 3/4 view, semi-realistic 3D game asset, centered, plain light grey background, no text` |
-| `enemy_rocket_robot` | 5934 | `A humanoid combat robot soldier, enemy for a top-down action game, semi-realistic sci-fi hard-surface 3D game asset: human proportions, dark graphite armor plates over a grey mechanical frame, amber-yellow warning markings, a single glowing amber visor slit on the head, a boxy four-tube rocket launcher pod mounted on its right shoulder, sturdy mechanical legs with feet, full body, standing in A-pose, front view, plain light grey background, no text, no logos, no red` |
+| ~~`enemy_rocket_robot`~~ (убран 2026-11-17, `laser-tank`) | 5934 | `A humanoid combat robot soldier, enemy for a top-down action game, semi-realistic sci-fi hard-surface 3D game asset: human proportions, dark graphite armor plates over a grey mechanical frame, amber-yellow warning markings, a single glowing amber visor slit on the head, a boxy four-tube rocket launcher pod mounted on its right shoulder, sturdy mechanical legs with feet, full body, standing in A-pose, front view, plain light grey background, no text, no logos, no red` |
 
 - Корпуса смотрят носом на −X (`rotation_y` = −π/2). Колёсные арки измерены по профилю модели, оси, колея и
   радиус колёс записаны в `src/enemy_look.rs` (`RAMMER_WHEELS`, `MORTAR_WHEELS`) до масштаба врага (`RAMMER_SCALE`, `MORTAR_SCALE` в `src/enemy.rs`): при замене модели их надо
@@ -147,6 +147,27 @@ full body, A-pose, plain light grey background`. Image to 3D: Smart Topology 600
   (`tank_look`). Нога в Meshy вышла парой, вторая отрезана; начало ноги — бедро, нога висит вниз.
 - Шарниры бёдер босса в модели — ±0,2 по обеим осям на 0,385 ниже центра, глаз — на переднем торце на высоте 0,06:
   отсюда `MODEL_HIPS` и `MODEL_CORE` в `src/boss.rs` при масштабе 8,5.
+
+### Ящики, перехватчик, лазерная установка (2026-11-17, `laser-tank`)
+Картинка nano-banana-2 → Image to 3D meshy-t2.5 Smart Topology, текстура meshy-n1. Ждут одобрения в каталоге,
+в `models.json` пока не записаны: до этого игра рисует примитивы. Суффикс у всех:
+`semi-realistic hard-surface 3D game asset, single object, centered, 3/4 view from above, plain light grey background, no text, no logos, no red`.
+
+| id | треуг. | промпт (без суффикса) |
+|---|---|---|
+| `enemy_laser_turret` | 2410 | `Only the turret of a heavy battle tank, as a separate game part, a sci-fi laser weapon system: a squat wide angular armored rotating turret with a flat round bottom, NO hull and NO tracks, on top a big laser projector instead of a cannon: a short thick emitter housing with ring-shaped cooling fins and heavy coils, ending in a large round glowing amber-orange crystal lens at the front, two cylindrical power capacitors with glowing amber bands on both sides, a small sensor dish at the back, dark graphite armor plates with amber-yellow warning markings and small amber sensor lights, rugged military look, the emitter points straight forward and is centered` |
+| `enemy_interceptor` | 5108 | промпт из раздела «Желательно» |
+| `pickup_crate` | 1437 | `A sturdy military supply drop crate, pickup item for a top-down action game: cube-shaped crate with thick olive-tan wooden plank panels, chunky dark steel corner brackets and edge bands, a steel parachute harness ring on top, a recessed glowing white light strip across the lid` |
+| `pickup_golden` | 1570 | `A precious golden upgrade crate, rare pickup item for a top-down action game: cube-shaped crate made of polished shiny gold metal plates, thick rounded gold corner brackets, glowing warm yellow seams along the edges, a raised five-pointed star emblem on the lid and on each side, a gold parachute harness ring on top` |
+| `pickup_medkit` | 1516 | `A repair and first aid kit case for a moon rover, pickup item for a top-down action game: chunky cube-shaped white hard-shell case with rounded edges, a big bold turquoise plus-shaped cross on the lid and on every side, dark grey latches and a carry handle on top, small turquoise light` |
+
+- Лазерная установка и перехватчик смотрят носом на −X (`rotation_y` = −π/2). У установки начало координат
+  перенесено в середину опорного кольца снизу (узел GLB сдвинут на −0,078 по X и +0,283 по Y): линза в
+  0,557 вперёд и 0,341 вверх, масштаб 1,3 (`LASER` в `src/tank_look.rs`).
+- Ящики и аптечка — кубы около 0,8–0,95 в единицах модели, центр в середине. Ящики в игре — единичный куб в
+  масштабе `CRATE_SIZE` / `GOLDEN_SIZE` (`src/pickups.rs`), модель ставится на его дно: в `models.json`
+  `scale` ≈ 1,05, `offset_y` ≈ 0,5. Аптечка — `MEDKIT_SIZE` 1,6 м (`src/repair.rs`): `scale` ≈ 1,7,
+  `offset_y` ≈ 0,65.
 
 ## Первая планета (по гиту)
 В гите нет отдельной «планеты с названием». Первая (и пока единственная) планета описана так:

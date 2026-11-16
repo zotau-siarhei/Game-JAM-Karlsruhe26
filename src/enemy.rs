@@ -3,9 +3,9 @@
 //!
 //! Второй тип — мортирщик: держит дистанцию и накрывает луноход навесным огнём.
 //!
-//! Третий — робот-ракетчик: прячется в кратере, за домом или холмом, высовывается для выстрела
-//! ракетой и прячется снова. Четвёртый — тяжёлый танк: заходит с фланга, секунду показывает
-//! линию прицела и бьёт импульсом лазера, который режет рельеф.
+//! Третий и четвёртый — тяжёлые танки на общем шасси. Ракетный заходит с фланга, наводит башню
+//! и пускает из ствола ракету. Лазерный с лазерной установкой вместо башни заходит так же,
+//! секунду показывает линию прицела и бьёт импульсом лазера, который режет рельеф.
 //!
 //! Пятый — перехватчик: быстрая длинная машина без оружия, приходит, только когда игрок
 //! уезжает от волны (`src/interceptor.rs`).
@@ -119,27 +119,6 @@ const MORTAR_SCATTER: f32 = 3.0;
 /// Цвет корпуса мортирщика.
 const MORTAR_COLOR: Color = Color::srgb(0.2, 0.21, 0.23);
 
-/// Здоровье ракетчика.
-pub const ROCKETEER_HEALTH: f32 = 50.0;
-/// Скорость ракетчика, м/с.
-const ROCKETEER_SPEED: f32 = 7.5;
-/// Укрытие ищется в этом кольце вокруг лунохода, м.
-const COVER_RING: (f32, f32) = (10.0, 25.0);
-/// Сколько точек-кандидатов перебирается при поиске укрытия.
-const COVER_CANDIDATES: usize = 12;
-/// Точка ниже окружающего рельефа на столько — дно кратера, м.
-const CRATER_DIP: f32 = 1.5;
-/// Сколько ракетчик сидит в укрытии, с: от и до.
-const HIDE_TIME: (f32, f32) = (1.5, 3.0);
-/// На сколько ракетчик высовывается вбок, м.
-const PEEK_SHIFT: f32 = 3.0;
-/// Как часто перепроверяется укрытие, с.
-const COVER_RECHECK: f32 = 0.5;
-/// Высота пускового контейнера над центром корпуса, м.
-const LAUNCHER_HEIGHT: f32 = 0.9 * GROWTH;
-/// Цвет ракетчика.
-const ROCKETEER_COLOR: Color = Color::srgb(0.3, 0.32, 0.35);
-
 /// Во сколько раз враги крупнее прежнего: все, кроме босса, больше лунохода (enemy-size-medkit).
 /// Размеры дула и пусковой растут вместе с обликом.
 const GROWTH: f32 = 1.5;
@@ -148,19 +127,20 @@ const RAMMER_GROWTH: f32 = 1.8;
 /// Танк и так велик: растёт меньше, чтобы босс оставался самым крупным.
 const TANK_GROWTH: f32 = 1.3;
 
-/// Здоровье тяжёлого танка.
+/// Здоровье лазерного танка.
 pub const TANK_HEALTH: f32 = 220.0;
+/// Здоровье ракетного танка: он приходит раньше лазерного и стоит в волне дешевле.
+pub const ROCKET_TANK_HEALTH: f32 = 160.0;
 /// Скорость танка, м/с.
 const TANK_SPEED: f32 = 6.0;
 /// Поворот танка, рад/с: медленный, линия прицела заметно доворачивает.
 const TANK_TURN_SPEED: f32 = 1.2;
 /// Масштаб врагов относительно базового корпуса `HULL_SIZE`: корпус, модель, колёса, коллайдер
 /// и посадка растягиваются вместе. Подобран к луноходу (около 3,6 × 3,0 м, высота 2,5 м)
-/// и жителям (рост 1,7 м): бронебагги 6,1 × 3,1 м, транспортёр мортиры 5,8 м, робот ростом 4,0 м,
-/// тяжёлый танк 5,7 м длиной — все крупнее лунохода, босс крупнее всех.
+/// и жителям (рост 1,7 м): бронебагги 6,1 × 3,1 м, транспортёр мортиры 5,8 м,
+/// тяжёлые танки 5,7 м длиной — все крупнее лунохода, босс крупнее всех.
 const RAMMER_SCALE: f32 = 1.4 * RAMMER_GROWTH;
 const MORTAR_SCALE: f32 = 1.5 * GROWTH;
-pub(crate) const ROBOT_SCALE: f32 = 1.2 * GROWTH;
 pub(crate) const TANK_SCALE: f32 = 2.1 * TANK_GROWTH;
 /// Насколько в стороне от линии к луноходу танк заходит, м.
 const FLANK_OFFSET: f32 = 30.0;
@@ -174,6 +154,12 @@ pub(crate) const TANK_FIRE_RANGE: f32 = 36.0;
 const TANK_AIM_TIME: f32 = 1.0;
 /// Перезарядка танка, с.
 const TANK_RELOAD: f32 = 4.0;
+/// Ракетный танк наводит башню без линии прицела: столько стоит перед выстрелом, с.
+const ROCKET_AIM_TIME: f32 = 0.5;
+/// Насколько башня ракетного танка может не смотреть на луноход при выстреле, рад.
+const ROCKET_AIM_TOLERANCE: f32 = 0.12;
+/// Перезарядка ракетного танка, с.
+const ROCKET_TANK_RELOAD: f32 = 3.5;
 /// Скорость поворота башни танка, рад/с.
 const TANK_TURRET_TURN_SPEED: f32 = 1.5;
 
@@ -204,7 +190,6 @@ impl Plugin for EnemyPlugin {
                         spawn_enemies,
                         chase_rover,
                         drive_mortarmen,
-                        drive_rocketeers,
                         drive_tanks,
                         interceptor::drive_interceptors,
                         avoid_lava,
@@ -237,31 +222,12 @@ pub enum EnemyKind {
     RamShooter,
     /// Держит дистанцию и стреляет из мортиры.
     Mortar,
-    /// Прячется в укрытиях и стреляет ракетами.
-    Rocketeer,
-    /// Медленный прочный танк с импульсным лазером, заходит с фланга.
+    /// Тяжёлый танк: заходит с фланга и стреляет из ствола башни ракетами.
     HeavyTank,
+    /// Тяжёлый танк с лазерной установкой вместо пушечной башни: бьёт импульсом лазера по курсу корпуса.
+    LaserTank,
     /// Быстрая машина без оружия: таранит убегающий луноход и замедляет его.
     Interceptor,
-}
-
-/// Что делает ракетчик.
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum CoverState {
-    /// Едет к укрытию.
-    Moving,
-    /// Сидит в укрытии, остаток времени, с.
-    Hiding(f32),
-    /// Высунулся к точке, откуда видно луноход.
-    Peeking(Vec3),
-}
-
-/// Ракетчик: укрытие и что он в нём делает.
-#[derive(Component)]
-struct Rocketeer {
-    cover: Option<Vec3>,
-    state: CoverState,
-    recheck: f32,
 }
 
 /// Что делает танк.
@@ -273,9 +239,19 @@ enum TankState {
     Aiming(f32),
 }
 
-/// Тяжёлый танк.
+/// Чем стреляет танк.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TankArm {
+    /// Ракеты из ствола башни.
+    Rockets,
+    /// Лазерная установка: импульс по курсу корпуса.
+    Laser,
+}
+
+/// Тяжёлый танк, ракетный или лазерный: шасси и заход с фланга общие.
 #[derive(Component)]
 pub struct HeavyTank {
+    pub arm: TankArm,
     state: TankState,
     reload: f32,
     /// Сторона захода: 1 или -1.
@@ -359,7 +335,6 @@ struct EnemyAssets {
     wheel: Handle<Mesh>,
     ram: Handle<Mesh>,
     barrel: Handle<Mesh>,
-    launcher: Handle<Mesh>,
     interceptor_hull: Handle<Mesh>,
     interceptor_nose: Handle<Mesh>,
     nozzle: Handle<Mesh>,
@@ -368,7 +343,6 @@ struct EnemyAssets {
     electrode: Handle<Mesh>,
     shock_material: Handle<StandardMaterial>,
     stripe_material: Handle<StandardMaterial>,
-    rocketeer_material: Handle<StandardMaterial>,
     hull_material: Handle<StandardMaterial>,
     mortar_material: Handle<StandardMaterial>,
     dark_material: Handle<StandardMaterial>,
@@ -385,7 +359,6 @@ fn create_enemy_assets(
         wheel: meshes.add(Cylinder::new(0.5, 0.45)),
         ram: meshes.add(Cuboid::new(HULL_SIZE.x + 0.5, 0.35, 0.35)),
         barrel: meshes.add(Cylinder::new(0.28, 1.5)),
-        launcher: meshes.add(Cuboid::new(1.0, 0.5, 1.2)),
         interceptor_hull: meshes.add(Cuboid::from_size(INTERCEPTOR_HULL)),
         interceptor_nose: meshes.add(Cone::new(0.5, 1.2)),
         nozzle: meshes.add(Cylinder::new(0.18, 0.4)),
@@ -399,7 +372,6 @@ fn create_enemy_assets(
             ..default()
         }),
         stripe_material: materials.add(STRIPE_COLOR),
-        rocketeer_material: materials.add(ROCKETEER_COLOR),
         hull_material: materials.add(HULL_COLOR),
         mortar_material: materials.add(MORTAR_COLOR),
         dark_material: materials.add(DARK_COLOR),
@@ -457,8 +429,8 @@ fn carried_weapon(kind: EnemyKind) -> Option<CurrentWeapon> {
     match kind {
         EnemyKind::RamShooter => Some(CurrentWeapon::MachineGun),
         EnemyKind::Mortar => Some(CurrentWeapon::Mortar),
-        EnemyKind::Rocketeer => Some(CurrentWeapon::Rockets),
-        EnemyKind::HeavyTank => Some(CurrentWeapon::Laser),
+        EnemyKind::HeavyTank => Some(CurrentWeapon::Rockets),
+        EnemyKind::LaserTank => Some(CurrentWeapon::Laser),
         EnemyKind::Interceptor => None,
     }
 }
@@ -468,9 +440,7 @@ fn enemy_model(kind: EnemyKind) -> Option<&'static str> {
     match kind {
         EnemyKind::RamShooter => Some("enemy_rammer"),
         EnemyKind::Mortar => Some("enemy_mortar"),
-        EnemyKind::Rocketeer => Some("enemy_rocket_robot"),
-        EnemyKind::HeavyTank => None,
-        // Модели пока нет: облик из примитивов.
+        EnemyKind::HeavyTank | EnemyKind::LaserTank => None,
         EnemyKind::Interceptor => Some("enemy_interceptor"),
     }
 }
@@ -493,8 +463,8 @@ fn spawn_enemy(
     let (health, material, scale, turn) = match kind {
         EnemyKind::RamShooter => (ENEMY_HEALTH, assets.hull_material.clone(), RAMMER_SCALE, ENEMY_TURN_SPEED),
         EnemyKind::Mortar => (MORTAR_HEALTH, assets.mortar_material.clone(), MORTAR_SCALE, ENEMY_TURN_SPEED),
-        EnemyKind::Rocketeer => (ROCKETEER_HEALTH, assets.rocketeer_material.clone(), ROBOT_SCALE, ENEMY_TURN_SPEED),
-        EnemyKind::HeavyTank => (TANK_HEALTH, assets.dark_material.clone(), TANK_SCALE, TANK_TURN_SPEED),
+        EnemyKind::HeavyTank => (ROCKET_TANK_HEALTH, assets.dark_material.clone(), TANK_SCALE, TANK_TURN_SPEED),
+        EnemyKind::LaserTank => (TANK_HEALTH, assets.dark_material.clone(), TANK_SCALE, TANK_TURN_SPEED),
         EnemyKind::Interceptor => (INTERCEPTOR_HEALTH, assets.hull_material.clone(), GROWTH, INTERCEPTOR_TURN_SPEED),
     };
     let (radius, half_base) = match kind {
@@ -520,7 +490,7 @@ fn spawn_enemy(
         enemy.insert(CarriedWeapon { weapon });
     }
     // Корпус, башню и гусеницы танка ставит `tank_look`.
-    if kind == EnemyKind::HeavyTank {
+    if matches!(kind, EnemyKind::HeavyTank | EnemyKind::LaserTank) {
         enemy.insert(TankGun::default());
     }
     match kind {
@@ -534,12 +504,8 @@ fn spawn_enemy(
         EnemyKind::Mortar => enemy.insert(Mortarman {
             reload: dice.range(1.0, MORTAR_RELOAD),
         }),
-        EnemyKind::Rocketeer => enemy.insert(Rocketeer {
-            cover: None,
-            state: CoverState::Moving,
-            recheck: 0.0,
-        }),
-        EnemyKind::HeavyTank => enemy.insert(HeavyTank {
+        EnemyKind::HeavyTank | EnemyKind::LaserTank => enemy.insert(HeavyTank {
+            arm: if kind == EnemyKind::LaserTank { TankArm::Laser } else { TankArm::Rockets },
             state: TankState::Flank,
             reload: dice.range(1.0, TANK_RELOAD),
             side: if dice.range(0.0, 1.0) < 0.5 { 1.0 } else { -1.0 },
@@ -547,10 +513,6 @@ fn spawn_enemy(
         }),
         EnemyKind::Interceptor => enemy.insert(Interceptor::default()),
     };
-    // Робота анимирует скелет: шаг и бег по скорости.
-    if kind == EnemyKind::Rocketeer {
-        enemy.insert(enemy_look::Walker::default());
-    }
     let Some(model) = enemy_model(kind) else {
         return;
     };
@@ -565,30 +527,30 @@ fn spawn_enemy(
             spare.spawn((Mesh3d(assets.hull.clone()), MeshMaterial3d(material)));
             match kind {
                 // Таран на носу: видно, куда враг едет.
-                EnemyKind::RamShooter => spare.spawn((
-                    Mesh3d(assets.ram.clone()),
-                    MeshMaterial3d(assets.dark_material.clone()),
-                    Transform::from_xyz(0.0, -0.1, -HULL_SIZE.z * 0.5 - 0.15),
-                )),
+                EnemyKind::RamShooter => {
+                    spare.spawn((
+                        Mesh3d(assets.ram.clone()),
+                        MeshMaterial3d(assets.dark_material.clone()),
+                        Transform::from_xyz(0.0, -0.1, -HULL_SIZE.z * 0.5 - 0.15),
+                    ));
+                }
                 // Ствол мортиры смотрит вверх и вперёд.
-                EnemyKind::Mortar => spare.spawn((
-                    Mesh3d(assets.barrel.clone()),
-                    MeshMaterial3d(assets.dark_material.clone()),
-                    Transform::from_xyz(0.0, HULL_SIZE.y * 0.5 + 0.45, -0.2)
-                        .with_rotation(Quat::from_rotation_x(-0.5)),
-                )),
-                // Пусковой контейнер на спине.
-                EnemyKind::Rocketeer | EnemyKind::HeavyTank | EnemyKind::Interceptor => spare.spawn((
-                    Mesh3d(assets.launcher.clone()),
-                    MeshMaterial3d(assets.dark_material.clone()),
-                    Transform::from_xyz(0.0, HULL_SIZE.y * 0.5 + 0.25, 0.2),
-                )),
-            };
+                EnemyKind::Mortar => {
+                    spare.spawn((
+                        Mesh3d(assets.barrel.clone()),
+                        MeshMaterial3d(assets.dark_material.clone()),
+                        Transform::from_xyz(0.0, HULL_SIZE.y * 0.5 + 0.45, -0.2)
+                            .with_rotation(Quat::from_rotation_x(-0.5)),
+                    ));
+                }
+                // У танков облик собирает `tank_look`, у перехватчика — свой запасной облик выше.
+                EnemyKind::HeavyTank | EnemyKind::LaserTank | EnemyKind::Interceptor => {}
+            }
         });
         let wheels = match kind {
             EnemyKind::RamShooter => Some(&enemy_look::RAMMER_WHEELS),
             EnemyKind::Mortar => Some(&enemy_look::MORTAR_WHEELS),
-            EnemyKind::Rocketeer | EnemyKind::HeavyTank | EnemyKind::Interceptor => None,
+            EnemyKind::HeavyTank | EnemyKind::LaserTank | EnemyKind::Interceptor => None,
         };
         if let Some(layout) = wheels {
             let fallback = (assets.wheel.clone(), assets.dark_material.clone());
@@ -659,7 +621,7 @@ fn chase_rover(
     rover: Query<(&Transform, &Collider, &Health), With<Rover>>,
     mut enemies: Query<
         (&Transform, &Collider, &mut Steering),
-        (With<Enemy>, Without<Mortarman>, Without<Rocketeer>, Without<HeavyTank>, Without<Interceptor>),
+        (With<Enemy>, Without<Mortarman>, Without<HeavyTank>, Without<Interceptor>),
     >,
 ) {
     let target = rover
@@ -704,149 +666,9 @@ fn drive_mortarmen(
     }
 }
 
-/// Скрыта ли точка `spot` от лунохода: рельеф, дома или валуны между ними.
-fn hidden_from<'a>(
-    terrain: &Terrain,
-    obstacles: impl IntoIterator<Item = (Entity, &'a Obstacle)>,
-    spot: Vec3,
-    rover: Vec3,
-) -> bool {
-    !steering::has_los(terrain, obstacles, spot + Vec3::Y * 0.8, rover + Vec3::Y * 0.8)
-}
-
-/// Насколько точка ниже окружающего рельефа в 4 м вокруг, м.
-fn dip_at(terrain: &Terrain, x: f32, z: f32) -> f32 {
-    let around = [(4.0, 0.0), (-4.0, 0.0), (0.0, 4.0), (0.0, -4.0)]
-        .iter()
-        .map(|(dx, dz)| terrain.height_at(x + dx, z + dz))
-        .sum::<f32>()
-        / 4.0;
-    around - terrain.height_at(x, z)
-}
-
-/// Ищет укрытие: из кандидатов в кольце вокруг лунохода со стороны ракетчика выбирает скрытую точку,
-/// предпочитая дно кратера и близкие к ракетчику. `None`, если скрытых точек нет.
-fn find_cover(
-    terrain: &Terrain,
-    pools: &crate::lava::LavaPools,
-    obstacles: &Query<(Entity, &Obstacle)>,
-    dice: &mut Dice,
-    me: Vec3,
-    rover: Vec3,
-) -> Option<Vec3> {
-    let base = (me.z - rover.z).atan2(me.x - rover.x);
-    let mut best: Option<(f32, Vec3)> = None;
-    for _ in 0..COVER_CANDIDATES {
-        let angle = base + dice.range(-1.4, 1.4);
-        let mut p = ring_point(rover, angle, dice.range(COVER_RING.0, COVER_RING.1));
-        p.y = terrain.height_at(p.x, p.z);
-        if !hidden_from(terrain, obstacles.iter(), p, rover) || crate::lava::is_lava(pools, p) {
-            continue;
-        }
-        let mut score = -p.distance(me) * 0.1;
-        if dip_at(terrain, p.x, p.z) > CRATER_DIP {
-            score += 5.0;
-        }
-        if best.is_none_or(|(b, _)| score > b) {
-            best = Some((score, p));
-        }
-    }
-    best.map(|(_, p)| p)
-}
-
-/// Ракетчик: ищет укрытие, прячется, высовывается, стреляет ракетой и прячется снова.
-#[allow(clippy::too_many_arguments)]
-fn drive_rocketeers(
-    time: Res<Time>,
-    terrain: Res<Terrain>,
-    pools: Res<crate::lava::LavaPools>,
-    obstacles: Query<(Entity, &Obstacle)>,
-    mut dice: ResMut<GameRng>,
-    rover: Query<(&Transform, &Health), With<Rover>>,
-    mut enemies: Query<(&Transform, &mut Steering, &mut Rocketeer), Without<Rover>>,
-    mut rockets: MessageWriter<FireRocket>,
-) {
-    let target = rover
-        .iter()
-        .next()
-        .filter(|(_, health)| !health.is_dead())
-        .map(|(transform, _)| transform.translation);
-    let dt = time.delta_secs();
-    for (transform, mut steering, mut robot) in &mut enemies {
-        let Some(target) = target else {
-            steering.speed = 0.0;
-            continue;
-        };
-        let me = transform.translation;
-        robot.recheck -= dt;
-        // Укрытие перепроверяется не каждый кадр: видимость дорогая.
-        if robot.recheck <= 0.0 && !matches!(robot.state, CoverState::Peeking(_)) {
-            robot.recheck = COVER_RECHECK;
-            let lost = robot
-                .cover
-                .is_none_or(|c| !hidden_from(&terrain, obstacles.iter(), c, target) || c.distance(target) > COVER_RING.1 + 10.0);
-            if lost {
-                let found = find_cover(&terrain, &pools, &obstacles, &mut dice, me, target);
-                // Укрытия не было и нет: ракетчик продолжает начатое на открытом месте, иначе
-                // перепроверка раз в 0,5 с не дала бы ему досидеть и выглянуть.
-                if found.is_some() || robot.cover.is_some() {
-                    robot.state = CoverState::Moving;
-                }
-                robot.cover = found;
-            }
-        }
-        // Укрытия нет — подъезжает на дальность выстрела и стреляет оттуда.
-        let cover = robot.cover.unwrap_or_else(|| ring_point(target, (me.z - target.z).atan2(me.x - target.x), 20.0));
-        match robot.state {
-            CoverState::Moving => {
-                let to = (cover - me).with_y(0.0);
-                if to.length() < 1.5 {
-                    robot.state = CoverState::Hiding(dice.range(HIDE_TIME.0, HIDE_TIME.1));
-                    steering.speed = 0.0;
-                } else {
-                    steering.desired = vehicle::heading_towards(to);
-                    steering.speed = ROCKETEER_SPEED;
-                }
-            }
-            CoverState::Hiding(left) => {
-                steering.speed = 0.0;
-                steering.desired = vehicle::heading_towards(target - me);
-                let left = left - dt;
-                robot.state = if left > 0.0 {
-                    CoverState::Hiding(left)
-                } else {
-                    // Высовывается вбок от линии на луноход.
-                    let side = (target - me).with_y(0.0).normalize_or(Vec3::X).cross(Vec3::Y);
-                    let sign = if dice.range(0.0, 1.0) < 0.5 { 1.0 } else { -1.0 };
-                    CoverState::Peeking(cover + side * sign * PEEK_SHIFT)
-                };
-            }
-            CoverState::Peeking(spot) => {
-                let muzzle = me + Vec3::Y * LAUNCHER_HEIGHT;
-                let to = (spot - me).with_y(0.0);
-                // Ракета только при прямой видимости: иначе она летит в дом или холм.
-                let sees = steering::has_los(&terrain, obstacles.iter(), muzzle, target + Vec3::Y * 0.5);
-                if sees || to.length() < 1.0 {
-                    if sees {
-                        rockets.write(FireRocket {
-                            origin: muzzle,
-                            target,
-                            team: Team::Enemy,
-                        });
-                    }
-                    robot.state = CoverState::Moving;
-                    steering.speed = 0.0;
-                } else {
-                    steering.desired = vehicle::heading_towards(to);
-                    steering.speed = ROCKETEER_SPEED;
-                }
-            }
-        }
-    }
-}
-
-/// Танк заходит с фланга, на дальности выстрела встаёт, секунду доворачивает с видимой линией
-/// прицела и бьёт импульсом лазера по направлению ствола.
+/// Танк заходит с фланга и на дальности выстрела встаёт. Лазерный секунду доворачивает корпус
+/// с видимой линией прицела и бьёт импульсом лазера по курсу; ракетный наводит башню и пускает
+/// ракету из ствола в луноход.
 #[allow(clippy::too_many_arguments)]
 fn drive_tanks(
     time: Res<Time>,
@@ -855,6 +677,7 @@ fn drive_tanks(
     rover: Query<(&Transform, &Health), With<Rover>>,
     mut enemies: Query<(&Transform, &GroundVehicle, &mut Steering, &mut HeavyTank, &mut TankGun), Without<Rover>>,
     mut lasers: MessageWriter<FireLaser>,
+    mut rockets: MessageWriter<FireRocket>,
 ) {
     let target = rover
         .iter()
@@ -891,7 +714,10 @@ fn drive_tanks(
                     && tank.reload <= 0.0
                     && steering::has_los(&terrain, obstacles.iter(), muzzle, target + Vec3::Y * 0.5)
                 {
-                    tank.state = TankState::Aiming(TANK_AIM_TIME);
+                    tank.state = TankState::Aiming(match tank.arm {
+                        TankArm::Laser => TANK_AIM_TIME,
+                        TankArm::Rockets => ROCKET_AIM_TIME,
+                    });
                 } else if to_goal.length() < 3.0 {
                     // Дошёл до точки фланга: заходит с другой стороны.
                     tank.side = -tank.side;
@@ -899,6 +725,29 @@ fn drive_tanks(
                 } else {
                     steering.desired = vehicle::heading_towards(to_goal);
                     steering.speed = TANK_SPEED;
+                }
+            }
+            TankState::Aiming(left) if tank.arm == TankArm::Rockets => {
+                // Ракета летит в луноход, а не по курсу: корпус стоит, наводится одна башня.
+                steering.speed = 0.0;
+                steering.desired = vehicle.heading;
+                let aimed = heading_error(gun.yaw, wanted) < ROCKET_AIM_TOLERANCE;
+                let left = if aimed { left - dt } else { left };
+                if to_rover.length() > TANK_FIRE_RANGE * 1.2 {
+                    tank.state = TankState::Flank;
+                } else if left > 0.0 || !aimed {
+                    tank.state = TankState::Aiming(left.max(0.0));
+                } else {
+                    let (origin, _) = tank_look::muzzle(transform, vehicle, &gun, tank.arm);
+                    rockets.write(FireRocket {
+                        origin,
+                        target,
+                        team: Team::Enemy,
+                    });
+                    tank.reload = ROCKET_TANK_RELOAD;
+                    tank.state = TankState::Flank;
+                    tank.side = -tank.side;
+                    tank.flank = None;
                 }
             }
             TankState::Aiming(left) => {
@@ -917,7 +766,7 @@ fn drive_tanks(
                 } else if left > 0.0 || !aimed {
                     tank.state = TankState::Aiming(left.max(0.0));
                 } else {
-                    let (origin, _) = tank_look::muzzle(transform, vehicle, &gun);
+                    let (origin, _) = tank_look::muzzle(transform, vehicle, &gun, tank.arm);
                     lasers.write(FireLaser {
                         origin,
                         direction: vehicle.forward(),
@@ -1261,8 +1110,8 @@ mod tests {
     #[test]
     fn enemy_drops_the_weapon_it_fights_with() {
         assert_eq!(carried_weapon(EnemyKind::Mortar), Some(CurrentWeapon::Mortar));
-        assert_eq!(carried_weapon(EnemyKind::Rocketeer), Some(CurrentWeapon::Rockets));
-        assert_eq!(carried_weapon(EnemyKind::HeavyTank), Some(CurrentWeapon::Laser));
+        assert_eq!(carried_weapon(EnemyKind::HeavyTank), Some(CurrentWeapon::Rockets));
+        assert_eq!(carried_weapon(EnemyKind::LaserTank), Some(CurrentWeapon::Laser));
         assert_eq!(carried_weapon(EnemyKind::RamShooter), Some(CurrentWeapon::MachineGun));
     }
 

@@ -1,8 +1,9 @@
-//! Облик тяжёлого танка: корпус, башня и два гусеничных блока из моделей Meshy, бегущие грунтозацепы.
+//! Облик тяжёлых танков: корпус, башня и два гусеничных блока из моделей Meshy, бегущие грунтозацепы.
 //!
 //! Танк собран из частей, чтобы башня поворачивалась отдельно от корпуса, а гусеницы бежали по
-//! ходу машины. Модели — `enemy_tank_hull`, `enemy_tank_turret` и `enemy_tank_track` в
-//! `models.json`; масштаб, поворот и подъём над землёй — там же. Пока модели грузятся, корпус —
+//! ходу машины. Шасси у ракетного и лазерного танков общее: `enemy_tank_hull` и `enemy_tank_track`;
+//! наверху у ракетного — пушечная башня `enemy_tank_turret`, у лазерного — лазерная установка
+//! `enemy_laser_turret`. Всё в `models.json`; масштаб, поворот и подъём над землёй — там же. Пока модели грузятся, корпус —
 //! коробка. Логика танка (`enemy::drive_tanks`) пишет курс башни в [`TankGun`], этот модуль только
 //! показывает его.
 //!
@@ -13,7 +14,7 @@ use std::f32::consts::{FRAC_PI_2, PI};
 
 use bevy::prelude::*;
 
-use crate::enemy::{RIDE_HEIGHT, TANK_FIRE_RANGE, TANK_SCALE};
+use crate::enemy::{HeavyTank, RIDE_HEIGHT, TANK_FIRE_RANGE, TANK_SCALE, TankArm};
 use crate::frame::GameSet;
 use crate::models::Models;
 use crate::rover_look::{track_length, track_point, track_travel};
@@ -33,10 +34,38 @@ const HULL_Y: f32 = 0.5;
 const TURRET_SCALE: f32 = 1.95;
 /// Высота оси поворота башни (низа башни) над землёй: в погоне на крыше корпуса.
 const TURRET_Y: f32 = 0.7;
-/// Дульный срез от оси башни вперёд: в модели 0,631.
-const MUZZLE_FORWARD: f32 = 0.631 * TURRET_SCALE;
-/// Высота оси ствола над осью башни: в модели 0,116.
-const MUZZLE_UP: f32 = 0.116 * TURRET_SCALE;
+/// Масштаб лазерной установки (`models.json`). Начало модели — середина опорного кольца снизу.
+const LASER_SCALE: f32 = 1.3;
+
+/// Модель верха танка и дульный срез: вперёд от оси башни и вверх от её низа, в системе танка.
+struct Top {
+    model: &'static str,
+    muzzle_forward: f32,
+    muzzle_up: f32,
+}
+
+/// Пушечная башня ракетного танка: дульный срез в модели 0,631 вперёд и 0,116 вверх.
+const CANNON: Top = Top {
+    model: "enemy_tank_turret",
+    muzzle_forward: 0.631 * TURRET_SCALE,
+    muzzle_up: 0.116 * TURRET_SCALE,
+};
+/// Лазерная установка: линза в модели 0,557 вперёд и 0,341 вверх.
+const LASER: Top = Top {
+    model: "enemy_laser_turret",
+    muzzle_forward: 0.557 * LASER_SCALE,
+    muzzle_up: 0.341 * LASER_SCALE,
+};
+
+/// Запасная лазерная установка, пока нет модели: корпус-коробка, излучатель и светящаяся линза.
+const LASER_BODY: Vec3 = Vec3::new(0.85, 0.45, 0.85);
+
+fn top(arm: TankArm) -> &'static Top {
+    match arm {
+        TankArm::Rockets => &CANNON,
+        TankArm::Laser => &LASER,
+    }
+}
 
 /// Полуширина колеи: центр гусеничного блока от оси танка, блок чуть заходит под корпус.
 const TRACK_X: f32 = 0.79;
@@ -79,12 +108,13 @@ pub struct TankGun {
     pub aiming: bool,
 }
 
-/// Направление ствола в мире и точка дульного среза.
-pub fn muzzle(transform: &Transform, vehicle: &GroundVehicle, gun: &TankGun) -> (Vec3, Vec3) {
+/// Направление ствола в мире и точка дульного среза танка с оружием `arm`.
+pub fn muzzle(transform: &Transform, vehicle: &GroundVehicle, gun: &TankGun, arm: TankArm) -> (Vec3, Vec3) {
+    let top = top(arm);
     let direction = crate::vehicle::forward_of(vehicle.heading + gun.yaw);
     let origin = transform.translation
-        + Vec3::Y * (TURRET_Y + GROUND_Y + MUZZLE_UP) * TANK_SCALE
-        + direction * MUZZLE_FORWARD * TANK_SCALE;
+        + Vec3::Y * (TURRET_Y + GROUND_Y + top.muzzle_up) * TANK_SCALE
+        + direction * top.muzzle_forward * TANK_SCALE;
     (origin, direction)
 }
 
@@ -119,6 +149,10 @@ struct TankLookAssets {
     grouser_material: Handle<StandardMaterial>,
     aim_line: Handle<Mesh>,
     aim_material: Handle<StandardMaterial>,
+    laser_body: Handle<Mesh>,
+    laser_emitter: Handle<Mesh>,
+    laser_lens: Handle<Mesh>,
+    lens_material: Handle<StandardMaterial>,
 }
 
 fn create_assets(
@@ -145,17 +179,27 @@ fn create_assets(
             alpha_mode: AlphaMode::Blend,
             ..default()
         }),
+        laser_body: meshes.add(Cuboid::from_size(LASER_BODY)),
+        laser_emitter: meshes.add(Cylinder::new(0.13, 1.0)),
+        laser_lens: meshes.add(Sphere::new(0.15)),
+        lens_material: materials.add(StandardMaterial {
+            base_color: Color::srgb(1.0, 0.6, 0.2),
+            emissive: LinearRgba::rgb(4.0, 1.8, 0.4),
+            ..default()
+        }),
     });
 }
 
 /// Ставит на новый танк корпус, башню с линией прицела, гусеничные блоки и грунтозацепы.
 fn attach_look(
     mut commands: Commands,
-    tanks: Query<Entity, Added<TankGun>>,
+    tanks: Query<(Entity, &HeavyTank), Added<TankGun>>,
     assets: Res<TankLookAssets>,
     mut models: Models,
 ) {
-    for tank in &tanks {
+    for (tank, heavy) in &tanks {
+        let arm = heavy.arm;
+        let top = top(arm);
         commands
             .entity(tank)
             .insert(TrackDrive::default())
@@ -179,12 +223,11 @@ fn attach_look(
                         Visibility::default(),
                     ))
                     .with_children(|turret| {
-                        models.spawn_visual(
-                            turret,
-                            "enemy_tank_turret",
-                            Transform::IDENTITY,
-                            |_| {},
-                        );
+                        models.spawn_visual(turret, top.model, Transform::IDENTITY, |spare| {
+                            if arm == TankArm::Laser {
+                                spawn_laser_spare(spare, &assets, top);
+                            }
+                        });
                         let length = TANK_FIRE_RANGE / TANK_SCALE;
                         turret.spawn((
                             AimLine,
@@ -192,7 +235,7 @@ fn attach_look(
                             MeshMaterial3d(assets.aim_material.clone()),
                             bevy::light::NotShadowCaster,
                             Visibility::Hidden,
-                            Transform::from_xyz(0.0, MUZZLE_UP, -MUZZLE_FORWARD - length * 0.5)
+                            Transform::from_xyz(0.0, top.muzzle_up, -top.muzzle_forward - length * 0.5)
                                 .with_rotation(Quat::from_rotation_x(FRAC_PI_2))
                                 .with_scale(Vec3::new(1.0, length, 1.0)),
                         ));
@@ -221,6 +264,28 @@ fn attach_look(
                 }
             });
     }
+}
+
+/// Лазерная установка из примитивов: коробка на кольце, излучатель вперёд (-Z) и линза на его конце.
+fn spawn_laser_spare(spare: &mut crate::models::FallbackSpawner, assets: &TankLookAssets, top: &Top) {
+    spare.spawn((
+        Mesh3d(assets.laser_body.clone()),
+        MeshMaterial3d(assets.hull_material.clone()),
+        Transform::from_xyz(0.0, LASER_BODY.y * 0.5, 0.1),
+    ));
+    let length = top.muzzle_forward - 0.2;
+    spare.spawn((
+        Mesh3d(assets.laser_emitter.clone()),
+        MeshMaterial3d(assets.grouser_material.clone()),
+        Transform::from_xyz(0.0, top.muzzle_up, -0.2 - length * 0.5)
+            .with_rotation(Quat::from_rotation_x(FRAC_PI_2))
+            .with_scale(Vec3::new(1.0, length, 1.0)),
+    ));
+    spare.spawn((
+        Mesh3d(assets.laser_lens.clone()),
+        MeshMaterial3d(assets.lens_material.clone()),
+        Transform::from_xyz(0.0, top.muzzle_up, -top.muzzle_forward),
+    ));
 }
 
 /// Поворачивает башню по курсу пушки и показывает линию прицела.
