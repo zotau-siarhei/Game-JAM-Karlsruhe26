@@ -536,7 +536,7 @@ fn show_menu(mut commands: Commands, records: Res<RecordsTable>) {
             screen.spawn(screen_line("", 10.0, Color::NONE));
             screen.spawn(hint_line(
                 "WASD - DRIVE     MOUSE - AIM     LEFT BUTTON - FIRE",
-                "LEFT STICK - DRIVE     RIGHT STICK - AIM     {FIRE} - FIRE",
+                "LEFT STICK - DRIVE     RIGHT STICK - AIM     HOLD {CURSOR} - FREE AIM     {FIRE} - FIRE",
                 20.0,
                 HINT_COLOR,
             ));

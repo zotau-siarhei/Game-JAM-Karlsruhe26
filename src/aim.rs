@@ -46,6 +46,9 @@ const MARKER_COLOR: Color = Color::srgb(1.0, 1.0, 1.0);
 /// Цвет маркера на пределе дальности.
 const MARKER_LIMIT_COLOR: Color = Color::srgb(1.0, 0.55, 0.1);
 
+/// Цвет маркера, когда прицел стиком поймал врага.
+const MARKER_LOCKED_COLOR: Color = Color::srgb(1.0, 0.15, 0.1);
+
 /// Точка прицела на поверхности рельефа.
 #[derive(Resource, Clone, Copy, Debug, Default)]
 pub struct AimPoint {
@@ -53,17 +56,20 @@ pub struct AimPoint {
     pub position: Vec3,
     /// Курсор дальше предела: точка перенесена на окружность предела в сторону курсора.
     pub at_limit: bool,
+    /// Прицел стиком поймал врага.
+    pub locked: bool,
 }
 
 /// Маркер точки прицела.
 #[derive(Component)]
 struct AimMarker;
 
-/// Материалы маркера: обычный и на пределе дальности.
+/// Материалы маркера: обычный, на пределе дальности и на пойманном враге.
 #[derive(Resource)]
 struct MarkerMaterials {
     normal: Handle<StandardMaterial>,
     limit: Handle<StandardMaterial>,
+    locked: Handle<StandardMaterial>,
 }
 
 /// Плагин прицела.
@@ -140,7 +146,7 @@ fn confine_cursor(mut cursor: Single<&mut CursorOptions, With<PrimaryWindow>>) {
 }
 
 /// Пересчитывает точку прицела по курсору. Без курсора над окном точка остаётся прежней.
-/// С геймпада прицел ставит правый стик (`gamepad::aim_with_stick`), курсор не трогает его.
+/// С геймпада прицел ставит правый стик (`stick_aim::aim_with_stick`), курсор не трогает его.
 pub fn update_aim_point(
     device: Res<crate::gamepad::InputDevice>,
     mut aim: ResMut<AimPoint>,
@@ -166,7 +172,11 @@ pub fn update_aim_point(
         return;
     };
     let (position, at_limit) = clamp_to_range(&terrain, rover.translation, hit);
-    *aim = AimPoint { position, at_limit };
+    *aim = AimPoint {
+        position,
+        at_limit,
+        locked: false,
+    };
 }
 
 /// Создаёт маркер: кольцо с точкой в центре, которое каждый кадр ложится на рельеф.
@@ -182,6 +192,7 @@ fn spawn_marker(
     };
     let normal = materials.add(unlit(MARKER_COLOR));
     let limit = materials.add(unlit(MARKER_LIMIT_COLOR));
+    let locked = materials.add(unlit(MARKER_LOCKED_COLOR));
     commands.spawn((
         AimMarker,
         Mesh3d(meshes.add(marker_mesh(|_| 0.0))),
@@ -190,7 +201,7 @@ fn spawn_marker(
         // Вершины меняются каждый кадр, а границы меша нет.
         NoFrustumCulling,
     ));
-    commands.insert_resource(MarkerMaterials { normal, limit });
+    commands.insert_resource(MarkerMaterials { normal, limit, locked });
 }
 
 /// Двигает маркер в точку прицела, кладёт его вершины на рельеф и красит по дальности.
@@ -227,7 +238,9 @@ fn update_marker(
     }
     let center = aim.position;
     transform.translation = center;
-    let wanted = if aim.at_limit {
+    let wanted = if aim.locked {
+        &materials.locked
+    } else if aim.at_limit {
         &materials.limit
     } else {
         &materials.normal
