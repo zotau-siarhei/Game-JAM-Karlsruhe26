@@ -16,7 +16,8 @@
   золотой 2,2 м (был 1,2), трофей 1,2 м (был 0,7), аптечка 1,6 м (была 0,9); радиус подбора 2,8 м.
 - Модели Meshy: `pickup_crate` (ящик с оружием), `pickup_golden` (золотой ящик улучшения),
   `pickup_medkit` (аптечка), `enemy_interceptor` (перехватчик), `enemy_laser_turret` (лазерная
-  установка на шасси танка). В игру они попадают после одобрения в каталоге моделей; до этого и при
+  установка на шасси танка), `service_patrol`, `service_transport`, `service_support` (машины Службы
+  защиты жителей). В игру они попадают после одобрения в каталоге моделей; до этого и при
   отсутствии файла облик — прежние примитивы.
 
 ## Capabilities
@@ -35,6 +36,6 @@
   `drive_tanks` стреляет ракетой или лазером; удаление укрытий ракетчика.
 - `src/tank_look.rs` — модель башни и дульный срез по виду танка.
 - `src/waves.rs` — состав волн, `balance`.
-- `src/pickups.rs`, `src/repair.rs` — модели ящиков и аптечки через `Models::spawn_visual`.
+- `src/pickups.rs`, `src/repair.rs`, `src/service.rs` — модели ящиков, аптечки и машин Службы через `Models::spawn_visual`.
 - `src/debug_shot.rs`, `src/enemy_look.rs` — сцена `enemies`, шагающий робот.
 - `assets/models/models.json`, `assets/models/MESHY_DESIGN.md`.

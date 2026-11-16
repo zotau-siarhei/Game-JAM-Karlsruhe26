@@ -22,6 +22,7 @@ use crate::enemy::Enemy;
 use crate::explosion::Explosion;
 use crate::frame::{GameSet, RunMessages};
 use crate::lava::{self, LavaPools};
+use crate::models::Models;
 use crate::mortar::{self, FireShell};
 use crate::obstacles::Obstacle;
 use crate::residents::{Resident, ResidentDied};
@@ -183,6 +184,15 @@ impl ServiceKind {
             ServiceKind::Support => balance::SUPPORT,
         };
         (health, speed)
+    }
+
+    /// Модель машины в `models.json`.
+    fn model(self) -> &'static str {
+        match self {
+            ServiceKind::Patrol => "service_patrol",
+            ServiceKind::Transport => "service_transport",
+            ServiceKind::Support => "service_support",
+        }
     }
 
     /// Во сколько раз машина крупнее патрульной.
@@ -402,6 +412,7 @@ fn spawn_service(
     mut requests: MessageReader<SpawnService>,
     mut dice: ResMut<GameRng>,
     assets: Res<ServiceAssets>,
+    mut models: Models,
     terrain: Res<Terrain>,
     rover: Query<&Transform, With<Rover>>,
     vehicles: Query<&ServiceVehicle>,
@@ -420,13 +431,15 @@ fn spawn_service(
             arrived.write(ServiceArrived { position });
         }
         let reload = dice.range(0.5, request.kind.reload());
-        spawn_vehicle(&mut commands, &assets, position, rover.translation, request.kind, reload);
+        spawn_vehicle(&mut commands, &mut models, &assets, position, rover.translation, request.kind, reload);
     }
 }
 
 /// Создаёт машину вида `kind` на рельефе в точке `ground` носом к `target`.
+#[allow(clippy::too_many_arguments)]
 fn spawn_vehicle(
     commands: &mut Commands,
+    models: &mut Models,
     assets: &ServiceAssets,
     ground: Vec3,
     target: Vec3,
@@ -455,35 +468,54 @@ fn spawn_vehicle(
             },
             GroundVehicle::new(heading, RIDE_HEIGHT * scale, Vec2::new(HULL.x, HULL.z) * 0.5 * scale),
             Steering::new(heading, TURN_SPEED),
-            Mesh3d(assets.hull.clone()),
-            MeshMaterial3d(assets.white.clone()),
             Transform::from_translation(position)
                 .with_rotation(Quat::from_rotation_y(heading))
                 .with_scale(Vec3::splat(scale)),
+            Visibility::default(),
         ))
         .with_children(|parent| {
-            // Округлая кабина впереди и оранжевая полоса вокруг корпуса.
-            parent.spawn((
-                Mesh3d(assets.cabin.clone()),
-                MeshMaterial3d(assets.white.clone()),
-                Transform::from_xyz(0.0, HULL.y * 0.5 + 0.05, -0.25)
-                    .with_rotation(Quat::from_rotation_x(FRAC_PI_2))
-                    .with_scale(Vec3::new(1.2, 1.0, 0.8)),
-            ));
-            parent.spawn((
-                Mesh3d(assets.stripe.clone()),
-                MeshMaterial3d(assets.orange.clone()),
-                Transform::from_xyz(0.0, 0.0, 0.0),
-            ));
-            // Большие колёса.
-            for (side, along) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
-                parent.spawn((
-                    Mesh3d(assets.wheel.clone()),
-                    MeshMaterial3d(assets.dark.clone()),
-                    Transform::from_xyz(side * (HULL.x * 0.5 + 0.16), -HULL.y * 0.5, along * HULL.z * 0.34)
-                        .with_rotation(Quat::from_rotation_z(FRAC_PI_2)),
+            // Модель машины стоит колёсами на земле. Без неё — корпус из примитивов: округлая
+            // кабина впереди, оранжевая полоса вокруг корпуса, большие колёса и оружие по виду.
+            let ground = Transform::from_xyz(0.0, -RIDE_HEIGHT, 0.0);
+            models.spawn_visual(parent, kind.model(), ground, |spare| {
+                spare.spawn((Mesh3d(assets.hull.clone()), MeshMaterial3d(assets.white.clone())));
+                spare.spawn((
+                    Mesh3d(assets.cabin.clone()),
+                    MeshMaterial3d(assets.white.clone()),
+                    Transform::from_xyz(0.0, HULL.y * 0.5 + 0.05, -0.25)
+                        .with_rotation(Quat::from_rotation_x(FRAC_PI_2))
+                        .with_scale(Vec3::new(1.2, 1.0, 0.8)),
                 ));
-            }
+                spare.spawn((Mesh3d(assets.stripe.clone()), MeshMaterial3d(assets.orange.clone())));
+                for (side, along) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                    spare.spawn((
+                        Mesh3d(assets.wheel.clone()),
+                        MeshMaterial3d(assets.dark.clone()),
+                        Transform::from_xyz(side * (HULL.x * 0.5 + 0.16), -HULL.y * 0.5, along * HULL.z * 0.34)
+                            .with_rotation(Quat::from_rotation_z(FRAC_PI_2)),
+                    ));
+                }
+                // Оружие по виду: пулемёт патрульного — только ствол-стойка, у транспортёра
+                // ракетный контейнер, у установки поддержки — труба мортиры.
+                match kind {
+                    ServiceKind::Patrol => {}
+                    ServiceKind::Transport => {
+                        spare.spawn((
+                            Mesh3d(assets.pod.clone()),
+                            MeshMaterial3d(assets.orange.clone()),
+                            Transform::from_xyz(0.0, HULL.y * 0.5 + 0.18, 0.95),
+                        ));
+                    }
+                    ServiceKind::Support => {
+                        spare.spawn((
+                            Mesh3d(assets.tube.clone()),
+                            MeshMaterial3d(assets.dark.clone()),
+                            Transform::from_xyz(0.0, HULL.y * 0.5 + 0.45, 0.9)
+                                .with_rotation(Quat::from_rotation_x(-0.4)),
+                        ));
+                    }
+                }
+            });
             // Антенна-тарелка на стойке за кабиной.
             parent.spawn((
                 Mesh3d(assets.mast.clone()),
@@ -496,25 +528,6 @@ fn spawn_vehicle(
                 MeshMaterial3d(assets.grey.clone()),
                 Transform::from_xyz(0.0, HULL.y * 0.5 + 0.55, 0.55).with_rotation(Quat::from_rotation_x(0.5)),
             ));
-            // Оружие по виду: пулемёт патрульного — только ствол-стойка, у транспортёра
-            // ракетный контейнер, у установки поддержки — труба мортиры.
-            match kind {
-                ServiceKind::Patrol => {}
-                ServiceKind::Transport => {
-                    parent.spawn((
-                        Mesh3d(assets.pod.clone()),
-                        MeshMaterial3d(assets.orange.clone()),
-                        Transform::from_xyz(0.0, HULL.y * 0.5 + 0.18, 0.95),
-                    ));
-                }
-                ServiceKind::Support => {
-                    parent.spawn((
-                        Mesh3d(assets.tube.clone()),
-                        MeshMaterial3d(assets.dark.clone()),
-                        Transform::from_xyz(0.0, HULL.y * 0.5 + 0.45, 0.9).with_rotation(Quat::from_rotation_x(-0.4)),
-                    ));
-                }
-            }
             // Места для спасённых на крыше сзади, пока пустые.
             for seat in 0..balance::SEATS {
                 let x = (seat as f32 - (balance::SEATS - 1) as f32 * 0.5) * 0.3;

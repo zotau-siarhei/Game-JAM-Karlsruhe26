@@ -169,6 +169,29 @@ full body, A-pose, plain light grey background`. Image to 3D: Smart Topology 600
   `scale` ≈ 1,05, `offset_y` ≈ 0,5. Аптечка — `MEDKIT_SIZE` 1,6 м (`src/repair.rs`): `scale` ≈ 1,7,
   `offset_y` ≈ 0,65.
 
+### Служба защиты жителей и щебень (2026-11-17)
+Машины Службы — как ящики: nano-banana-2 → meshy-t2.5 Smart Topology 4000, текстура meshy-n1. Белые с оранжевой
+полосой, без мигалок и надписей; на крыше пустая круглая площадка, тарелку антенны крутит код отдельной деталью.
+Кабина на −X (`rotation_y` = −π/2). Код ждёт их по id (`ServiceKind::model` в `src/service.rs`), без записи
+в `models.json` рисует примитивы.
+
+| id | треуг. | промпт (без общего суффикса из раздела выше) |
+|---|---|---|
+| `service_patrol` | 4046 | `A fast four-wheeled civil protection patrol all-terrain vehicle for a top-down action game: rounded friendly glossy white body with a bold orange stripe along the sides, big chunky off-road wheels with dark tires, a rounded cab at the front with dark tinted windows, a small twin machine gun on a low roof mount pointing forward, a flat round empty mount plate on the roof behind the cab, no lights, no sirens, no light bar, no police markings` |
+| `service_transport` | 4113 | `A six-wheeled civil protection armored rescue transporter ...: long rounded friendly glossy white armored body with a bold orange stripe along the sides, a rounded cab at the front, a passenger compartment with a flat open roof area with bench seats at the back, a small orange boxy four-tube rocket launcher pod on the roof, a flat round empty mount plate on the roof, six big chunky wheels, ...` |
+| `service_support` | 4034 | `A heavy six-wheeled civil protection support vehicle ...: wide rounded friendly glossy white truck body with a bold orange stripe, a rounded cab at the front, on the rear platform a short thick dark grey mortar tube on a turntable pointing up and back at 45 degrees, a flat round empty mount plate on the roof, six big chunky off-road wheels, ...` |
+
+Щебень для насыпи (просьба сессии, которая делала насыпь, `railway::ballast_share`): `ballast_1` … `ballast_5`,
+text-to-3d meshy-t2.5 Smart Topology 250, без текстуры, промпт `a single crushed railway ballast stone, <форма>,
+sharp broken flat facets, low-poly game asset` (формы: почти куб, плоский клин, вытянутый осколок, пирамида с
+плоским низом, неровный ком). Скрипт `flat_stone.py` (в scratchpad сессии) развалил вершины на плоские грани и
+задал матовый материал sRGB ≈ (0,46; 0,43; 0,39) ± 0,04. 256–264 треугольника, центр габарита в нуле, наибольший
+размер ≈ 0,96 — масштаб 0,15–0,35 даёт нужные метры.
+
+Все GLB, ждущие одобрения, лежат в `/home/user/space-guard-models-pending/`, показаны на странице
+https://claude.ai/code/artifact/b4f12db9-9374-47a5-b089-e5152581f280 (каталог моделей `YUSgKihaVcM9EwQaE5S3Sv`
+аккаунту этой сессии недоступен).
+
 ## Первая планета (по гиту)
 В гите нет отдельной «планеты с названием». Первая (и пока единственная) планета описана так:
 - холмистая поверхность из шума, **зелёная** с оттенками по высоте, разрушенные места **коричневые** (`terrain-rover-camera`);
