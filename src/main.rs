@@ -67,6 +67,7 @@ mod rockets;
 mod rover;
 mod rover_look;
 mod tank_look;
+mod ui_scale;
 mod run;
 mod service;
 mod shock;
@@ -157,6 +158,8 @@ fn game_plugins(app: &mut App) {
         // Отдача башни и вспышка у дула.
         recoil::RecoilPlugin,
     ))
+        // Интерфейс мельче на маленьком экране (телефон).
+        .add_plugins(ui_scale::UiScalePlugin)
         // Посёлки, объекты поверхности и разрушение.
         .add_plugins((
             settlements::SettlementsPlugin,
