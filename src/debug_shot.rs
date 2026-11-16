@@ -12,6 +12,8 @@
 //!   разрядом перехватчика: видны молнии на корпусе и электроды на носу;
 //! - `SPACE_GUARD_SCENE=drive` — луноход сам едет с газом и на 3–5-й секунде поворачивает налево:
 //!   посмотреть колеи (`tracks`).
+//! - `SPACE_GUARD_SCENE=train` — через 2 с забега луноход переносится на 24 м от ближайшего пути,
+//!   поезд выходит через секунду: посмотреть вагоны и крутящиеся колёса (`trains`).
 
 use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
@@ -46,7 +48,7 @@ impl Plugin for DebugShotPlugin {
             taken: None,
             staged: false,
         })
-        .add_systems(Update, (press_start, stage_scene, keep_shocked, drive, take_shot).before(GameSet::Screens));
+        .add_systems(Update, (press_start, stage_scene, stage_train, keep_shocked, drive, take_shot).before(GameSet::Screens));
     }
 }
 
@@ -91,6 +93,32 @@ fn drive(
     } else {
         keys.release(KeyCode::KeyA);
     }
+}
+
+/// Сцена `train`: луноход встаёт сбоку от ближайшего пути, лицом к нему.
+fn stage_train(
+    time: Res<Time>,
+    debug: Res<DebugShot>,
+    terrain: Res<Terrain>,
+    mut rover: Query<&mut Transform, With<Rover>>,
+    mut done: Local<bool>,
+) {
+    if *done || debug.scene.as_deref() != Some("train") || time.elapsed_secs() < 2.0 {
+        return;
+    }
+    let Some(mut rover) = rover.iter_mut().next() else {
+        return;
+    };
+    *done = true;
+    let lines = terrain.lines();
+    let near = lines.nearest(Vec2::new(rover.translation.x, rover.translation.z));
+    let on = lines.point(near.line, near.s);
+    let t = lines.tangent(near.line, near.s);
+    let at = on + Vec2::new(-t.y, t.x) * 24.0;
+    rover.translation = Vec3::new(at.x, terrain.height_at(at.x, at.y) + 0.5, at.y);
+    let to_line = (on - at).normalize_or(Vec2::X);
+    // Перёд лунохода — −Z.
+    rover.rotation = Quat::from_rotation_y((-to_line.x).atan2(-to_line.y));
 }
 
 /// Ставит отладочную сцену перед луноходом.

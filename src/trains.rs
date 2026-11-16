@@ -498,7 +498,14 @@ fn run_schedule(
     if !trains.is_empty() || near.distance > SCHEDULE_RANGE {
         return;
     }
-    let timer = schedule.timer.get_or_insert_with(|| dice.range(SCHEDULE_DELAY.0, SCHEDULE_DELAY.1));
+    let timer = schedule.timer.get_or_insert_with(|| {
+        // Отладочная сцена поезда (`src/debug_shot.rs`): состав выходит сразу.
+        if std::env::var("SPACE_GUARD_SCENE").is_ok_and(|s| s == "train") {
+            1.0
+        } else {
+            dice.range(SCHEDULE_DELAY.0, SCHEDULE_DELAY.1)
+        }
+    });
     *timer -= dt;
     if *timer > 0.0 {
         return;
