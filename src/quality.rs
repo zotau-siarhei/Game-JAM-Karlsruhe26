@@ -101,6 +101,7 @@ fn load() -> Quality {
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
         .and_then(|v| v.get("quality")?.as_str().and_then(Quality::from_name))
+        .or_else(|| crate::platform::quality_hint().as_deref().and_then(Quality::from_name))
         .unwrap_or_default()
 }
 

@@ -58,6 +58,22 @@ pub fn asset_exists(dir: &str, file: &str) -> bool {
     }
 }
 
+/// Ступень качества, которую предлагает страница браузерной версии (`window.spaceGuardQuality`:
+/// на телефоне — `low`, вручную — `?quality=`). Натив подсказок не получает.
+pub fn quality_hint() -> Option<String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        js_sys::Reflect::get(&js_sys::global(), &"spaceGuardQuality".into())
+            .ok()?
+            .as_string()
+            .filter(|name| !name.is_empty())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        None
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn asset_path(dir: &str, file: &str) -> std::path::PathBuf {
     bevy::asset::io::file::FileAssetReader::get_base_path()

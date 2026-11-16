@@ -30,6 +30,19 @@
       overflow: hidden;
       background: #000;
     }
+    /* Холст в обёртке: на телефоне обёртка меньше окна в --scale раз и растянута обратно
+       через transform. Холст считает пиксели по размеру обёртки, поэтому игра рисует меньше
+       пикселей, а на экране занимает всё окно. На компьютере --scale = 1. */
+    #viewport {
+      --scale: 1;
+      position: fixed;
+      left: 0;
+      top: 0;
+      width: calc(100% / var(--scale));
+      height: calc(100% / var(--scale));
+      transform: scale(var(--scale));
+      transform-origin: 0 0;
+    }
     #space-guard {
       display: block;
       width: 100%;
@@ -239,7 +252,7 @@
   </style>
 </head>
 <body>
-  <canvas id="space-guard" tabindex="0"></canvas>
+  <div id="viewport"><canvas id="space-guard" tabindex="0"></canvas></div>
 
   <div id="loader" role="dialog" aria-label="Space Guard loading">
     <h1 class="title">SPACE GUARD</h1>
@@ -332,6 +345,30 @@
           }
           return createShaderModule.call(this, descriptor);
         };
+      }
+      // Какая видеокарта досталась игре: для текста ошибки на экране загрузки.
+      let gpuName = "";
+      if (window.GPUAdapter) {
+        const requestDevice = GPUAdapter.prototype.requestDevice;
+        GPUAdapter.prototype.requestDevice = function (...args) {
+          const info = this.info || {};
+          gpuName = [info.vendor, info.architecture, info.device, info.description]
+            .filter(Boolean).join(" ");
+          return requestDevice.apply(this, args);
+        };
+      }
+
+      // --- Телефоны и планшеты ---
+      // Экран телефона плотный (devicePixelRatio 2.5–3.5): рисовать столько пикселей мобильной
+      // видеокарте не по силам. Там игра рисует не плотнее 1.5 пикселя на точку и стартует на
+      // низком качестве. Качество можно задать и вручную: ?quality=low|medium|high.
+      const mobile = navigator.userAgentData?.mobile
+        ?? (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)
+          || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1));
+      const asked = new URLSearchParams(location.search).get("quality");
+      window.spaceGuardQuality = asked || (mobile ? "low" : "");
+      if (mobile && window.devicePixelRatio > 1.5) {
+        document.getElementById("viewport").style.setProperty("--scale", String(window.devicePixelRatio / 1.5));
       }
 
       // --- Учёт загрузки ---
@@ -458,7 +495,7 @@
       // Экран загрузки показывает причину, иначе на телефоне без консоли не понять, что случилось.
       loader.errors = [];
       const report = (message) => {
-        loader.errors.push(String(message));
+        loader.errors.push(gpuName ? `${message}\nGPU: ${gpuName}` : String(message));
         loader.changed();
       };
       const nativeError = console.error.bind(console);
@@ -467,15 +504,19 @@
         if (text.includes("panicked at")) report(text);
         nativeError(...args);
       };
-      // Ошибку рендера Bevy пишет через console.log и после неё останавливает игру.
+      // Ошибку рендера Bevy пишет через console.log («Caught rendering error: …» или
+      // «Caught DeviceLost error: <причина> <текст>») и после неё останавливает игру.
       let lastRenderError = "";
       const nativeLog = console.log.bind(console);
       console.log = (...args) => {
         const text = String(args[0] ?? "").replace(/%c/g, "");
-        const caught = /Caught rendering error: (.*)/.exec(text);
-        if (caught) lastRenderError = caught[1];
+        const caught = /Caught (rendering|DeviceLost) error: ([\s\S]*)/.exec(text);
+        if (caught && !lastRenderError) {
+          lastRenderError = caught[1] === "DeviceLost" ? `GPU device lost: ${caught[2]}` : caught[2];
+        }
         if (text.includes("Quitting the application")) {
-          report(`Rendering error: ${lastRenderError || text}`);
+          const quit = /Quitting the application due to (\w+)/.exec(text);
+          report(`Rendering error: ${lastRenderError || (quit ? quit[1] : text)}`);
         }
         nativeLog(...args);
       };

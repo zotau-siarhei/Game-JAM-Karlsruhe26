@@ -112,6 +112,8 @@ cargo test                                  # тесты
   и `std::time`: списки ассетов, часы и проверка файлов — через `src/platform.rs`, рекорды и
   настройки живут только до перезагрузки страницы. `std::time::Instant` не использовать:
   в WASM он падает, бери `bevy::platform::time::Instant`.
+  На телефоне страница рисует не плотнее 1,5 пикселя на точку и просит низкое качество
+  (`platform::quality_hint`); ступень можно задать и в адресе: `?quality=low|medium|high`.
 - Браузерная версия выкладывается на GitHub Pages: https://zotau-siarhei.github.io/Game-JAM-Karlsruhe26/
   Workflow `.github/workflows/web.yml` раз в 4 часа собирает main (`--release`), если после последней
   выкладки были коммиты; вручную — Actions → web → Run workflow.
