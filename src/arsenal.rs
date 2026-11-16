@@ -54,7 +54,7 @@ pub fn spec(weapon: CurrentWeapon) -> WeaponSpec {
             key: KeyCode::Digit2,
             icon: "M",
             color: Color::srgb(0.95, 0.65, 0.2),
-            limit: 30,
+            limit: 150,
             per_crate: 6,
             start: Some(24),
         },
@@ -62,7 +62,7 @@ pub fn spec(weapon: CurrentWeapon) -> WeaponSpec {
             key: KeyCode::Digit3,
             icon: "R",
             color: Color::srgb(0.95, 0.85, 0.25),
-            limit: 30,
+            limit: 150,
             per_crate: 10,
             start: None,
         },
@@ -70,7 +70,7 @@ pub fn spec(weapon: CurrentWeapon) -> WeaponSpec {
             key: KeyCode::Digit4,
             icon: "H",
             color: Color::srgb(0.55, 0.9, 0.35),
-            limit: 6,
+            limit: 30,
             per_crate: 2,
             start: None,
         },
@@ -78,7 +78,7 @@ pub fn spec(weapon: CurrentWeapon) -> WeaponSpec {
             key: KeyCode::Digit5,
             icon: "L",
             color: Color::srgb(0.35, 0.85, 1.0),
-            limit: 12,
+            limit: 60,
             per_crate: 4,
             start: None,
         },
@@ -86,7 +86,7 @@ pub fn spec(weapon: CurrentWeapon) -> WeaponSpec {
             key: KeyCode::Digit6,
             icon: "A",
             color: Color::srgb(0.75, 0.5, 1.0),
-            limit: 3,
+            limit: 15,
             per_crate: 1,
             start: None,
         },
@@ -490,10 +490,10 @@ mod tests {
     fn pickup_does_not_exceed_limit() {
         let mut inventory = Inventory::default();
         assert_eq!(inventory.ammo(CurrentWeapon::Mortar), Some(24));
-        assert_eq!(inventory.add(CurrentWeapon::Mortar, 50), 6);
-        assert_eq!(inventory.ammo(CurrentWeapon::Mortar), Some(30));
+        assert_eq!(inventory.add(CurrentWeapon::Mortar, 200), 126);
+        assert_eq!(inventory.ammo(CurrentWeapon::Mortar), Some(150));
         assert_eq!(inventory.add(CurrentWeapon::Laser, 4), 4);
-        assert_eq!(inventory.add(CurrentWeapon::Laser, 100), 8);
+        assert_eq!(inventory.add(CurrentWeapon::Laser, 100), 56);
     }
 
     #[test]
