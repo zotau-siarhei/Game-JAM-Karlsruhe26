@@ -106,6 +106,10 @@ cargo test                                  # тесты
   сейчас её нет и учитывать её не нужно.
 - Целевое железо — MacBook Air M2, игра должна идти на нём плавно.
 - На Linux линкует mold (`.cargo/config.toml`), его надо поставить: `pacman -S mold`.
+- Кэш компиляции — sccache через `scripts/rustc-wrapper.sh` (`.cargo/config.toml`): ставится
+  `brew install sccache` / `pacman -S sccache`, без него сборка идёт обычным rustc. Кэшируются
+  зависимости, общие для всех worktree; крейт игры собирается инкрементально мимо кэша.
+  Статистика — `sccache --show-stats`, выключить на одну сборку — `RUSTC_WRAPPER= cargo build`.
 - Каждое изменение оставляет игру собираемой и запускаемой.
 - Новый worktree перед первой сборкой засевай готовой сборкой соседа: `scripts/seed-target.sh`.
   Скрипт клонирует `target` с самой свежей полной сборкой из соседнего worktree или основной копии
