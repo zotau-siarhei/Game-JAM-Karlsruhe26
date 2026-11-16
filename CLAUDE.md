@@ -138,7 +138,9 @@ cargo test                                  # тесты
   Телефон по USB: `adb reverse tcp:8080 tcp:8080`, консоль Chrome — `adb forward tcp:9222
   localabstract:chrome_devtools_remote` и CDP.
   Для Safari и iOS (WebKit) страница переписывает шейдеры перед компиляцией: PBR Bevy 0.20 кладёт
-  текстуру в `let`, WebKit такое отклоняет. Паника или ошибка рендера видна прямо на экране загрузки. Нужны `rustup target add wasm32-unknown-unknown`
+  текстуру в `let`, WebKit такое отклоняет. Ещё WebKit иногда отдаёт пустую память из `getMappedRange` буфера,
+  созданного отображённым («Length out of range of buffer» при запуске): страница подставляет свою и пишет её
+  в буфер при `unmap`. Паника или ошибка рендера видна прямо на экране загрузки. Нужны `rustup target add wasm32-unknown-unknown`
   и `wasm-bindgen-cli` той же версии, что `wasm-bindgen` в `Cargo.lock`. В браузере нет файлов
   и `std::time`: списки ассетов, часы и проверка файлов — через `src/platform.rs`, рекорды и
   настройки живут только до перезагрузки страницы. `std::time::Instant` не использовать:

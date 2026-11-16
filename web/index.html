@@ -432,6 +432,45 @@
           return createShaderModule.call(this, descriptor);
         };
       }
+      // WebKit (Safari, iPhone, iPad) иногда отдаёт пустой ArrayBuffer из getMappedRange буфера,
+      // созданного с mappedAtCreation (видели: буфер 260 байт, получено 0) — wgpu падает
+      // «RangeError: Length out of range of buffer» при загрузке. Тогда отдаём свою память
+      // нужного размера, а при unmap переписываем её в буфер через queue.writeBuffer.
+      // Для этого буферам без MAP_READ/MAP_WRITE, созданным отображёнными, добавляется COPY_DST.
+      if (window.GPUDevice && window.GPUBuffer) {
+        const createBuffer = GPUDevice.prototype.createBuffer;
+        const writable = new WeakMap(); // буфер → устройство, чья очередь может в него писать
+        const shadows = new WeakMap();  // буфер → [{ offset, data }] своей памяти до unmap
+        GPUDevice.prototype.createBuffer = function (descriptor) {
+          const mapUsage = GPUBufferUsage.MAP_READ | GPUBufferUsage.MAP_WRITE;
+          if (descriptor?.mappedAtCreation && !(descriptor.usage & mapUsage)) {
+            descriptor = { ...descriptor, usage: descriptor.usage | GPUBufferUsage.COPY_DST };
+            const buffer = createBuffer.call(this, descriptor);
+            writable.set(buffer, this);
+            return buffer;
+          }
+          return createBuffer.call(this, descriptor);
+        };
+        const getMappedRange = GPUBuffer.prototype.getMappedRange;
+        GPUBuffer.prototype.getMappedRange = function (offset = 0, size) {
+          const range = getMappedRange.call(this, offset, size);
+          const wanted = size ?? this.size - offset;
+          if (range.byteLength >= wanted || !writable.has(this)) return range;
+          const data = new ArrayBuffer(wanted);
+          if (!shadows.has(this)) shadows.set(this, []);
+          shadows.get(this).push({ offset, data });
+          return data;
+        };
+        const unmap = GPUBuffer.prototype.unmap;
+        GPUBuffer.prototype.unmap = function () {
+          unmap.call(this);
+          const pending = shadows.get(this);
+          if (!pending) return;
+          shadows.delete(this);
+          const queue = writable.get(this).queue;
+          for (const { offset, data } of pending) queue.writeBuffer(this, offset, data);
+        };
+      }
       // Какая видеокарта досталась игре: для текста ошибки на экране загрузки.
       let gpuName = "";
       if (window.GPUAdapter) {
