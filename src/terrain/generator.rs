@@ -1,5 +1,6 @@
 //! Генератор рельефа: высота и оттенок зелени в точке мира по сиду забега.
 
+use bevy::math::Vec2;
 use noise::{Fbm, MultiFractal, NoiseFn, Perlin};
 
 /// Частота холмов, 1/м: один холм примерно на 45 м.
@@ -84,6 +85,20 @@ impl HeightGenerator {
     /// Линии железной дороги забега.
     pub fn lines(&self) -> &crate::railway::Lines {
         &self.lines
+    }
+
+    /// Доля щебня насыпи в точке мира: 0 вдали от путей и в туннеле под горой, 1 на насыпи.
+    pub fn ballast(&self, x: f32, z: f32) -> f32 {
+        let near = self.lines.nearest(Vec2::new(x, z));
+        if near.distance >= crate::railway::BALLAST_EDGE {
+            return 0.0;
+        }
+        let raw = |x: f32, z: f32| self.raw_height(x, z);
+        let hills = |x: f32, z: f32| self.hills_height(x, z);
+        if self.lines.is_tunnel(near.line, near.s, raw, hills) {
+            return 0.0;
+        }
+        crate::railway::ballast_share(near.distance)
     }
 
     /// Оттенок травы в точке мира, примерно от -1 до 1.

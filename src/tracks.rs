@@ -13,7 +13,7 @@
 //! он пересобирается, только когда на участке что-то изменилось. Углы ленты ставятся при сборке
 //! на те же треугольники, что и меш участка, и подняты на [`LIFT`]: после продавливания лента
 //! ложится на дно колеи. Следы пропадают там, где рельеф изменился (`TerrainChanged`), и не
-//! ложатся на лаву, рельсы, пол вскрытого туннеля и воду.
+//! ложатся на лаву, щебень насыпи, пол вскрытого туннеля и воду.
 //!
 //! «Колосс» шагает: через каждые [`STRIDE`] метров одна из четырёх ступней вдавливает рельеф
 //! на [`FOOT_DEPTH`] и оставляет тёмный отпечаток.
@@ -37,7 +37,7 @@ use crate::frame::{GameSet, RunMessages};
 use crate::lava::{self, LavaPools};
 use crate::puddles::Puddles;
 use crate::quality::Quality;
-use crate::railway::TRACK_FLAT;
+use crate::railway::{BALLAST_FULL, BALLAST_EDGE, TRACK_FLAT};
 use crate::rover::Rover;
 use crate::run::WorldRebuilt;
 use crate::subsidence::TerrainChanged;
@@ -108,9 +108,6 @@ const TREAD_REPEAT: f32 = 0.85;
 
 /// Длина повтора текстуры колеи колёс, м: рисунка вдоль нет, число только против дрожания UV.
 const WHEEL_REPEAT: f32 = 4.0;
-
-/// До какого расстояния от оси путей отрезок не ложится на насыпь с рельсами, м.
-const RAIL_SKIP: f32 = 2.6;
 
 /// Шаг «Колосса»: через столько метров пути опускается следующая ступня, м.
 const STRIDE: f32 = 2.4;
@@ -536,7 +533,7 @@ pub fn mesh_height(terrain: &Terrain, x: f32, z: f32) -> f32 {
     }
 }
 
-/// Нельзя класть след: лава, насыпь с рельсами или пол вскрытого туннеля.
+/// Нельзя класть след: лава, щебень насыпи или пол вскрытого туннеля.
 fn forbidden(terrain: &Terrain, pools: &LavaPools, p: Vec2) -> bool {
     if lava::is_lava(pools, Vec3::new(p.x, 0.0, p.y)) {
         return true;
@@ -547,8 +544,9 @@ fn forbidden(terrain: &Terrain, pools: &LavaPools, p: Vec2) -> bool {
     }
     let level = terrain.track_level(near.line, near.s);
     let h = terrain.height_at(p.x, p.y);
-    // Рельсы лежат на верху насыпи; рядом с ней колея идёт как обычно.
-    if near.distance < RAIL_SKIP && (h - level).abs() < 1.0 {
+    // На щебне насыпи колеи нет: обрыв посередине перехода щебня в траву. Насыпь, срытая
+    // кратером, щебень потеряла, по ней колея идёт как обычно.
+    if near.distance < (BALLAST_FULL + BALLAST_EDGE) * 0.5 && (h - level).abs() < 1.0 {
         return true;
     }
     // Пол окна туннеля срезан до уровня путей во всю ширину ровной полосы.

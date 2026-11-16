@@ -58,6 +58,17 @@ pub const EMBANKMENT_HEIGHT: f32 = 0.8;
 const EMBANKMENT_TOP: f32 = 2.0;
 const EMBANKMENT_FOOT: f32 = 4.5;
 
+/// Щебень насыпи: сплошной до этого расстояния от оси, к [`BALLAST_EDGE`] сходит в траву, м.
+/// Колея на щебне не остаётся, поэтому следы обрываются ровно по его краю.
+pub const BALLAST_FULL: f32 = 3.0;
+pub const BALLAST_EDGE: f32 = 4.0;
+
+/// Доля щебня в цвете земли на расстоянии `distance` от оси: 1 на верху и откосе, 0 за насыпью.
+pub fn ballast_share(distance: f32) -> f32 {
+    let t = ((distance - BALLAST_FULL) / (BALLAST_EDGE - BALLAST_FULL)).clamp(0.0, 1.0);
+    1.0 - t * t * (3.0 - 2.0 * t)
+}
+
 /// Высота насыпи над уровнем путей на расстоянии `distance` от оси: плоский верх, плавный откос.
 pub fn embankment(distance: f32) -> f32 {
     let t = ((distance - EMBANKMENT_TOP) / (EMBANKMENT_FOOT - EMBANKMENT_TOP)).clamp(0.0, 1.0);

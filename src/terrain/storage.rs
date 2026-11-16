@@ -18,6 +18,10 @@ const GRASS_LOW: Color = Color::srgb(0.13, 0.36, 0.10);
 /// Цвет травы на вершинах.
 const GRASS_HIGH: Color = Color::srgb(0.42, 0.66, 0.22);
 
+/// Щебень насыпи под путями: серый с тёплым оттенком, вершины вразброс светлее и темнее.
+const BALLAST: Color = Color::srgb(0.46, 0.43, 0.39);
+const BALLAST_SPECKLE: f32 = 0.25;
+
 /// Высота, на которой трава самая тёмная, м.
 const GRASS_LOW_HEIGHT: f32 = -6.0;
 
@@ -98,13 +102,27 @@ impl ChunkData {
                 let t = ((h - GRASS_LOW_HEIGHT) / (GRASS_HIGH_HEIGHT - GRASS_LOW_HEIGHT))
                     .clamp(0.0, 1.0);
                 let brightness = 1.0 + generator.tint(x, z) * GRASS_TINT_STRENGTH;
-                let c = low.mix(&high, t) * brightness;
+                let mut c = low.mix(&high, t) * brightness;
+                let stone = generator.ballast(x, z);
+                if stone > 0.0 {
+                    let speckle = 1.0 + (vertex_hash(x as i32, z as i32) - 0.5) * 2.0 * BALLAST_SPECKLE;
+                    c = c.mix(&(BALLAST.to_linear() * speckle), stone);
+                }
                 heights.push(h);
                 colors.push([c.red, c.green, c.blue, 1.0]);
             }
         }
         Self { heights, colors }
     }
+}
+
+/// Хеш вершины мировой сетки: число от 0 до 1, крап щебня.
+fn vertex_hash(x: i32, z: i32) -> f32 {
+    let mut h = (x as u32).wrapping_mul(0x9E37_79B1) ^ (z as u32).wrapping_mul(0x85EB_CA77);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x2C1B_3C6D);
+    h ^= h >> 12;
+    (h >> 8) as f32 / (1u32 << 24) as f32
 }
 
 /// Мировые координаты угла участка: `(x, z)` вершины `(0, 0)`.
