@@ -49,6 +49,7 @@ mod props;
 mod perf;
 mod platform;
 mod fade;
+mod fonts;
 mod loading;
 mod prewarm;
 mod puddles;
@@ -131,7 +132,7 @@ fn main() {
         .add_plugins(bevy_hanabi::HanabiPlugin)
         // Замер ставит отметки и в рендер-потоке, поэтому тоже здесь.
         .add_plugins(perf::PerfPlugin)
-        .add_plugins((fade::FadePlugin, loading::LoadingPlugin))
+        .add_plugins((fonts::FontsPlugin, fade::FadePlugin, loading::LoadingPlugin))
         .add_plugins((gamepad::GamepadPlugin, haptics::HapticsPlugin))
         .add_plugins(game_plugins)
         .add_systems(Startup, spawn_light)

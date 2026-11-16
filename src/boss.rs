@@ -410,7 +410,8 @@ fn spawn_health_bar(commands: &mut Commands) {
             RunScoped,
             Node {
                 position_type: PositionType::Absolute,
-                top: Val::Px(16.0),
+                // Под временем забега (`hud.rs`: отступ 16 px, плашка около 40 px).
+                top: Val::Px(64.0),
                 left: Val::Percent(25.0),
                 width: Val::Percent(50.0),
                 height: Val::Px(18.0),
