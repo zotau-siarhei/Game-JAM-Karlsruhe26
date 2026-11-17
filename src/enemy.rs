@@ -191,6 +191,7 @@ impl Plugin for EnemyPlugin {
                         drive_mortarmen,
                         drive_tanks,
                         interceptor::drive_interceptors,
+                        interceptor::drive_gadflies,
                         avoid_lava,
                         steering::steer_vehicles,
                         vehicle::move_ground_vehicles,

@@ -165,6 +165,27 @@ pub mod balance {
     /// Реплика штаба о перехватчиках не чаще раза в столько секунд.
     pub const VOICE_GAP: f32 = 30.0;
 
+    /// Оводы — дроны, которые в бою кружат вокруг лунохода и по очереди делают рывок с разрядом
+    /// (`interceptor::Gadfly`): с какой угрозы приходят и сколько их одновременно.
+    pub const GADFLY_THREAT: f32 = 1.2;
+    pub const GADFLY_COUNT: usize = 2;
+    /// Радиус круга оводов, м, и угловая скорость обхода, рад/с.
+    pub const GADFLY_RING: f32 = 14.0;
+    pub const GADFLY_ORBIT: f32 = 0.45;
+    /// Раз в сколько секунд один из оводов бросается на луноход.
+    pub const GADFLY_GAP: (f32, f32) = (5.0, 7.0);
+    /// Сколько ядро разгорается перед рывком, с; скорость рывка, м/с; дольше рывок не длится, с.
+    pub const GADFLY_CHARGE: f32 = 0.8;
+    pub const GADFLY_DASH_SPEED: f32 = 22.0;
+    pub const GADFLY_DASH_TIME: f32 = 1.4;
+    /// Сколько овод отходит после рывка, с.
+    pub const GADFLY_RETREAT: f32 = 1.5;
+
+    /// Сколько оводов нужно при угрозе `threat`.
+    pub fn gadflies_wanted(threat: f32) -> usize {
+        if threat >= GADFLY_THREAT { GADFLY_COUNT } else { 0 }
+    }
+
     /// Размер звена перехвата при угрозе `threat`: 2 в начале, не больше 4.
     pub fn pack_size(threat: f32) -> usize {
         (2 + (threat.max(0.0) / 2.0).floor() as usize).min(4)

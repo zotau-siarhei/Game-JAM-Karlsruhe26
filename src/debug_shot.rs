@@ -20,6 +20,8 @@
 //! - `SPACE_GUARD_SCENE=weapons` — оружие `SPACE_GUARD_WEAPON` (mg, mortar, rockets, homing, laser,
 //!   airstrike) уровня `SPACE_GUARD_LEVEL` (1–3) стреляет вперёд на 18 м каждые 0,7 с с 3-й секунды:
 //!   посмотреть оружие по уровням (`upgrades`). Авиаудар подтверждается следующим нажатием.
+//! - `SPACE_GUARD_SCENE=gadflies` — на 2-й секунде забега у лунохода появляются два дрона-овода:
+//!   кружат, по очереди разгоняют ядро и бросаются (`interceptor::Gadfly`).
 //! - `SPACE_GUARD_SCENE=collapse` — через 2 с забега луноход встаёт в 9 м от ближайшего дома
 //!   лицом к нему, на 5-й секунде дом рушится: посмотреть куски модели (`fragments`), снимок
 //!   на `SPACE_GUARD_SHOT_AT` (обрушение — около 6,5, руины — 10).
@@ -82,7 +84,7 @@ impl Plugin for DebugShotPlugin {
             staged: false,
         })
         .add_systems(Update, (open_menu_page, press_keys).before(GameSet::Screens))
-        .add_systems(Update, (press_start, stage_scene, stage_train, stage_collapse, stage_airstrike, stage_weapons, keep_shocked, drive, take_shot).before(GameSet::Screens));
+        .add_systems(Update, (press_start, stage_scene, stage_train, stage_collapse, stage_airstrike, stage_weapons, stage_gadflies, keep_shocked, drive, take_shot).before(GameSet::Screens));
     }
 }
 
@@ -210,6 +212,40 @@ fn stage_train(
     let to_line = (on - at).normalize_or(Vec2::X);
     // Перёд лунохода — −Z.
     rover.rotation = Quat::from_rotation_y((-to_line.x).atan2(-to_line.y));
+}
+
+/// Сцена `gadflies`: два дрона рядом с луноходом сразу становятся оводами.
+fn stage_gadflies(
+    mut commands: Commands,
+    time: Res<Time>,
+    debug: Res<DebugShot>,
+    state: Res<State<GameState>>,
+    rover: Query<&Transform, With<Rover>>,
+    fresh: Query<Entity, Added<crate::interceptor::Interceptor>>,
+    mut spawns: MessageWriter<SpawnEnemy>,
+    mut clock: Local<f32>,
+    mut done: Local<bool>,
+) {
+    if debug.scene.as_deref() != Some("gadflies") || *state.get() != GameState::Playing {
+        return;
+    }
+    for (i, drone) in fresh.iter().enumerate() {
+        commands.entity(drone).try_insert(crate::interceptor::Gadfly::Circle(i as f32 * std::f32::consts::PI));
+    }
+    *clock += time.delta_secs();
+    if *done || *clock < 2.0 {
+        return;
+    }
+    let Some(rover) = rover.iter().next() else {
+        return;
+    };
+    *done = true;
+    for x in [-14.0, 14.0] {
+        spawns.write(SpawnEnemy {
+            place: SpawnPlace::Point(rover.translation + Vec3::new(x, 0.0, 0.0)),
+            kind: EnemyKind::Interceptor,
+        });
+    }
 }
 
 /// Сцена `weapons`: выбранное оружие нужного уровня стреляет вперёд.

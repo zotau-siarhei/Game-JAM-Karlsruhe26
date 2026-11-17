@@ -57,16 +57,20 @@ pub struct InterceptorPlugin;
 impl Plugin for InterceptorPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Flight>()
+            .init_resource::<Gadflies>()
             .add_run_message::<InterceptorHit>()
             .add_run_message::<InterceptStarted>()
             .add_systems(Startup, create_zap_material)
+            .add_systems(Update, add_core.in_set(GameSet::Presentation))
             .add_systems(
                 Update,
                 (
-                    reset_flight.in_set(GameSet::Reset),
-                    (track_flight, dispatch_interceptors).chain().in_set(GameSet::Simulation),
+                    (reset_flight, reset_gadflies).in_set(GameSet::Reset),
+                    (track_flight, dispatch_interceptors, dispatch_gadflies, enlist_gadflies, pick_dasher)
+                        .chain()
+                        .in_set(GameSet::Simulation),
                     remove_departed.in_set(GameSet::Cleanup),
-                    (spin_rotors, spawn_zaps, draw_zaps).in_set(GameSet::Presentation),
+                    (spin_rotors, spawn_zaps, draw_zaps, glow_cores).in_set(GameSet::Presentation),
                 ),
             );
     }
@@ -259,6 +263,205 @@ fn dispatch_interceptors(
     }
 }
 
+/// Овод: дрон, который в бою кружит вокруг лунохода и по очереди с напарником бросается на него.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub enum Gadfly {
+    /// Кружит на [`balance::GADFLY_RING`] м, угол на круге, рад.
+    Circle(f32),
+    /// Тормозит, ядро разгорается: осталось секунд.
+    Charge(f32),
+    /// Бросается в точку `target`, где был луноход в начале рывка; осталось секунд.
+    Dash { target: Vec3, left: f32 },
+    /// Отходит после рывка, осталось секунд.
+    Retreat(f32),
+}
+
+/// Оводы забега: сколько заказано и ещё не появилось, и когда следующий рывок.
+#[derive(Resource, Debug, Default)]
+struct Gadflies {
+    pending: usize,
+    next_dash: f32,
+}
+
+fn reset_gadflies(mut rebuilt: MessageReader<WorldRebuilt>, mut gadflies: ResMut<Gadflies>) {
+    if rebuilt.read().count() > 0 {
+        *gadflies = Gadflies::default();
+    }
+}
+
+/// На старте волны с угрозы [`balance::GADFLY_THREAT`] добирает оводов до [`balance::GADFLY_COUNT`].
+fn dispatch_gadflies(
+    mut started: MessageReader<crate::waves::WaveStarted>,
+    threat: Res<Threat>,
+    mut gadflies: ResMut<Gadflies>,
+    mut rng: ResMut<GameRng>,
+    alive: Query<(), With<Gadfly>>,
+    mut spawns: MessageWriter<SpawnEnemy>,
+) {
+    if started.read().count() == 0 {
+        return;
+    }
+    let have = alive.iter().count() + gadflies.pending;
+    let missing = balance::gadflies_wanted(threat.value()).saturating_sub(have);
+    for _ in 0..missing {
+        spawns.write(SpawnEnemy {
+            place: SpawnPlace::Edge {
+                angle: rng.range(0.0, std::f32::consts::TAU),
+            },
+            kind: EnemyKind::Interceptor,
+        });
+    }
+    gadflies.pending += missing;
+    if missing > 0 && gadflies.next_dash <= 0.0 {
+        gadflies.next_dash = rng.range(balance::GADFLY_GAP.0, balance::GADFLY_GAP.1);
+    }
+}
+
+/// Заказанные оводы — первые появившиеся перехватчики без роли.
+fn enlist_gadflies(
+    mut commands: Commands,
+    mut gadflies: ResMut<Gadflies>,
+    fresh: Query<Entity, (Added<Interceptor>, Without<Gadfly>)>,
+) {
+    for (i, entity) in fresh.iter().enumerate() {
+        if gadflies.pending == 0 {
+            break;
+        }
+        gadflies.pending -= 1;
+        commands.entity(entity).try_insert(Gadfly::Circle(i as f32 * std::f32::consts::PI));
+    }
+}
+
+/// Раз в несколько секунд один из кружащих оводов начинает разгон к рывку.
+fn pick_dasher(
+    time: Res<Time>,
+    mut gadflies: ResMut<Gadflies>,
+    mut rng: ResMut<GameRng>,
+    mut drones: Query<&mut Gadfly>,
+) {
+    if drones.is_empty() {
+        return;
+    }
+    gadflies.next_dash -= time.delta_secs();
+    if gadflies.next_dash > 0.0 {
+        return;
+    }
+    gadflies.next_dash = rng.range(balance::GADFLY_GAP.0, balance::GADFLY_GAP.1);
+    let busy = drones.iter().any(|g| !matches!(g, Gadfly::Circle(_)));
+    if busy {
+        return;
+    }
+    let count = drones.iter().count();
+    let chosen = rng.below(count);
+    if let Some(mut gadfly) = drones.iter_mut().nth(chosen) {
+        *gadfly = Gadfly::Charge(balance::GADFLY_CHARGE);
+    }
+}
+
+/// Следующее состояние овода за шаг `dt`: `rover` — где луноход сейчас, `near` — овод у цели рывка.
+pub fn gadfly_step(state: Gadfly, dt: f32, rover: Vec3, near: bool) -> Gadfly {
+    match state {
+        Gadfly::Circle(angle) => Gadfly::Circle(angle + balance::GADFLY_ORBIT * dt),
+        Gadfly::Charge(left) if left - dt <= 0.0 => Gadfly::Dash {
+            target: rover,
+            left: balance::GADFLY_DASH_TIME,
+        },
+        Gadfly::Charge(left) => Gadfly::Charge(left - dt),
+        Gadfly::Dash { left, .. } if near || left - dt <= 0.0 => Gadfly::Retreat(balance::GADFLY_RETREAT),
+        Gadfly::Dash { target, left } => Gadfly::Dash { target, left: left - dt },
+        Gadfly::Retreat(left) if left - dt <= 0.0 => Gadfly::Circle(0.0),
+        Gadfly::Retreat(left) => Gadfly::Retreat(left - dt),
+    }
+}
+
+/// Ведёт оводов: круг, разгон на месте лицом к луноходу, рывок по прямой без упреждения, отход.
+pub fn drive_gadflies(
+    time: Res<Time>,
+    rover: Query<(&Transform, &Health), With<Rover>>,
+    mut drones: Query<(&Transform, &GroundVehicle, &mut Steering, &mut Gadfly), Without<Rover>>,
+) {
+    let dt = time.delta_secs();
+    let rover = rover.iter().next().filter(|(_, health)| !health.is_dead());
+    for (transform, vehicle, mut steering, mut gadfly) in &mut drones {
+        let Some((rover, _)) = rover else {
+            steering.speed = 0.0;
+            continue;
+        };
+        let me = transform.translation;
+        let target = rover.translation;
+        let near = matches!(*gadfly, Gadfly::Dash { target: t, .. } if (t - me).with_y(0.0).length() < 1.5);
+        let mut next = gadfly_step(*gadfly, dt, target, near);
+        // Отход кончился: на круг с того угла, где овод сейчас.
+        if matches!(*gadfly, Gadfly::Retreat(_)) && matches!(next, Gadfly::Circle(_)) {
+            let from = (me - target).with_y(0.0);
+            next = Gadfly::Circle(from.z.atan2(from.x));
+        }
+        *gadfly = next;
+        let (desired, speed) = match *gadfly {
+            Gadfly::Circle(angle) => {
+                let spot = target + Vec3::new(angle.cos(), 0.0, angle.sin()) * balance::GADFLY_RING;
+                let to = (spot - me).with_y(0.0);
+                (vehicle::heading_towards(to), (to.length() * 1.5).clamp(4.0, INTERCEPTOR_SPEED))
+            }
+            Gadfly::Charge(_) => (vehicle::heading_towards(target - me), 0.0),
+            Gadfly::Dash { target: aim, .. } => (vehicle::heading_towards(aim - me), balance::GADFLY_DASH_SPEED),
+            Gadfly::Retreat(_) => (vehicle::heading_towards(me - target), INTERCEPTOR_SPEED * 0.8),
+        };
+        steering.desired = desired;
+        steering.speed = speed;
+        let _ = vehicle;
+    }
+}
+
+/// Светящееся ядро дрона: разгорается, пока овод разгоняется к рывку.
+#[derive(Component)]
+struct CoreGlow;
+
+/// Ядро дрона в системе перехватчика (до его масштаба): над центром модели.
+const CORE_HEIGHT: f32 = 1.37;
+
+/// Ставит каждому новому дрону спрятанное ядро-вспышку.
+fn add_core(
+    mut commands: Commands,
+    assets: Res<ZapAssets>,
+    fresh: Query<Entity, Added<Interceptor>>,
+) {
+    for entity in &fresh {
+        commands.entity(entity).with_children(|drone| {
+            drone.spawn((
+                CoreGlow,
+                Mesh3d(assets.core.clone()),
+                MeshMaterial3d(assets.material.clone()),
+                bevy::light::NotShadowCaster,
+                Transform::from_xyz(0.0, CORE_HEIGHT - crate::enemy::RIDE_HEIGHT, 0.0).with_scale(Vec3::ZERO),
+            ));
+        });
+    }
+}
+
+/// Ядро растёт и мерцает, пока идёт разгон; в остальное время спрятано.
+fn glow_cores(
+    time: Res<Time>,
+    drones: Query<(&Gadfly, &Children)>,
+    mut cores: Query<&mut Transform, With<CoreGlow>>,
+) {
+    for (gadfly, children) in &drones {
+        let size = match *gadfly {
+            Gadfly::Charge(left) => {
+                let k = 1.0 - left / balance::GADFLY_CHARGE;
+                (0.15 + 0.35 * k) * (1.0 + 0.15 * (time.elapsed_secs() * 40.0).sin())
+            }
+            Gadfly::Dash { .. } => 0.4,
+            _ => 0.0,
+        };
+        for child in children {
+            if let Ok(mut core) = cores.get_mut(*child) {
+                core.scale = Vec3::splat(size);
+            }
+        }
+    }
+}
+
 /// Что делает перехватчик.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 enum Behaviour {
@@ -299,7 +502,7 @@ pub fn drive_interceptors(
     time: Res<Time>,
     flight: Res<Flight>,
     rover: Query<(&Transform, &RoverMotion, &Health), With<Rover>>,
-    mut interceptors: Query<(&Transform, &GroundVehicle, &mut Steering, &mut Interceptor), Without<Rover>>,
+    mut interceptors: Query<(&Transform, &GroundVehicle, &mut Steering, &mut Interceptor), (Without<Rover>, Without<Gadfly>)>,
 ) {
     let dt = time.delta_secs();
     let rover = rover.iter().next().filter(|(_, _, health)| !health.is_dead());
@@ -371,7 +574,10 @@ fn segment_contact(center: Vec2, forward: Vec2, rover: Vec2, rover_radius: f32) 
 #[allow(clippy::type_complexity)]
 pub fn ram_by_interceptors(
     mut rover: Query<(Entity, &Transform, &Collider, &Health, &mut RoverMotion, &mut Impact), With<Rover>>,
-    mut interceptors: Query<(Entity, &mut Transform, &GroundVehicle, &mut Interceptor), Without<Rover>>,
+    mut interceptors: Query<
+        (Entity, &mut Transform, &GroundVehicle, &mut Interceptor, Option<&mut Gadfly>),
+        Without<Rover>,
+    >,
     mut damage: MessageWriter<Damage>,
     mut hits: MessageWriter<InterceptorHit>,
 ) {
@@ -382,7 +588,7 @@ pub fn ram_by_interceptors(
         return;
     }
     let center = Vec2::new(rover.translation.x, rover.translation.z);
-    for (drone, mut transform, vehicle, mut interceptor) in &mut interceptors {
+    for (drone, mut transform, vehicle, mut interceptor, gadfly) in &mut interceptors {
         let me = Vec2::new(transform.translation.x, transform.translation.z);
         let forward = vehicle.forward();
         let forward = Vec2::new(forward.x, forward.z).normalize_or(Vec2::NEG_Y);
@@ -392,10 +598,17 @@ pub fn ram_by_interceptors(
         if depth > 0.0 {
             transform.translation += Vec3::new(normal.x, 0.0, normal.y) * depth;
         }
-        if interceptor.behaviour != Behaviour::Attack {
+        // Овод бьёт только в рывке, потом отходит; перехватчик — в атаке, потом отскакивает.
+        if let Some(mut gadfly) = gadfly {
+            if !matches!(*gadfly, Gadfly::Dash { .. }) {
+                continue;
+            }
+            *gadfly = Gadfly::Retreat(balance::GADFLY_RETREAT);
+        } else if interceptor.behaviour != Behaviour::Attack {
             continue;
+        } else {
+            interceptor.behaviour = Behaviour::Recoil(balance::RAM_COOLDOWN);
         }
-        interceptor.behaviour = Behaviour::Recoil(balance::RAM_COOLDOWN);
         motion.speed *= balance::HIT_SPEED_KEEP;
         impact.hit();
         damage.write(Damage {
@@ -449,14 +662,25 @@ fn spin_rotors(time: Res<Time>, mut rotors: Query<&mut Transform, With<Rotor>>) 
 /// Материал молнии удара: ярче единицы, чтобы светилась через свечение камеры (у `unlit`
 /// работает только `base_color`). Создаётся при старте, чтобы его застал прогрев шейдеров.
 #[derive(Resource)]
-struct ZapMaterial(Handle<StandardMaterial>);
+struct ZapAssets {
+    material: Handle<StandardMaterial>,
+    /// Шар ядра-вспышки овода перед рывком.
+    core: Handle<Mesh>,
+}
 
-fn create_zap_material(mut commands: Commands, mut materials: ResMut<Assets<StandardMaterial>>) {
-    commands.insert_resource(ZapMaterial(materials.add(StandardMaterial {
-        base_color: Color::linear_rgb(3.0, 5.5, 14.0),
-        unlit: true,
-        ..default()
-    })));
+fn create_zap_material(
+    mut commands: Commands,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+) {
+    commands.insert_resource(ZapAssets {
+        material: materials.add(StandardMaterial {
+            base_color: Color::linear_rgb(3.0, 5.5, 14.0),
+            unlit: true,
+            ..default()
+        }),
+        core: meshes.add(Sphere::new(1.0).mesh().ico(2).expect("ядро дрона")),
+    });
 }
 
 /// Удар: с каждого электрода к корпусу лунохода бьёт своя молния.
@@ -464,7 +688,7 @@ fn spawn_zaps(
     mut commands: Commands,
     mut hits: MessageReader<InterceptorHit>,
     assets: Res<crate::shock::ShockAssets>,
-    material: Res<ZapMaterial>,
+    material: Res<ZapAssets>,
     rover: Query<&Transform, With<Rover>>,
 ) {
     let Some(rover) = rover.iter().next() else {
@@ -483,7 +707,7 @@ fn spawn_zaps(
                         .spawn((
                             crate::run::RunScoped,
                             Mesh3d(assets.segment.clone()),
-                            MeshMaterial3d(material.0.clone()),
+                            MeshMaterial3d(material.material.clone()),
                             bevy::light::NotShadowCaster,
                             Transform::default(),
                         ))
@@ -743,5 +967,26 @@ mod tests {
         assert!(segment_contact(Vec2::new(0.0, -4.5), Vec2::X, Vec2::ZERO, 2.4).is_none());
         // Вдоль корпуса за хвостом.
         assert!(segment_contact(Vec2::new(6.0, 0.0), Vec2::X, Vec2::ZERO, 2.4).is_none());
+    }
+
+    #[test]
+    fn рывок_идёт_в_точку_начала_рывка() {
+        let start = Vec3::new(3.0, 0.0, 4.0);
+        let state = gadfly_step(Gadfly::Charge(0.05), 0.1, start, false);
+        let Gadfly::Dash { target, .. } = state else {
+            panic!("после разгона — рывок, а не {state:?}");
+        };
+        assert_eq!(target, start);
+        // Луноход уехал — цель рывка прежняя.
+        let later = gadfly_step(state, 0.1, Vec3::new(20.0, 0.0, 0.0), false);
+        assert!(matches!(later, Gadfly::Dash { target, .. } if target == start));
+        // У цели — отход.
+        assert!(matches!(gadfly_step(later, 0.1, Vec3::ZERO, true), Gadfly::Retreat(_)));
+    }
+
+    #[test]
+    fn оводы_с_угрозы_1_2() {
+        assert_eq!(balance::gadflies_wanted(1.0), 0);
+        assert_eq!(balance::gadflies_wanted(1.5), 2);
     }
 }
