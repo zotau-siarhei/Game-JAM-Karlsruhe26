@@ -34,20 +34,22 @@
 ## Decisions
 
 ### Модули
-- `src/settings.rs` — ресурс `Settings { quality, master, music, effects, voice, vibration,
-  difficulty }`, чтение и запись `settings.json` (через `platform` в браузере — только в памяти).
+- `src/settings.rs` — ресурс `Settings { quality, master, music, effects, voice, subtitles,
+  vibration, difficulty }`, чтение и запись `settings.json` (через `platform` в браузере — только в памяти).
   `quality.rs` перестаёт сам читать файл: берёт качество из `Settings` при старте и при смене
   пишет туда же. Поля файла — с `#[serde(default)]`, поэтому прежний файл `{"quality":"high"}`
   читается.
 - `src/difficulty.rs` — `enum Difficulty { Easy, Normal, Hard }` с методами-числами:
   `damage_to_rover()`, `threat_rate()`, `regen()`, `aim_assist()`. Ресурс `RunDifficulty` ставится
-  из `Settings` при начале забега (`RunStarted`/`start_run`), поэтому смена в меню не трогает
-  идущий забег, а рестарт берёт ту же.
+  из `Settings` пунктом «Играть» меню перед `start_run` (при запуске игры — из файла настроек),
+  поэтому смена в меню не трогает идущий забег, а рестарт с экрана конца забега и из паузы берёт
+  ту же.
 - `src/menu.rs` — плагин экранов меню. `run.rs` оставляет себе переходы, пролёт и экран конца
   забега, а `show_menu`/`menu_input` переезжают в `menu.rs`. Подэкран — ресурс
-  `MenuPage { Main, Difficulty, Settings, Records(Difficulty), Credits }` и выделенная строка;
+  `MenuPage { Main, Difficulty, Settings, Records(Difficulty), Authors }` и выделенная строка;
   экран перерисовывается целиком при смене страницы (строк мало), подсветка строки — как у паузы.
-- Создатели — константа `CREDITS: &[&str]` в `menu.rs`.
+- Авторы — константа `AUTHORS: &[&str]` в `menu.rs`: имена по алфавиту фамилий (Nidzhat Guseynov,
+  Ivan Tsarev, Sergei Zotov), последней строкой — «Game Jam Karlsruhe 2026». Пункт и экран в игре — AUTHORS.
 
 ### Ввод
 Клавиатура и геймпад сводятся к виртуальным клавишам: в `virtual_for` для `Menu` добавляются
@@ -60,7 +62,8 @@ DPadUp/Down/Left/Right → стрелки, East → Esc, South → Enter; лев
 - Урон по луноходу: множитель в `apply_damage` для цели с `Rover`.
 - Угроза: `Threat` умножает время и разрушения на `threat_rate()` при подсчёте (одна строка в
   `waves.rs`, формула `balance::threat` не меняется).
-- Регенерация: `RegenSettings` выставляется из сложности при начале забега.
+- Регенерация: `RegenSettings` выставляется из сложности забега по `WorldRebuilt`, как и
+  множитель угрозы (`Threat::with_rate`).
 - Прицел: `stick_aim` читает `RunDifficulty` и множит ширину захвата, удержание и замедление
   курсора: лёгкая — захват 4 м, удержание 6 м, курсор 0,25; тяжёлая — 1,8 м, 3 м, 0,6.
 
