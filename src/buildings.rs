@@ -6,7 +6,8 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 
 use crate::combat::{Damage, Died, Health, Team, blast_damage};
-use crate::collapse::CollapseHouse;
+use crate::collapse::{CollapseHouse, RUIN_LEVEL};
+use crate::fragments::ModelPieces;
 use crate::subsidence::Collapsing;
 use crate::explosion::Explosion;
 use crate::models::{ModelShade, Models};
@@ -146,6 +147,7 @@ fn break_doors(
                 size: Vec3::new(0.12, 0.08, 0.5 + 0.3 * k),
                 color: Color::srgb(0.45, 0.3, 0.16),
                 burning: false,
+                ..default()
             });
         }
         // Удар изнутри: дом вздрагивает.
@@ -306,6 +308,7 @@ fn stream_houses(
     terrain: Res<Terrain>,
     visible: Res<VisibleChunks>,
     assets: Res<HouseAssets>,
+    pieces: Res<ModelPieces>,
     mut models: Models,
     focus: Res<Focus>,
 ) {
@@ -346,7 +349,7 @@ fn stream_houses(
                     continue;
                 }
                 let entity = if house.status == HouseStatus::Destroyed {
-                    spawn_ruin(&mut commands, &assets, &terrain, id, house)
+                    spawn_ruin(&mut commands, &assets, &pieces, &terrain, id, house)
                 } else {
                     spawn_house(&mut commands, &assets, &mut models, &terrain, id, house)
                 };
@@ -357,7 +360,7 @@ fn stream_houses(
 }
 
 /// Модель дома в `models.json`.
-fn house_model(kind: HouseKind) -> &'static str {
+pub fn house_model(kind: HouseKind) -> &'static str {
     match kind {
         HouseKind::Hut => "house_small",
         HouseKind::TwoStory => "house_two_story",
@@ -367,7 +370,7 @@ fn house_model(kind: HouseKind) -> &'static str {
 
 /// Растяжка модели по осям дома: модель с масштабом из `models.json` подгоняется под план дома,
 /// чтобы её стены совпали со стенами из `half_extents` (двери, проёмы, препятствие, руины).
-fn house_fit(kind: HouseKind) -> Vec3 {
+pub fn house_fit(kind: HouseKind) -> Vec3 {
     match kind {
         HouseKind::Hut => Vec3::new(0.985, 1.0, 1.092),
         HouseKind::TwoStory => Vec3::new(0.822, 1.0, 0.883),
@@ -526,14 +529,18 @@ fn spawn_house(
     entity.id()
 }
 
-/// Руины на месте разрушенного дома: плоский фундамент и груды обломков цветов дома.
+/// Руины на месте разрушенного дома: плоский фундамент и нижние куски модели дома в копоти
+/// (`src/fragments.rs`) — остатки стен на своих местах. Пока модель не нарезана — груды кубов
+/// цветов дома.
 fn spawn_ruin(
     commands: &mut Commands,
     assets: &HouseAssets,
+    pieces: &ModelPieces,
     terrain: &Terrain,
     id: HouseId,
     house: &HouseState,
 ) -> Entity {
+    let set = pieces.get(house_model(house.kind));
     let footprint = house.footprint();
     let size = footprint.half * 2.0;
     let base = terrain.height_at(house.position.x, house.position.y);
@@ -561,6 +568,17 @@ fn spawn_ruin(
                 MeshMaterial3d(assets.ruin.clone()),
                 Transform::from_xyz(0.0, -0.3, 0.0).with_scale(Vec3::new(size.x + 0.6, 0.9, size.y + 0.6)),
             ));
+            if let Some(set) = set {
+                let fit = house_fit(house.kind);
+                for piece in set.pieces.iter().filter(|p| set.level(p) < RUIN_LEVEL) {
+                    parent.spawn((
+                        Mesh3d(piece.mesh.clone()),
+                        MeshMaterial3d(set.charred.clone()),
+                        set.local(piece, fit),
+                    ));
+                }
+                return;
+            }
             for (i, (offset, scale, material)) in heaps.into_iter().enumerate() {
                 parent.spawn((
                     Mesh3d(assets.cube.clone()),
@@ -647,6 +665,7 @@ fn destroy_houses(
     mut spawned: ResMut<SpawnedHouses>,
     mut destroyed: MessageWriter<BuildingDestroyed>,
     assets: Res<HouseAssets>,
+    pieces: Res<ModelPieces>,
     terrain: Res<Terrain>,
     houses: Query<(
         &House,
@@ -670,7 +689,7 @@ fn destroy_houses(
         state.status = HouseStatus::Destroyed;
         state.health = 0.0;
         let state = state.clone();
-        let ruin = spawn_ruin(&mut commands, &assets, &terrain, house.0, &state);
+        let ruin = spawn_ruin(&mut commands, &assets, &pieces, &terrain, house.0, &state);
         spawned.0.insert(house.0, ruin);
         let cause = match death.killer {
             _ if collapsing => DestroyCause::Collapse,

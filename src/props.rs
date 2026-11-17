@@ -1247,6 +1247,7 @@ fn break_props(
                         size: Vec3::new(size, size * 0.7, size * 0.9) * scale * (0.7 + (i % 2) as f32 * 0.5),
                         color,
                         burning: false,
+                        ..default()
                     });
                 }
                 if let Some(children) = children {

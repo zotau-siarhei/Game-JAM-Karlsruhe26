@@ -803,6 +803,7 @@ fn throw_debris(debris: &mut MessageWriter<SpawnDebris>, rng: &mut Rng, center: 
                 size: Vec3::new(s, s * rng.range(0.6, 0.9), s * rng.range(0.7, 1.0)),
                 color: CLOD_COLOR,
                 burning: false,
+                ..default()
             });
         }
         let shards = rng.range(BURNING_SHARDS.0 as f32, BURNING_SHARDS.1 as f32 + 0.999) as u32;
@@ -814,6 +815,7 @@ fn throw_debris(debris: &mut MessageWriter<SpawnDebris>, rng: &mut Rng, center: 
                 size: Vec3::new(s, s * 0.5, s * 1.4),
                 color: SHARD_COLOR,
                 burning: true,
+                ..default()
             });
         }
     }

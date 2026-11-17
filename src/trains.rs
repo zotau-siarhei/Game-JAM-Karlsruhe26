@@ -419,6 +419,7 @@ fn burst_car(
             },
             color,
             burning: i < burning,
+            ..default()
         });
     }
 }

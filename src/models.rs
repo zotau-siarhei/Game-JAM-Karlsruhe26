@@ -237,6 +237,19 @@ impl ModelBank {
         ModelColors::of(&model.entry)
     }
 
+    /// Растяжка модели `id` из списка, если запись есть.
+    pub fn entry_transform(&self, id: &str) -> Option<Transform> {
+        self.models.get(id).map(|model| model.entry.transform())
+    }
+
+    /// Файл glTF модели `id`, если он загружен со всеми зависимостями.
+    pub fn ready_gltf(&self, id: &str) -> Option<Handle<Gltf>> {
+        match &self.models.get(id)?.state {
+            ModelState::Ready(handles) => Some(handles.gltf.clone()),
+            _ => None,
+        }
+    }
+
     /// Ставит на загрузку все модели списка: прогрев (`src/prewarm.rs`) берёт их заранее,
     /// чтобы первый объект с моделью не ждал файла и шейдеров.
     pub fn request_all(&mut self, asset_server: &AssetServer) {

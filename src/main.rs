@@ -50,6 +50,7 @@ mod perf;
 mod platform;
 mod fade;
 mod fonts;
+mod fragments;
 mod loading;
 mod prewarm;
 mod puddles;
@@ -160,7 +161,8 @@ fn game_plugins(app: &mut App) {
     ))
         // Интерфейс мельче на маленьком экране (телефон).
         .add_plugins(ui_scale::UiScalePlugin)
-        // Посёлки, объекты поверхности и разрушение.
+        // Посёлки, объекты поверхности и разрушение; куски моделей для обломков.
+        .add_plugins(fragments::FragmentsPlugin)
         .add_plugins((
             settlements::SettlementsPlugin,
             buildings::BuildingsPlugin,

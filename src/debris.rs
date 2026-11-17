@@ -59,22 +59,64 @@ impl Plugin for DebrisPlugin {
 }
 
 /// Просьба создать летящий обломок.
-#[derive(Message, Debug, Clone, Copy)]
+#[derive(Message, Debug, Clone, Default)]
 pub struct SpawnDebris {
     pub position: Vec3,
     pub velocity: Vec3,
-    /// Размеры куска, м.
+    /// Размеры куска, м; у куска модели — масштаб его сетки.
     pub size: Vec3,
     pub color: Color,
     /// Обломок горит несколько секунд.
     pub burning: bool,
+    /// Форма: куб или кусок модели.
+    pub shape: DebrisShape,
+    /// Начальный поворот; без него — случайный.
+    pub rotation: Option<Quat>,
+}
+
+/// Форма обломка.
+#[derive(Debug, Clone, Default)]
+pub enum DebrisShape {
+    /// Куб цвета `color`.
+    #[default]
+    Cube,
+    /// Кусок модели (`src/fragments.rs`) со своим материалом.
+    Mesh {
+        mesh: Handle<Mesh>,
+        material: Handle<StandardMaterial>,
+        /// Половина габаритов сетки до масштаба.
+        half: Vec3,
+    },
+}
+
+impl DebrisShape {
+    /// Половина габаритов сетки до масштаба.
+    fn half(&self) -> Vec3 {
+        match self {
+            DebrisShape::Cube => Vec3::splat(0.5),
+            DebrisShape::Mesh { half, .. } => *half,
+        }
+    }
+}
+
+/// Наибольший размер обломка, м.
+fn extent(shape: &DebrisShape, scale: Vec3) -> f32 {
+    (shape.half() * 2.0 * scale).max_element()
+}
+
+/// Насколько обломок с поворотом уходит вниз от центра, м.
+fn half_height(shape: &DebrisShape, transform: &Transform) -> f32 {
+    let half = shape.half() * transform.scale;
+    let m = Mat3::from_quat(transform.rotation);
+    m.x_axis.y.abs() * half.x + m.y_axis.y.abs() * half.y + m.z_axis.y.abs() * half.z
 }
 
 /// Уснувший обломок в хранилище.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct DebrisPiece {
     transform: Transform,
     color: Color,
+    shape: DebrisShape,
 }
 
 /// Уснувшие обломки забега по участкам рельефа.
@@ -93,6 +135,19 @@ struct DebrisAssets {
 }
 
 impl DebrisAssets {
+    /// Сетка и материал обломка.
+    fn look(
+        &mut self,
+        shape: &DebrisShape,
+        color: Color,
+        materials: &mut Assets<StandardMaterial>,
+    ) -> (Mesh3d, MeshMaterial3d<StandardMaterial>) {
+        match shape {
+            DebrisShape::Cube => (Mesh3d(self.cube.clone()), MeshMaterial3d(self.material(color, materials))),
+            DebrisShape::Mesh { mesh, material, .. } => (Mesh3d(mesh.clone()), MeshMaterial3d(material.clone())),
+        }
+    }
+
     fn material(&mut self, color: Color, materials: &mut Assets<StandardMaterial>) -> Handle<StandardMaterial> {
         let srgb = color.to_srgba();
         let key = [srgb.red, srgb.green, srgb.blue].map(|c| (c * 255.0) as u8);
@@ -116,6 +171,7 @@ struct Flying {
     spin: Vec3,
     bounces: u32,
     color: Color,
+    shape: DebrisShape,
 }
 
 /// Обломок горит: сколько ещё, с. Пламя ставит модуль огня по [`Fire`].
@@ -151,23 +207,27 @@ fn spawn_debris(
 ) {
     let mut burning_count = burning.iter().count();
     for (i, request) in requests.read().enumerate() {
-        let material = assets.material(request.color, &mut materials);
+        let (mesh, material) = assets.look(&request.shape, request.color, &mut materials);
         let k = i as f32;
+        // Крупный кусок кувыркается медленнее.
+        let size = extent(&request.shape, request.size);
+        let spin_rate = 8.0 / size.max(1.0).sqrt();
         let mut entity = commands.spawn((
             Flying {
                 velocity: request.velocity,
-                spin: Vec3::new((k * 1.3).sin(), (k * 2.1).cos(), (k * 0.7).sin()) * 8.0,
+                spin: Vec3::new((k * 1.3).sin(), (k * 2.1).cos(), (k * 0.7).sin()) * spin_rate,
                 bounces: 0,
                 color: request.color,
+                shape: request.shape.clone(),
             },
             RunScoped,
-            Mesh3d(assets.cube.clone()),
-            MeshMaterial3d(material),
+            mesh,
+            material,
             Transform::from_translation(request.position)
-                .with_rotation(Quat::from_euler(EulerRot::XYZ, k, k * 0.5, k * 0.3))
+                .with_rotation(request.rotation.unwrap_or(Quat::from_euler(EulerRot::XYZ, k, k * 0.5, k * 0.3)))
                 .with_scale(request.size),
         ));
-        if request.size.max_element() < SHADOW_SIZE {
+        if size < SHADOW_SIZE {
             entity.insert(NotShadowCaster);
         }
         let parent = entity.id();
@@ -175,7 +235,7 @@ fn spawn_debris(
             burning_count += 1;
             // Пламя стоит вертикально над обломком и не кувыркается вместе с ним.
             let remaining = 3.0 + (k * 0.37).fract() * 3.0;
-            let size = (request.size.max_element() * 1.2).clamp(0.5, 1.6);
+            let size = (size * 1.2).clamp(0.5, 1.6);
             commands
                 .entity(parent)
                 .insert((Burning { remaining }, Fire::new(size, 0.85).for_seconds(remaining).then_smoke(3.0)));
@@ -253,6 +313,8 @@ fn wake_debris(
                 size: piece.transform.scale,
                 color: piece.color,
                 burning: false,
+                rotation: Some(piece.transform.rotation),
+                shape: piece.shape,
             });
         }
     }
@@ -260,19 +322,21 @@ fn wake_debris(
     for change in changes.read() {
         let off_ground = |piece: &DebrisPiece| {
             let p = piece.transform.translation;
-            let ground = terrain.height_at(p.x, p.z) + piece.transform.scale.y * 0.5;
+            let ground = terrain.height_at(p.x, p.z) + half_height(&piece.shape, &piece.transform);
             (p.y - ground).abs() > SETTLE_GAP
         };
         for piece in take_pieces(store, &mut commands, change.center, change.radius, off_ground) {
             let p = piece.transform.translation;
             // Утонувший встаёт на поверхность, висящий падает с места.
-            let ground = terrain.height_at(p.x, p.z) + piece.transform.scale.y * 0.5;
+            let ground = terrain.height_at(p.x, p.z) + half_height(&piece.shape, &piece.transform);
             requests.write(SpawnDebris {
                 position: p.with_y(p.y.max(ground)),
                 velocity: Vec3::ZERO,
                 size: piece.transform.scale,
                 color: piece.color,
                 burning: false,
+                rotation: Some(piece.transform.rotation),
+                shape: piece.shape,
             });
         }
     }
@@ -296,8 +360,8 @@ fn fly_debris(
         let spin = piece.spin * dt;
         transform.rotate(Quat::from_euler(EulerRot::XYZ, spin.x, spin.y, spin.z));
 
-        let half_height = transform.scale.y * 0.5;
-        let ground = terrain.height_at(transform.translation.x, transform.translation.z) + half_height;
+        let ground =
+            terrain.height_at(transform.translation.x, transform.translation.z) + half_height(&piece.shape, &transform);
         if transform.translation.y > ground {
             continue;
         }
@@ -313,13 +377,31 @@ fn fly_debris(
             // Ложится плашмя по рельефу и засыпает.
             let up = terrain.normal_at(transform.translation.x, transform.translation.z);
             let (_, yaw, _) = transform.rotation.to_euler(EulerRot::YXZ);
-            transform.rotation = Quat::from_rotation_arc(Vec3::Y, up) * Quat::from_rotation_y(yaw);
+            // Куб лежит как летел, кусок модели — плашмя, самой тонкой стороной вниз.
+            let lay = match piece.shape {
+                DebrisShape::Cube => Quat::IDENTITY,
+                DebrisShape::Mesh { half, .. } => {
+                    let size = half * transform.scale;
+                    let thin = if size.x <= size.y && size.x <= size.z {
+                        Vec3::X
+                    } else if size.z <= size.y {
+                        Vec3::Z
+                    } else {
+                        Vec3::Y
+                    };
+                    Quat::from_rotation_arc(thin, Vec3::Y)
+                }
+            };
+            transform.rotation = Quat::from_rotation_arc(Vec3::Y, up) * Quat::from_rotation_y(yaw) * lay;
+            transform.translation.y = terrain.height_at(transform.translation.x, transform.translation.z)
+                + half_height(&piece.shape, &transform);
             let chunk = chunk_coord_at(transform.translation.x, transform.translation.z);
             let stored = store.chunks.entry(chunk).or_default();
             let had_pieces = !stored.is_empty();
             stored.push(DebrisPiece {
                 transform: *transform,
                 color: piece.color,
+                shape: piece.shape.clone(),
             });
             // Списки обломков участка и их сущностей идут в одном порядке.
             if let Some(shown) = store.shown.get_mut(&chunk) {
@@ -374,14 +456,9 @@ fn stream_debris(
         let entities = pieces
             .iter()
             .map(|piece| {
-                let material = assets.material(piece.color, &mut materials);
-                let mut e = commands.spawn((
-                    RunScoped,
-                    Mesh3d(assets.cube.clone()),
-                    MeshMaterial3d(material),
-                    piece.transform,
-                ));
-                if piece.transform.scale.max_element() < SHADOW_SIZE {
+                let (mesh, material) = assets.look(&piece.shape, piece.color, &mut materials);
+                let mut e = commands.spawn((RunScoped, mesh, material, piece.transform));
+                if extent(&piece.shape, piece.transform.scale) < SHADOW_SIZE {
                     e.insert(NotShadowCaster);
                 }
                 e.id()

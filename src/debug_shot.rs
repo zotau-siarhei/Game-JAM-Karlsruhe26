@@ -15,6 +15,9 @@
 //!   посмотреть колеи (`tracks`).
 //! - `SPACE_GUARD_SCENE=train` — через 2 с забега луноход переносится на 24 м от ближайшего пути,
 //!   поезд выходит через секунду: посмотреть вагоны и крутящиеся колёса (`trains`).
+//! - `SPACE_GUARD_SCENE=collapse` — через 2 с забега луноход встаёт в 9 м от ближайшего дома
+//!   лицом к нему, на 5-й секунде дом рушится: посмотреть куски модели (`fragments`), снимок
+//!   на `SPACE_GUARD_SHOT_AT` (обрушение — около 6,5, руины — 10).
 
 use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
@@ -50,7 +53,7 @@ impl Plugin for DebugShotPlugin {
             taken: None,
             staged: false,
         })
-        .add_systems(Update, (press_start, stage_scene, stage_train, keep_shocked, drive, take_shot).before(GameSet::Screens));
+        .add_systems(Update, (press_start, stage_scene, stage_train, stage_collapse, keep_shocked, drive, take_shot).before(GameSet::Screens));
     }
 }
 
@@ -121,6 +124,55 @@ fn stage_train(
     let to_line = (on - at).normalize_or(Vec2::X);
     // Перёд лунохода — −Z.
     rover.rotation = Quat::from_rotation_y((-to_line.x).atan2(-to_line.y));
+}
+
+/// Сцена `collapse`: луноход встаёт у ближайшего дома, потом дом рушится.
+fn stage_collapse(
+    time: Res<Time>,
+    debug: Res<DebugShot>,
+    terrain: Res<Terrain>,
+    mut rover: Query<&mut Transform, With<Rover>>,
+    houses: Query<(Entity, &Transform), (With<crate::buildings::House>, Without<Rover>)>,
+    mut damage: MessageWriter<crate::combat::Damage>,
+    state: Res<State<GameState>>,
+    mut step: Local<u8>,
+    mut clock: Local<f32>,
+) {
+    if debug.scene.as_deref() != Some("collapse") || *state.get() != GameState::Playing {
+        return;
+    }
+    // Время с начала забега: загрузка и меню идут дольше, чем ждёт сцена.
+    *clock += time.delta_secs();
+    let Some(mut rover) = rover.iter_mut().next() else {
+        return;
+    };
+    let t = *clock;
+    let nearest = houses
+        .iter()
+        .min_by(|a, b| {
+            let d = |h: &Transform| h.translation.distance_squared(rover.translation);
+            d(a.1).total_cmp(&d(b.1))
+        })
+        .map(|(e, h)| (e, h.translation));
+    let Some((house, at)) = nearest else {
+        return;
+    };
+    if *step == 0 && t >= 2.0 {
+        *step = 1;
+        // Сбоку от дома, лицом к нему; перёд лунохода — −Z.
+        let away = (rover.translation - at).with_y(0.0).normalize_or(Vec3::X);
+        let p = at + away * 9.0;
+        rover.translation = Vec3::new(p.x, terrain.height_at(p.x, p.z) + 0.5, p.z);
+        rover.rotation = Quat::from_rotation_y(away.x.atan2(away.z));
+    } else if *step == 1 && t >= 5.0 {
+        *step = 2;
+        info!("Сцена collapse: дом рушится");
+        damage.write(crate::combat::Damage {
+            target: house,
+            amount: 1.0e4,
+            source_team: Team::Player,
+        });
+    }
 }
 
 /// Ставит отладочную сцену перед луноходом.
@@ -197,6 +249,7 @@ fn stage_scene(
             size: Vec3::splat(0.6),
             color: Color::srgb(0.4, 0.3, 0.2),
             burning: true,
+            ..default()
         });
     }
 }

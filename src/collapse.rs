@@ -3,12 +3,18 @@
 //!
 //! Обрушение запускает сообщение [`CollapseHouse`]. Каждая часть в конце становится обычным
 //! обломком через [`SpawnDebris`], поэтому всё, что упало, остаётся лежать.
+//!
+//! Если модель дома нарезана (`src/fragments.rs`), дом рушится своими кусками в копоти: верхние
+//! проваливаются внутрь, как крыша, средние заваливаются наружу, как стены, а нижние остаются
+//! руинами (`buildings::spawn_ruin`). Без кусков — плиты и панели в цветах дома.
 
 use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 
+use crate::buildings::{house_fit, house_model};
+use crate::debris::{DebrisShape, SpawnDebris};
 use crate::fire::Fire;
-use crate::debris::SpawnDebris;
+use crate::fragments::ModelPieces;
 use crate::frame::{GameSet, RunMessages};
 use crate::run::RunScoped;
 use crate::settlements::HouseState;
@@ -32,6 +38,11 @@ const RUIN_SMOKE: f32 = 20.0;
 
 /// Сколько живёт искра, с.
 const SPARK_SECONDS: f32 = 0.7;
+
+/// Куски модели с центром ниже этой доли высоты остаются руинами.
+pub const RUIN_LEVEL: f32 = 0.2;
+/// Куски модели выше этой доли высоты падают внутрь, как крыша; между — заваливаются, как стены.
+const ROOF_LEVEL: f32 = 0.6;
 
 /// Подключает анимацию обрушения.
 pub struct CollapsePlugin;
@@ -70,6 +81,8 @@ struct Part {
     delay: f32,
     motion: Motion,
     color: Color,
+    /// Куб или кусок модели: таким станет и обломок.
+    shape: DebrisShape,
 }
 
 enum Motion {
@@ -151,6 +164,7 @@ fn start_collapse(
     mut commands: Commands,
     mut requests: MessageReader<CollapseHouse>,
     assets: Res<CollapseAssets>,
+    pieces: Res<ModelPieces>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     for request in requests.read() {
@@ -167,6 +181,59 @@ fn start_collapse(
             d.normalize_or(Vec3::X)
         });
 
+        if let Some(set) = pieces.get(house_model(house.kind)) {
+            // Куски своей модели: дом стоит в `base` с поворотом, модель — под растяжкой `fit`.
+            let fit = house_fit(house.kind);
+            let frame = Transform::from_translation(base).with_rotation(rotation);
+            for piece in &set.pieces {
+                let level = set.level(piece);
+                if level < RUIN_LEVEL {
+                    continue;
+                }
+                let local = set.local(piece, fit);
+                let world = frame * local;
+                let flat = local.translation.with_y(0.0).normalize_or(Vec3::X);
+                let outward = rotation * flat;
+                let facing_blast = blast_dir.map_or(0.0, |d| (-d).dot(outward).max(0.0));
+                let motion = if level > ROOF_LEVEL {
+                    Motion::Falling {
+                        velocity: -outward * rng.range(0.5, 1.5) - Vec3::Y,
+                        floor: base.y + rng.range(0.4, 1.0),
+                    }
+                } else {
+                    // Заваливается вокруг своего нижнего края.
+                    let bottom = (local.translation.y - piece.half.y * local.scale.y).max(0.0);
+                    Motion::Tipping {
+                        pivot: frame.transform_point(local.translation.with_y(bottom)),
+                        axis: rotation * Vec3::Y.cross(flat),
+                        rest: world,
+                        elapsed: 0.0,
+                        push: 2.0 + rng.range(0.0, 2.0) + facing_blast * 7.0,
+                        outward,
+                    }
+                };
+                let delay = match motion {
+                    Motion::Falling { .. } => rng.range(0.0, 0.3),
+                    Motion::Tipping { .. } => 0.2 + rng.range(0.0, 0.35) * (1.0 - facing_blast * 0.8),
+                };
+                commands.spawn((
+                    Part {
+                        delay,
+                        motion,
+                        color: Color::WHITE,
+                        shape: DebrisShape::Mesh {
+                            mesh: piece.mesh.clone(),
+                            material: set.charred.clone(),
+                            half: piece.half,
+                        },
+                    },
+                    RunScoped,
+                    Mesh3d(piece.mesh.clone()),
+                    MeshMaterial3d(set.charred.clone()),
+                    world,
+                ));
+            }
+        } else {
         // Крыша: 4–6 кусков, проседают и падают внутрь со случайными задержками.
         let roof_pieces = 4 + (rng.next() * 3.0) as usize;
         for i in 0..roof_pieces {
@@ -183,6 +250,7 @@ fn start_collapse(
                         floor: base.y + 0.4,
                     },
                     color: *roof_color,
+                    shape: DebrisShape::Cube,
                 },
                 RunScoped,
                 Mesh3d(assets.cube.clone()),
@@ -234,6 +302,7 @@ fn start_collapse(
                             outward,
                         },
                         color: *wall_color,
+                        shape: DebrisShape::Cube,
                     },
                     RunScoped,
                     Mesh3d(assets.cube.clone()),
@@ -241,6 +310,7 @@ fn start_collapse(
                     rest,
                 ));
             }
+        }
         }
 
         // Кольцо пыли от основания.
@@ -307,6 +377,8 @@ fn animate_parts(
             continue;
         }
         let color = part.color;
+        let shape = part.shape.clone();
+        let model_piece = matches!(shape, DebrisShape::Mesh { .. });
         match &mut part.motion {
             Motion::Falling { velocity, floor } => {
                 velocity.y -= GRAVITY * dt;
@@ -314,12 +386,15 @@ fn animate_parts(
                 if transform.translation.y <= *floor {
                     let v = *velocity;
                     commands.entity(entity).despawn();
+                    // Кусок модели остаётся своего размера и поворота, плита крыши — чуть меньше.
                     debris.write(SpawnDebris {
                         position: transform.translation,
                         velocity: Vec3::new(v.x, 2.0, v.z),
-                        size: transform.scale * 0.8,
+                        size: if model_piece { transform.scale } else { transform.scale * 0.8 },
                         color,
                         burning: false,
+                        rotation: model_piece.then_some(transform.rotation),
+                        shape: shape.clone(),
                     });
                 }
             }
@@ -337,7 +412,19 @@ fn animate_parts(
                 let turn = Quat::from_axis_angle(*axis, angle);
                 transform.translation = *pivot + turn * (rest.translation - *pivot);
                 transform.rotation = turn * rest.rotation;
-                if t >= 1.0 {
+                if t >= 1.0 && model_piece {
+                    // Кусок модели отрывается целиком.
+                    commands.entity(entity).despawn();
+                    debris.write(SpawnDebris {
+                        position: transform.translation,
+                        velocity: *outward * *push + Vec3::Y * 3.0,
+                        size: transform.scale,
+                        color,
+                        burning: false,
+                        rotation: Some(transform.rotation),
+                        shape: shape.clone(),
+                    });
+                } else if t >= 1.0 {
                     // Панель отрывается и раскалывается на два куска.
                     commands.entity(entity).despawn();
                     let up = transform.rotation * Vec3::Y;
@@ -349,6 +436,7 @@ fn animate_parts(
                             size: piece,
                             color,
                             burning: false,
+                            ..default()
                         });
                     }
                 }
