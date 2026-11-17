@@ -416,6 +416,7 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<Time>()
             .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<crate::difficulty::RunDifficulty>()
             .init_resource::<Events>()
             .add_message::<RepairChanged>()
             .add_message::<Heal>()
