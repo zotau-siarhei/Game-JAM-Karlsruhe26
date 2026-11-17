@@ -377,13 +377,17 @@ fn spawn_panel(mut commands: Commands) {
                         },
                         TextColor(s.color),
                     ));
+                    // Знак «∞» пулемёта в 12 px сливается в пятно: он крупнее, а высота строки
+                    // та же, что у цифр, чтобы ячейки не разъезжались.
+                    let infinite = weapon == CurrentWeapon::MachineGun;
                     cell.spawn((
                         AmmoText(weapon),
                         Text::new(""),
                         TextFont {
-                            font_size: FontSize::Px(12.0),
+                            font_size: FontSize::Px(if infinite { 22.0 } else { 12.0 }),
                             ..default()
                         },
+                        bevy::text::LineHeight::Px(14.4),
                         TextColor(Color::WHITE),
                     ));
                 });
