@@ -1,5 +1,5 @@
-//! Ступени качества картинки: свечение, тени и сглаживание. Переключаются клавишей Q на паузе,
-//! выбор сохраняется в `settings.json` рядом с рекордами.
+//! Ступени качества картинки: свечение, тени и сглаживание. Переключаются клавишей Q на паузе
+//! и в меню настроек, выбор сохраняется вместе с остальными настройками (`settings.rs`).
 //!
 //! | Ступень | Свечение | Тени | Сглаживание |
 //! |---|---|---|---|
@@ -12,8 +12,6 @@
 //! На всех ступенях камера в HDR с тональной коррекцией: огонь, вспышки и лазер ярче единицы
 //! и сияют с ореолом через свечение. Рассеянный свет — голубоватый от неба.
 
-use std::path::PathBuf;
-
 use bevy::light::{CascadeShadowConfigBuilder, DirectionalLightShadowMap};
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
@@ -21,9 +19,11 @@ use bevy::render::view::{Msaa, Tonemapping};
 
 use crate::camera::GameCamera;
 use crate::run::GameState;
+use crate::settings::Settings;
 
-/// Ступень качества.
-#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Ступень качества. В файле настроек — `low`, `medium`, `high`.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Quality {
     Low,
     #[default]
@@ -32,16 +32,12 @@ pub enum Quality {
 }
 
 impl Quality {
-    fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Quality::Low => "low",
             Quality::Medium => "medium",
             Quality::High => "high",
         }
-    }
-
-    fn from_name(name: &str) -> Option<Self> {
-        [Quality::Low, Quality::Medium, Quality::High].into_iter().find(|q| q.name() == name)
     }
 
     /// Доля частиц постоянных эффектов на этой ступени: бюджет из `visual-style`.
@@ -53,12 +49,16 @@ impl Quality {
         }
     }
 
-    fn next(self) -> Self {
-        match self {
-            Quality::Low => Quality::Medium,
-            Quality::Medium => Quality::High,
-            Quality::High => Quality::Low,
-        }
+    /// Следующая ступень по кругу.
+    pub fn next(self) -> Self {
+        self.step(1)
+    }
+
+    /// Соседняя ступень на шаг `step` по кругу.
+    pub fn step(self, step: i32) -> Self {
+        const ALL: [Quality; 3] = [Quality::Low, Quality::Medium, Quality::High];
+        let index = ALL.iter().position(|q| *q == self).unwrap_or(0) as i32;
+        ALL[(index + step).rem_euclid(ALL.len() as i32) as usize]
     }
 }
 
@@ -67,7 +67,8 @@ pub struct QualityPlugin;
 
 impl Plugin for QualityPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(load())
+        let quality = crate::settings::stored(app).quality;
+        app.insert_resource(quality)
             .insert_resource(GlobalAmbientLight {
                 color: Color::srgb(0.7, 0.8, 1.0),
                 brightness: 220.0,
@@ -78,7 +79,7 @@ impl Plugin for QualityPlugin {
                 Update,
                 (
                     switch_quality.run_if(in_state(GameState::Paused)),
-                    apply_quality.run_if(resource_changed::<Quality>),
+                    (apply_quality, remember_quality).run_if(resource_changed::<Quality>),
                     show_label,
                 )
                     .chain()
@@ -91,33 +92,6 @@ impl Plugin for QualityPlugin {
 #[derive(Component)]
 struct QualityLabel;
 
-/// Файл настроек: рядом с файлом рекордов.
-fn settings_path() -> Option<PathBuf> {
-    Some(crate::records::records_path()?.parent()?.join("settings.json"))
-}
-
-fn load() -> Quality {
-    settings_path()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-        .and_then(|v| v.get("quality")?.as_str().and_then(Quality::from_name))
-        .or_else(|| crate::platform::quality_hint().as_deref().and_then(Quality::from_name))
-        .unwrap_or_default()
-}
-
-fn save(quality: Quality) {
-    let Some(path) = settings_path() else {
-        return;
-    };
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    let text = serde_json::json!({ "quality": quality.name() }).to_string();
-    if let Err(error) = std::fs::write(&path, text) {
-        warn!("Настройки: не записан {}: {error}", path.display());
-    }
-}
-
 /// Камера в HDR с тональной коррекцией.
 fn setup_camera(mut commands: Commands, camera: Single<Entity, With<GameCamera>>) {
     commands
@@ -125,11 +99,17 @@ fn setup_camera(mut commands: Commands, camera: Single<Entity, With<GameCamera>>
         .insert((bevy::camera::Hdr, Tonemapping::TonyMcMapface));
 }
 
-/// Q на паузе меняет ступень по кругу и сохраняет выбор.
+/// Q на паузе меняет ступень по кругу.
 fn switch_quality(keys: Res<ButtonInput<KeyCode>>, mut quality: ResMut<Quality>) {
     if keys.just_pressed(KeyCode::KeyQ) {
         *quality = quality.next();
-        save(*quality);
+    }
+}
+
+/// Новая ступень — в настройки: они сохраняют её в файл.
+fn remember_quality(quality: Res<Quality>, mut settings: ResMut<Settings>) {
+    if settings.quality != *quality {
+        settings.quality = *quality;
     }
 }
 
@@ -224,8 +204,11 @@ mod tests {
     #[test]
     fn ступени_идут_по_кругу_и_читаются_по_имени() {
         assert_eq!(Quality::High.next(), Quality::Low);
+        assert_eq!(Quality::Low.step(-1), Quality::High);
         for q in [Quality::Low, Quality::Medium, Quality::High] {
-            assert_eq!(Quality::from_name(q.name()), Some(q));
+            let json = serde_json::to_string(&q).unwrap();
+            assert_eq!(json, format!("\"{}\"", q.name()));
+            assert_eq!(serde_json::from_str::<Quality>(&json).unwrap(), q);
         }
     }
 }

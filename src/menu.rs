@@ -1,0 +1,716 @@
+//! Главное меню и его подэкраны: «Играть», «Сложность», «Настройки», «Рекорды», «Авторы»,
+//! «Выход» (в браузере его нет).
+//!
+//! Меню — текст на затемнении поверх пролёта над планетой (`run::fly_over_planet`). Страница и
+//! выделенная строка — ресурс [`Menu`]; экран перерисовывается целиком, когда меняется страница
+//! или значение на ней, а подсветка строки меняется отдельно, как у паузы.
+//!
+//! Управление одно на все устройства: стрелки и W/S двигают выделение, стрелки влево-вправо (A/D)
+//! меняют значения, Enter, пробел или клик выбирают, Esc возвращает из подэкрана. Геймпад нажимает
+//! те же клавиши (`gamepad::virtual_for`), мышь выделяет строку наведением.
+
+use bevy::app::AppExit;
+use bevy::input::mouse::AccumulatedMouseMotion;
+use bevy::picking::hover::Hovered;
+use bevy::prelude::*;
+
+use crate::difficulty::{Difficulty, RunDifficulty};
+use crate::fade::Appear;
+use crate::frame::GameSet;
+use crate::quality::Quality;
+use crate::run::{self, GameState, RecordsTable, RunWorld, HINT_COLOR, TITLE_COLOR};
+use crate::settings::{Settings, VOLUME_STEP};
+use crate::sound::PlaySound;
+
+/// Авторы игры по алфавиту фамилий и последней строкой — джем: экран «Авторы».
+pub const AUTHORS: &[&str] = &["Nidzhat Guseynov", "Ivan Tsarev", "Sergei Zotov", "Game Jam Karlsruhe 2026"];
+
+/// Цвет невыделенной строки.
+const ROW_COLOR: Color = Color::srgb(0.7, 0.72, 0.76);
+/// Размер шрифта строк меню.
+const ROW_SIZE: f32 = 30.0;
+/// Ширина подписи в строке со значением, точек: значения встают в столбик.
+const LABEL_WIDTH: f32 = 230.0;
+
+/// Плагин главного меню.
+pub struct MenuPlugin;
+
+impl Plugin for MenuPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<Menu>()
+            .add_systems(OnEnter(GameState::Menu), open_main)
+            .add_systems(OnExit(GameState::Menu), run::hide_screen::<MenuScreen>)
+            .add_systems(
+                Update,
+                (menu_input, draw_menu, highlight_rows)
+                    .chain()
+                    // После полёта над планетой: иначе полёт спрятал бы луноход, только что
+                    // поставленный на старт.
+                    .after(run::fly_over_planet)
+                    .run_if(in_state(GameState::Menu))
+                    .in_set(GameSet::Screens),
+            );
+    }
+}
+
+/// Страница меню.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MenuPage {
+    #[default]
+    Main,
+    Difficulty,
+    Settings,
+    /// Таблица рекордов этого уровня: переключается стрелками, уровень для игры не меняет.
+    Records(Difficulty),
+    Authors,
+}
+
+/// Открытая страница и выделенная строка.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Menu {
+    pub page: MenuPage,
+    pub selected: usize,
+}
+
+/// Строка настроек.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Setting {
+    Quality,
+    Master,
+    Music,
+    Effects,
+    Voice,
+    Subtitles,
+    Vibration,
+}
+
+/// Выбираемая строка меню.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Item {
+    Play,
+    OpenDifficulty,
+    OpenSettings,
+    OpenRecords,
+    OpenAuthors,
+    Quit,
+    Choose(Difficulty),
+    Setting(Setting),
+    /// Переключатель таблицы на экране рекордов.
+    RecordsTable,
+    Back,
+}
+
+/// Пункты главного меню. «Выхода» в браузере нет: закрыть вкладку может только сама страница.
+fn main_items() -> Vec<Item> {
+    let mut items = vec![Item::Play, Item::OpenDifficulty, Item::OpenSettings, Item::OpenRecords, Item::OpenAuthors];
+    if !cfg!(target_arch = "wasm32") {
+        items.push(Item::Quit);
+    }
+    items
+}
+
+/// Строки страницы по порядку выделения. `pad` — подключён геймпад: без него строки вибрации нет.
+fn items(page: MenuPage, pad: bool) -> Vec<Item> {
+    match page {
+        MenuPage::Main => main_items(),
+        MenuPage::Difficulty => {
+            let mut items: Vec<Item> = Difficulty::ALL.iter().map(|d| Item::Choose(*d)).collect();
+            items.push(Item::Back);
+            items
+        }
+        MenuPage::Settings => {
+            let mut items: Vec<Item> = [
+                Setting::Quality,
+                Setting::Master,
+                Setting::Music,
+                Setting::Effects,
+                Setting::Voice,
+                Setting::Subtitles,
+                Setting::Vibration,
+            ]
+            .map(Item::Setting)
+            .to_vec();
+            items.retain(|item| pad || *item != Item::Setting(Setting::Vibration));
+            items.push(Item::Back);
+            items
+        }
+        MenuPage::Records(_) => vec![Item::RecordsTable, Item::Back],
+        MenuPage::Authors => vec![Item::Back],
+    }
+}
+
+/// Номер строки после шага вверх или вниз: список замкнут в кольцо.
+fn moved(selected: usize, step: i32, count: usize) -> usize {
+    (selected as i32 + step).rem_euclid(count.max(1) as i32) as usize
+}
+
+/// Громкость после шага: в пределах 0–100 %, `wrap` — со 100 % на 0 по кругу.
+fn stepped_volume(volume: u8, step: i32, wrap: bool) -> u8 {
+    let next = i32::from(volume) + step * i32::from(VOLUME_STEP);
+    if wrap && next > 100 {
+        return 0;
+    }
+    next.clamp(0, 100) as u8
+}
+
+/// Меняет настройку на шаг `step`; `wrap` — по кругу (Enter, клик), иначе громкость упирается в край.
+fn change_setting(settings: &mut Settings, setting: Setting, step: i32, wrap: bool) {
+    match setting {
+        Setting::Quality => settings.quality = settings.quality.step(step),
+        Setting::Master => settings.master = stepped_volume(settings.master, step, wrap),
+        Setting::Music => settings.music = stepped_volume(settings.music, step, wrap),
+        Setting::Effects => settings.effects = stepped_volume(settings.effects, step, wrap),
+        Setting::Voice => settings.voice = stepped_volume(settings.voice, step, wrap),
+        Setting::Subtitles => settings.subtitles = !settings.subtitles,
+        Setting::Vibration => settings.vibration = !settings.vibration,
+    }
+}
+
+/// Главное меню после возврата с подэкрана: выделен пункт этого подэкрана.
+fn back_to_main(from: MenuPage) -> Menu {
+    let item = match from {
+        MenuPage::Main => Item::Play,
+        MenuPage::Difficulty => Item::OpenDifficulty,
+        MenuPage::Settings => Item::OpenSettings,
+        MenuPage::Records(_) => Item::OpenRecords,
+        MenuPage::Authors => Item::OpenAuthors,
+    };
+    Menu {
+        page: MenuPage::Main,
+        selected: main_items().iter().position(|i| *i == item).unwrap_or(0),
+    }
+}
+
+/// Корень экрана меню.
+#[derive(Component)]
+struct MenuScreen;
+
+/// Выбираемая строка с её номером.
+#[derive(Component)]
+struct MenuRow(usize);
+
+/// Текст строки, который подсвечивается.
+#[derive(Component)]
+struct RowText(usize);
+
+/// Стрелка у выделенной строки.
+#[derive(Component)]
+struct RowMarker(usize);
+
+/// Вход в меню: главная страница, выделено «Играть».
+fn open_main(mut menu: ResMut<Menu>) {
+    *menu = Menu::default();
+}
+
+/// Ввод меню: выделение, значения, выбор и возврат.
+#[allow(clippy::too_many_arguments)]
+fn menu_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    motion: Res<AccumulatedMouseMotion>,
+    bench: Option<Res<crate::perf::Bench>>,
+    real: Res<Time<Real>>,
+    rows: Query<(&MenuRow, &Hovered)>,
+    gamepads: Query<(), With<Gamepad>>,
+    mut last_pad: Local<Option<bool>>,
+    mut menu: ResMut<Menu>,
+    mut settings: ResMut<Settings>,
+    mut quality: ResMut<Quality>,
+    mut run_difficulty: ResMut<RunDifficulty>,
+    mut world: RunWorld,
+    mut sounds: MessageWriter<PlaySound>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    if world.busy() {
+        return;
+    }
+    // Геймпад подключили или отключили: строка вибрации появилась или исчезла, выделение
+    // остаётся на той же строке, а с исчезнувшей встаёт на соседнюю выше.
+    let pad = !gamepads.is_empty();
+    let was_pad = last_pad.replace(pad).unwrap_or(pad);
+    let list = items(menu.page, pad);
+    if was_pad != pad {
+        let old = items(menu.page, was_pad);
+        let item = old.get(menu.selected).copied();
+        let selected = item
+            .and_then(|item| list.iter().position(|i| *i == item))
+            .unwrap_or(menu.selected.saturating_sub(1));
+        menu.set_if_neq(Menu {
+            selected: selected.min(list.len().saturating_sub(1)),
+            ..*menu
+        });
+    }
+    let mut next = *menu;
+    let mut click = false;
+
+    // Наведение мыши выделяет строку, но только когда мышь двигалась: иначе строка под стоящим
+    // курсором отбирала бы выделение у клавиатуры.
+    let hovered = rows.iter().find(|(_, hovered)| hovered.get()).map(|(row, _)| row.0);
+    if motion.delta != Vec2::ZERO
+        && let Some(row) = hovered
+    {
+        next.selected = row;
+    }
+    if keys.any_just_pressed([KeyCode::ArrowUp, KeyCode::KeyW]) {
+        next.selected = moved(next.selected, -1, list.len());
+    }
+    if keys.any_just_pressed([KeyCode::ArrowDown, KeyCode::KeyS]) {
+        next.selected = moved(next.selected, 1, list.len());
+    }
+    if next.selected != menu.selected {
+        click = true;
+    }
+    let selected = list.get(next.selected.min(list.len().saturating_sub(1))).copied();
+
+    // Влево-вправо: значение настройки или таблица рекордов.
+    let side = i32::from(keys.any_just_pressed([KeyCode::ArrowRight, KeyCode::KeyD]))
+        - i32::from(keys.any_just_pressed([KeyCode::ArrowLeft, KeyCode::KeyA]));
+    if side != 0 {
+        match (menu.page, selected) {
+            (MenuPage::Records(shown), _) => {
+                next.page = MenuPage::Records(shown.step(side));
+                click = true;
+            }
+            (_, Some(Item::Setting(setting))) => {
+                let mut changed = settings.clone();
+                change_setting(&mut changed, setting, side, false);
+                click |= changed != *settings;
+                settings.set_if_neq(changed);
+            }
+            _ => {}
+        }
+    }
+
+    // Выбор: Enter, пробел, клик по строке. Прогон замера начинает забег сам через секунду.
+    let by_mouse = world.clicked() && hovered.is_some();
+    if by_mouse {
+        next.selected = hovered.unwrap_or(next.selected);
+    }
+    let chosen = keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter, KeyCode::Space]) || by_mouse;
+    let bench_start = bench.is_some_and(|b| b.on) && real.elapsed_secs() > 1.0 && menu.page == MenuPage::Main;
+    let activated = if bench_start {
+        Some(Item::Play)
+    } else if chosen {
+        list.get(next.selected).copied()
+    } else {
+        None
+    };
+    if let Some(item) = activated {
+        click = true;
+        match item {
+            Item::Play => {
+                // Забег идёт на уровне, выбранном сейчас; рестарт возьмёт тот же.
+                run_difficulty.set_if_neq(RunDifficulty(settings.difficulty));
+                world.start_run();
+            }
+            Item::OpenDifficulty => {
+                next = Menu {
+                    page: MenuPage::Difficulty,
+                    selected: settings.difficulty.index(),
+                };
+            }
+            Item::OpenSettings => next = Menu { page: MenuPage::Settings, selected: 0 },
+            Item::OpenRecords => {
+                next = Menu {
+                    page: MenuPage::Records(settings.difficulty),
+                    selected: 0,
+                };
+            }
+            Item::OpenAuthors => next = Menu { page: MenuPage::Authors, selected: 0 },
+            Item::Quit => {
+                exit.write(AppExit::Success);
+            }
+            Item::Choose(difficulty) => {
+                if settings.difficulty != difficulty {
+                    settings.difficulty = difficulty;
+                }
+                next = back_to_main(MenuPage::Difficulty);
+            }
+            Item::Setting(setting) => {
+                let mut changed = settings.clone();
+                change_setting(&mut changed, setting, 1, true);
+                settings.set_if_neq(changed);
+            }
+            Item::RecordsTable => {
+                if let MenuPage::Records(shown) = next.page {
+                    next.page = MenuPage::Records(shown.step(1));
+                }
+            }
+            Item::Back => next = back_to_main(menu.page),
+        }
+    }
+
+    // Esc и «назад» геймпада: из подэкрана — в главное меню, в главном меню — ничего.
+    if keys.just_pressed(KeyCode::Escape) && menu.page != MenuPage::Main {
+        next = back_to_main(menu.page);
+        click = true;
+    }
+
+    // Качество меняется и ресурсом ступени: его применяет `quality.rs`.
+    quality.set_if_neq(settings.quality);
+    menu.set_if_neq(next);
+    if click {
+        sounds.write(PlaySound::new("ui_click"));
+    }
+}
+
+/// Строка-подпись: подсвечивается, если это выбираемая строка.
+fn row_text(text: impl Into<String>, row: usize) -> impl Bundle {
+    (RowText(row), run::screen_line(text, ROW_SIZE, ROW_COLOR))
+}
+
+/// Стрелка у выделенной строки.
+fn row_marker(text: &str, row: usize) -> impl Bundle {
+    (RowMarker(row), run::screen_line(text, ROW_SIZE, TITLE_COLOR), Visibility::Hidden)
+}
+
+/// Выбираемая строка: подпись, необязательное значение и описание мелким шрифтом под ней.
+fn spawn_row(parent: &mut ChildSpawnerCommands, row: usize, label: &str, value: Option<String>, note: Option<&str>) {
+    parent
+        .spawn((
+            MenuRow(row),
+            Hovered::default(),
+            Node {
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+        ))
+        .with_children(|row_node| {
+            let with_value = value.is_some();
+            row_node
+                .spawn(Node {
+                    column_gap: Val::Px(14.0),
+                    align_items: AlignItems::Center,
+                    ..default()
+                })
+                .with_children(|line| {
+                    line.spawn(row_marker(">", row));
+                    match value {
+                        Some(value) => {
+                            line.spawn((
+                                Node {
+                                    width: Val::Px(LABEL_WIDTH),
+                                    ..default()
+                                },
+                                row_text(label, row),
+                            ));
+                            line.spawn((
+                                Node {
+                                    width: Val::Px(LABEL_WIDTH * 0.75),
+                                    justify_content: JustifyContent::Center,
+                                    ..default()
+                                },
+                                row_text(value, row),
+                            ));
+                        }
+                        None => {
+                            line.spawn(row_text(label, row));
+                        }
+                    }
+                    // У строки со значением стрелки «< >» уже стоят вокруг значения.
+                    if !with_value {
+                        line.spawn(row_marker("<", row));
+                    }
+                });
+            if let Some(note) = note {
+                row_node.spawn(run::screen_line(note, 16.0, HINT_COLOR));
+            }
+        });
+}
+
+/// Строка-переключатель «< ЗНАЧЕНИЕ >»: стрелки видны всегда, выделение — цветом.
+fn spawn_switch_row(parent: &mut ChildSpawnerCommands, row: usize, label: &str) {
+    parent
+        .spawn((
+            MenuRow(row),
+            Hovered::default(),
+            Node {
+                column_gap: Val::Px(18.0),
+                align_items: AlignItems::Center,
+                ..default()
+            },
+        ))
+        .with_children(|line| {
+            line.spawn(run::screen_line("<", ROW_SIZE, TITLE_COLOR));
+            line.spawn(row_text(label, row));
+            line.spawn(run::screen_line(">", ROW_SIZE, TITLE_COLOR));
+        });
+}
+
+/// Пустая строка-отступ.
+fn spacer(parent: &mut ChildSpawnerCommands, height: f32) {
+    parent.spawn(Node {
+        height: Val::Px(height),
+        ..default()
+    });
+}
+
+/// Описание уровня сложности на экране «Сложность».
+fn difficulty_note(difficulty: Difficulty) -> &'static str {
+    match difficulty {
+        Difficulty::Easy => "LESS DAMAGE, SLOWER WAVES, FAST SELF-REPAIR, STRONG GAMEPAD AIM ASSIST",
+        Difficulty::Normal => "THE GAME AS DESIGNED",
+        Difficulty::Hard => "MORE DAMAGE, FASTER WAVES, SLOW SELF-REPAIR, WEAK GAMEPAD AIM ASSIST",
+    }
+}
+
+/// Значение строки настроек.
+fn setting_value(settings: &Settings, setting: Setting) -> String {
+    let percent = |value: u8| format!("{value}%");
+    match setting {
+        Setting::Quality => settings.quality.name().to_uppercase(),
+        Setting::Master => percent(settings.master),
+        Setting::Music => percent(settings.music),
+        Setting::Effects => percent(settings.effects),
+        Setting::Voice => percent(settings.voice),
+        Setting::Subtitles => on_off(settings.subtitles),
+        Setting::Vibration => on_off(settings.vibration),
+    }
+}
+
+/// «Вкл» или «выкл».
+fn on_off(on: bool) -> String {
+    if on { "ON" } else { "OFF" }.to_string()
+}
+
+/// Подпись строки настроек.
+fn setting_label(setting: Setting) -> &'static str {
+    match setting {
+        Setting::Quality => "QUALITY",
+        Setting::Master => "VOLUME",
+        Setting::Music => "MUSIC",
+        Setting::Effects => "EFFECTS",
+        Setting::Voice => "HQ VOICE",
+        Setting::Subtitles => "SUBTITLES",
+        Setting::Vibration => "VIBRATION",
+    }
+}
+
+/// Перерисовывает экран, когда сменилась страница или значение на ней.
+fn draw_menu(
+    mut commands: Commands,
+    menu: Res<Menu>,
+    settings: Res<Settings>,
+    records: Res<RecordsTable>,
+    gamepads: Query<(), With<Gamepad>>,
+    old: Query<Entity, With<MenuScreen>>,
+    mut shown: Local<Option<(MenuPage, Settings, bool)>>,
+) {
+    let pad = !gamepads.is_empty();
+    let wanted = Some((menu.page, settings.clone(), pad));
+    if !old.is_empty() && *shown == wanted && !records.is_changed() {
+        return;
+    }
+    // Первый показ проявляется, перерисовка — сразу.
+    let appear = if old.is_empty() { Appear::over(run::MENU_APPEAR) } else { Appear::shown() };
+    for screen in &old {
+        commands.entity(screen).despawn();
+    }
+    *shown = wanted;
+
+    let list = items(menu.page, pad);
+    let index_of = |item: Item| list.iter().position(|i| *i == item).unwrap_or(0);
+    commands
+        .spawn((MenuScreen, run::screen_root(0.45), appear))
+        .with_children(|screen| match menu.page {
+            MenuPage::Main => {
+                screen.spawn(run::screen_line("SPACE GUARD", 96.0, TITLE_COLOR));
+                screen.spawn(run::screen_line("SURVIVE AS LONG AS YOU CAN", 26.0, Color::WHITE));
+                let best = run::best_line(records.table(settings.difficulty).best());
+                screen.spawn(run::screen_line(best.unwrap_or_default(), 22.0, TITLE_COLOR));
+                spacer(screen, 4.0);
+                for (row, item) in list.iter().enumerate() {
+                    let (label, value) = match item {
+                        Item::Play => ("PLAY", None),
+                        Item::OpenDifficulty => ("DIFFICULTY", Some(settings.difficulty.title().to_string())),
+                        Item::OpenSettings => ("SETTINGS", None),
+                        Item::OpenRecords => ("RECORDS", None),
+                        Item::OpenAuthors => ("AUTHORS", None),
+                        _ => ("QUIT", None),
+                    };
+                    match value {
+                        // Название сложности — рядом с пунктом, одной строкой.
+                        Some(value) => spawn_row(screen, row, &format!("{label}: {value}"), None, None),
+                        None => spawn_row(screen, row, label, None, None),
+                    }
+                }
+                spacer(screen, 4.0);
+                screen.spawn(run::hint_line(
+                    "WASD - DRIVE     MOUSE - AIM     LEFT BUTTON - FIRE",
+                    "LEFT STICK - DRIVE     RIGHT STICK - AIM     HOLD {CURSOR} - FREE AIM     {FIRE} - FIRE",
+                    18.0,
+                    HINT_COLOR,
+                ));
+                screen.spawn(run::hint_line(
+                    "1-6, WHEEL - WEAPON     HOLD SPACE - REPAIR     ESC - PAUSE",
+                    "{BUMPERS} - WEAPON     HOLD {A} - REPAIR     {START} - PAUSE",
+                    18.0,
+                    HINT_COLOR,
+                ));
+                screen.spawn(run::hint_line(
+                    "UP, DOWN - SELECT     ENTER - CHOOSE",
+                    "D-PAD - SELECT     {A} - CHOOSE",
+                    18.0,
+                    HINT_COLOR,
+                ));
+            }
+            MenuPage::Difficulty => {
+                screen.spawn(run::screen_line("DIFFICULTY", 56.0, TITLE_COLOR));
+                spacer(screen, 4.0);
+                for difficulty in Difficulty::ALL {
+                    let label = if difficulty == settings.difficulty {
+                        format!("{}  (SELECTED)", difficulty.title())
+                    } else {
+                        difficulty.title().to_string()
+                    };
+                    spawn_row(screen, index_of(Item::Choose(difficulty)), &label, None, Some(difficulty_note(difficulty)));
+                }
+                spacer(screen, 4.0);
+                spawn_row(screen, index_of(Item::Back), "BACK", None, None);
+                back_hint(screen, "UP, DOWN - SELECT     ENTER - CHOOSE     ESC - BACK", "D-PAD - SELECT     {A} - CHOOSE     {B} - BACK");
+            }
+            MenuPage::Settings => {
+                screen.spawn(run::screen_line("SETTINGS", 56.0, TITLE_COLOR));
+                spacer(screen, 4.0);
+                for (row, item) in list.iter().enumerate() {
+                    if let Item::Setting(setting) = item {
+                        let value = format!("< {} >", setting_value(&settings, *setting));
+                        spawn_row(screen, row, setting_label(*setting), Some(value), None);
+                    }
+                }
+                spacer(screen, 4.0);
+                spawn_row(screen, index_of(Item::Back), "BACK", None, None);
+                back_hint(
+                    screen,
+                    "UP, DOWN - SELECT     LEFT, RIGHT - CHANGE     ESC - BACK",
+                    "D-PAD - SELECT     LEFT, RIGHT - CHANGE     {B} - BACK",
+                );
+            }
+            MenuPage::Records(shown) => {
+                screen.spawn(run::screen_line("RECORDS", 56.0, TITLE_COLOR));
+                spawn_switch_row(screen, index_of(Item::RecordsTable), shown.title());
+                screen
+                    .spawn(Node {
+                        flex_direction: FlexDirection::Column,
+                        row_gap: Val::Px(4.0),
+                        min_height: Val::Px(250.0),
+                        justify_content: JustifyContent::Center,
+                        ..default()
+                    })
+                    .with_children(|table| {
+                        let records = &records.table(shown).records;
+                        if records.is_empty() {
+                            table.spawn(run::screen_line("NO RECORDS YET", 22.0, HINT_COLOR));
+                        }
+                        for (place, record) in records.iter().enumerate() {
+                            table.spawn(run::screen_line(run::table_row(place, record), 22.0, Color::WHITE));
+                        }
+                    });
+                spawn_row(screen, index_of(Item::Back), "BACK", None, None);
+                back_hint(
+                    screen,
+                    "LEFT, RIGHT - DIFFICULTY     ESC - BACK",
+                    "LEFT, RIGHT - DIFFICULTY     {B} - BACK",
+                );
+            }
+            MenuPage::Authors => {
+                screen.spawn(run::screen_line("AUTHORS", 56.0, TITLE_COLOR));
+                spacer(screen, 4.0);
+                screen.spawn(run::screen_line("MADE BY", 20.0, HINT_COLOR));
+                let (event, team) = AUTHORS.split_last().expect("в списке авторов есть строка о джеме");
+                for name in team {
+                    screen.spawn(run::screen_line(*name, 32.0, Color::WHITE));
+                }
+                spacer(screen, 4.0);
+                screen.spawn(run::screen_line(*event, 24.0, TITLE_COLOR));
+                spacer(screen, 8.0);
+                spawn_row(screen, index_of(Item::Back), "BACK", None, None);
+                back_hint(screen, "ENTER, ESC - BACK", "{A}, {B} - BACK");
+            }
+        });
+}
+
+/// Подсказка внизу подэкрана.
+fn back_hint(screen: &mut ChildSpawnerCommands, keys: &str, pad: &str) {
+    spacer(screen, 4.0);
+    screen.spawn(run::hint_line(keys, pad, 18.0, HINT_COLOR));
+}
+
+/// Выделенная строка белая со стрелками, остальные серые.
+fn highlight_rows(
+    menu: Res<Menu>,
+    mut texts: Query<(&RowText, &mut TextColor)>,
+    mut markers: Query<(&RowMarker, &mut Visibility)>,
+) {
+    for (row, mut color) in &mut texts {
+        // Прозрачность не трогаем: ей управляет проявление экрана.
+        let wanted = if row.0 == menu.selected { Color::WHITE } else { ROW_COLOR }.with_alpha(color.0.alpha());
+        if color.0 != wanted {
+            color.0 = wanted;
+        }
+    }
+    for (marker, mut visibility) in &mut markers {
+        let wanted = if marker.0 == menu.selected { Visibility::Inherited } else { Visibility::Hidden };
+        if *visibility != wanted {
+            *visibility = wanted;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn дважды_вниз_и_enter_открывают_настройки() {
+        let list = items(MenuPage::Main, false);
+        let selected = moved(moved(0, 1, list.len()), 1, list.len());
+        assert_eq!(list[selected], Item::OpenSettings);
+    }
+
+    #[test]
+    fn список_пунктов_замкнут_в_кольцо() {
+        let count = items(MenuPage::Main, false).len();
+        assert_eq!(count, 6);
+        assert_eq!(moved(0, -1, count), count - 1);
+        assert_eq!(moved(count - 1, 1, count), 0);
+    }
+
+    #[test]
+    fn громкость_шагами_по_10_и_по_кругу_с_enter() {
+        assert_eq!(stepped_volume(100, -1, false), 90);
+        assert_eq!(stepped_volume(100, 1, false), 100);
+        assert_eq!(stepped_volume(0, -1, false), 0);
+        assert_eq!(stepped_volume(100, 1, true), 0);
+        let mut settings = Settings::default();
+        for _ in 0..3 {
+            change_setting(&mut settings, Setting::Music, -1, false);
+        }
+        assert_eq!(settings.music, 70);
+        assert_eq!(setting_value(&settings, Setting::Music), "70%");
+    }
+
+    #[test]
+    fn без_геймпада_строки_вибрации_нет() {
+        let vibration = Item::Setting(Setting::Vibration);
+        assert!(items(MenuPage::Settings, true).contains(&vibration));
+        assert!(!items(MenuPage::Settings, false).contains(&vibration));
+        assert_eq!(items(MenuPage::Settings, false).last(), Some(&Item::Back));
+    }
+
+    #[test]
+    fn возврат_выделяет_пункт_подэкрана() {
+        let menu = back_to_main(MenuPage::Authors);
+        assert_eq!(menu.page, MenuPage::Main);
+        assert_eq!(main_items()[menu.selected], Item::OpenAuthors);
+    }
+
+    #[test]
+    fn авторы_по_алфавиту_фамилий() {
+        let (event, team) = AUTHORS.split_last().unwrap();
+        assert_eq!(team, ["Nidzhat Guseynov", "Ivan Tsarev", "Sergei Zotov"]);
+        assert_eq!(*event, "Game Jam Karlsruhe 2026");
+        let surnames: Vec<_> = team.iter().map(|name| name.rsplit(' ').next().unwrap()).collect();
+        assert!(surnames.is_sorted());
+    }
+}

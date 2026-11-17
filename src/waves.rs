@@ -7,6 +7,7 @@ use std::f32::consts::TAU;
 use bevy::prelude::*;
 
 use crate::combat::{Died, Health, Team};
+use crate::difficulty::RunDifficulty;
 use crate::boss::SpawnBoss;
 use crate::buildings::House;
 use crate::capsule::{Capsule, DropCapsule};
@@ -225,16 +226,33 @@ impl Plugin for WavesPlugin {
 }
 
 /// Угроза текущего забега. Только растёт.
-#[derive(Resource, Default, Debug)]
+#[derive(Resource, Debug)]
 pub struct Threat {
     seconds: f32,
     destruction: f32,
+    /// Множитель роста по сложности забега: время и разрушения считаются с ним.
+    rate: f32,
+}
+
+impl Default for Threat {
+    fn default() -> Self {
+        Self::with_rate(1.0)
+    }
 }
 
 impl Threat {
-    /// Значение угрозы: около единицы за минуту спокойного забега.
+    /// Угроза с нуля, растущая с множителем `rate`.
+    pub fn with_rate(rate: f32) -> Self {
+        Self {
+            seconds: 0.0,
+            destruction: 0.0,
+            rate,
+        }
+    }
+
+    /// Значение угрозы: около единицы за минуту спокойного забега на нормальной сложности.
     pub fn value(&self) -> f32 {
-        balance::threat(self.seconds, self.destruction)
+        balance::threat(self.seconds * self.rate, self.destruction * self.rate)
     }
 
     fn add_time(&mut self, seconds: f32) {
@@ -330,9 +348,15 @@ struct WaveBanner {
 const BANNER_SECONDS: f32 = 1.2;
 
 /// Мир перестроен: угроза с нуля, первая волна после начальной передышки.
-fn reset_waves(mut started: MessageReader<WorldRebuilt>, mut threat: ResMut<Threat>, mut director: ResMut<Director>) {
+fn reset_waves(
+    mut started: MessageReader<WorldRebuilt>,
+    difficulty: Option<Res<RunDifficulty>>,
+    mut threat: ResMut<Threat>,
+    mut director: ResMut<Director>,
+) {
     if started.read().count() > 0 {
-        *threat = Threat::default();
+        // Множитель — от сложности забега: меню ставит её до перестройки мира.
+        *threat = Threat::with_rate(difficulty.map_or(1.0, |d| d.0.threat_rate()));
         *director = Director::default();
     }
 }
@@ -553,6 +577,16 @@ fn fade_banners(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn угроза_двух_минут_на_лёгкой_полтора() {
+        let mut threat = Threat::with_rate(crate::difficulty::Difficulty::Easy.threat_rate());
+        threat.add_time(120.0);
+        assert!((threat.value() - 1.5).abs() < 1e-5, "{}", threat.value());
+        let mut normal = Threat::default();
+        normal.add_time(120.0);
+        assert!((normal.value() - 2.0).abs() < 1e-5);
+    }
 
     #[test]
     fn threat_never_goes_down() {

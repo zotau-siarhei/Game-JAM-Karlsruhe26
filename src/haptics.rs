@@ -11,7 +11,8 @@
 //! Панель есть у DualShock 4 и DualSense, менять её цвет умеет только бэкенд macOS.
 //!
 //! Вибрация только в забеге и только когда игрок играет с геймпада: на паузе и в меню она сразу
-//! замолкает, а геймпад, лежащий на столе, пока играют мышью, не жужжит.
+//! замолкает, а геймпад, лежащий на столе, пока играют мышью, не жужжит. Выключатель в настройках
+//! (`Settings::vibration`) гасит и вибрацию, и цвет панели от здоровья: панель остаётся синей.
 
 use bevy::prelude::*;
 
@@ -31,6 +32,7 @@ use crate::frame::GameSet;
 use crate::gamepad::InputDevice;
 use crate::rover::{Impact, Rover};
 use crate::run::GameState;
+use crate::settings::Settings;
 use crate::weapons::CurrentWeapon;
 
 /// Общая сила вибрации: уровни микшера умножаются на неё перед отправкой в геймпад.
@@ -145,9 +147,9 @@ pub fn damage_kick(amount: f32) -> (f32, f32) {
     (strong, weak)
 }
 
-/// Вибрация только в забеге и только у играющего с геймпада.
-fn rumble_on(state: &State<GameState>, device: InputDevice) -> bool {
-    *state.get() == GameState::Playing && device.gamepad()
+/// Вибрация только в забеге, только у играющего с геймпада и если она не выключена в настройках.
+fn rumble_on(state: &State<GameState>, device: InputDevice, settings: &Settings) -> bool {
+    *state.get() == GameState::Playing && device.gamepad() && settings.vibration
 }
 
 /// Попадания, удары, взрывы рядом и гибель лунохода.
@@ -155,6 +157,7 @@ fn rumble_on(state: &State<GameState>, device: InputDevice) -> bool {
 fn rumble_from_hits(
     state: Res<State<GameState>>,
     device: Res<InputDevice>,
+    settings: Res<Settings>,
     mut rumble: ResMut<Rumble>,
     mut damage: MessageReader<Damage>,
     mut died: MessageReader<Died>,
@@ -175,7 +178,7 @@ fn rumble_from_hits(
         .map(|e| crate::impact::trauma(e.power, e.position.distance(transform.translation)))
         .fold(0.0, f32::max);
     // Сообщения прочитаны и тогда, когда вибрация выключена: иначе они сработали бы позже.
-    if !rumble_on(&state, *device) {
+    if !rumble_on(&state, *device, &settings) {
         return;
     }
     if hurt > 0.0 {
@@ -197,6 +200,7 @@ fn rumble_from_hits(
 fn rumble_from_shots(
     state: Res<State<GameState>>,
     device: Res<InputDevice>,
+    settings: Res<Settings>,
     weapon: Res<CurrentWeapon>,
     inventory: Res<Inventory>,
     mut rumble: ResMut<Rumble>,
@@ -208,7 +212,7 @@ fn rumble_from_shots(
     let ammo = inventory.ammo(*weapon).map(|ammo| (*weapon, ammo));
     let fired = matches!((*last_ammo, ammo), (Some((was, before)), Some((now, after))) if was == now && after < before);
     *last_ammo = ammo;
-    if !rumble_on(&state, *device) {
+    if !rumble_on(&state, *device, &settings) {
         return;
     }
     if own_bullets > 0 {
@@ -224,8 +228,14 @@ fn rumble_from_shots(
 }
 
 /// Уровни гаснут по реальному времени; вне забега и без геймпада — тишина.
-fn settle_rumble(state: Res<State<GameState>>, device: Res<InputDevice>, time: Res<Time<Real>>, mut rumble: ResMut<Rumble>) {
-    if !rumble_on(&state, *device) {
+fn settle_rumble(
+    state: Res<State<GameState>>,
+    device: Res<InputDevice>,
+    settings: Res<Settings>,
+    time: Res<Time<Real>>,
+    mut rumble: ResMut<Rumble>,
+) {
+    if !rumble_on(&state, *device, &settings) {
         if *rumble != Rumble::default() {
             rumble.silence();
         }
@@ -255,9 +265,10 @@ pub fn health_color(share: f32) -> Vec3 {
 }
 
 /// Панель: в забеге — здоровье лунохода, при попадании — вспышка белым, на последней четверти
-/// здоровья пульсирует; в меню — синяя.
+/// здоровья пульсирует; в меню и с выключенной вибрацией — синяя.
 fn light_from_health(
     state: Res<State<GameState>>,
+    settings: Res<Settings>,
     time: Res<Time<Real>>,
     mut damage: MessageReader<Damage>,
     rover: Query<(Entity, &Health), With<Rover>>,
@@ -272,7 +283,7 @@ fn light_from_health(
     }
     *flash = (*flash - time.delta_secs()).max(0.0);
     let wanted = match state.get() {
-        GameState::Playing | GameState::Paused | GameState::GameOver => {
+        GameState::Playing | GameState::Paused | GameState::GameOver if settings.vibration => {
             let share = health.current / health.max;
             let mut color = health_color(share);
             if share < 0.25 && *state.get() == GameState::Playing {

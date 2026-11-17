@@ -1,13 +1,15 @@
 //! Самовосстановление лунохода: если его никто не ранит дольше паузы, здоровье понемногу
 //! растёт само, пока не станет полным.
 //!
-//! Скорость и пауза — ресурс [`RegenSettings`]: будущие уровни сложности будут выставлять его.
+//! Скорость и пауза — ресурс [`RegenSettings`]: его выставляет сложность забега при перестройке
+//! мира (`difficulty::Difficulty::regen`).
 //! Восстановление идёт сообщением `Heal`, как ремонт и аптечки, и складывается с ними. Урон
 //! приходит сообщением `Damage`, поэтому и в режиме `--immortal` попадание сбивает отсчёт.
 
 use bevy::prelude::*;
 
 use crate::combat::{Damage, Heal, Health};
+use crate::difficulty::RunDifficulty;
 use crate::frame::GameSet;
 use crate::rover::Rover;
 use crate::run::WorldRebuilt;
@@ -57,10 +59,16 @@ impl Plugin for RegenPlugin {
     }
 }
 
-/// Мир перестроен: отсчёт начинается заново.
-fn reset_regen(mut rebuilt: MessageReader<WorldRebuilt>, mut regen: ResMut<Regen>) {
+/// Мир перестроен: отсчёт начинается заново, скорость и пауза — от сложности забега.
+fn reset_regen(
+    mut rebuilt: MessageReader<WorldRebuilt>,
+    difficulty: Option<Res<RunDifficulty>>,
+    mut regen: ResMut<Regen>,
+    mut settings: ResMut<RegenSettings>,
+) {
     if rebuilt.read().last().is_some() {
         *regen = Regen::default();
+        *settings = difficulty.map_or_else(RegenSettings::default, |d| d.0.regen());
     }
 }
 
@@ -148,6 +156,13 @@ mod tests {
             max: 1500.0,
         };
         assert_eq!(regen_amount(&settings, 10.0, &dead, 1.0), 0.0);
+    }
+
+    #[test]
+    fn на_тяжёлой_через_6_секунд_ещё_не_растёт() {
+        let hard = crate::difficulty::Difficulty::Hard.regen();
+        assert_eq!(regen_amount(&hard, 6.0, &wounded(), 1.0), 0.0);
+        assert!(regen_amount(&hard, 8.5, &wounded(), 1.0) > 0.0);
     }
 
     #[test]

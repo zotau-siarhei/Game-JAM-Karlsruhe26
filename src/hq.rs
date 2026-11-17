@@ -276,15 +276,21 @@ fn speaker_name(speaker: &str) -> &'static str {
     }
 }
 
-/// Показывает текст звучащей реплики и прячет субтитр, когда реплика закончилась.
+/// Показывает текст звучащей реплики и прячет субтитр, когда реплика закончилась. Субтитры,
+/// выключенные в настройках, не показываются, реплика при этом звучит.
 fn update_subtitle(
     lines: Res<VoiceLines>,
+    settings: Res<crate::settings::Settings>,
     playing: Query<&VoicePlayback>,
     mut subtitle: Query<&mut Visibility, With<Subtitle>>,
     mut text: Query<&mut Text, With<SubtitleText>>,
     mut shown: Local<Option<String>>,
 ) {
-    let current = playing.iter().next().map(|playback| playback.id.clone());
+    let current = playing
+        .iter()
+        .next()
+        .filter(|_| settings.subtitles)
+        .map(|playback| playback.id.clone());
     if *shown == current {
         return;
     }

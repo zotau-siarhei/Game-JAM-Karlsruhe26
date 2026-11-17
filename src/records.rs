@@ -1,12 +1,15 @@
 //! Таблица рекордов: лучшие времена выживания, которые сохраняются между запусками.
 //!
-//! Файл `records.json` лежит в каталоге данных пользователя. Файл, который не читается или
+//! У каждого уровня сложности своя таблица: `records-easy.json`, `records.json` (нормальная —
+//! прежний файл) и `records-hard.json` в каталоге данных пользователя. Файл, который не читается или
 //! не разбирается, даёт пустую таблицу и не мешает запуску. Попадание в таблицу объявляет
 //! сообщение [`RecordPlaced`].
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+use crate::difficulty::Difficulty;
 
 /// Сколько мест в таблице.
 pub const MAX_RECORDS: usize = 10;
@@ -157,7 +160,23 @@ fn records_path_from(home: Option<&str>, xdg_data_home: Option<&str>, macos: boo
     Some(data.join("space-guard").join(FILE_NAME))
 }
 
-/// Путь к файлу рекордов на этой системе. `None` — рекорды живут только в памяти.
+/// Имя файла рекордов уровня сложности. Нормальная — прежний `records.json`: рекорды, набранные
+/// до появления сложности, становятся рекордами нормальной.
+pub fn file_name_for(difficulty: Difficulty) -> &'static str {
+    match difficulty {
+        Difficulty::Easy => "records-easy.json",
+        Difficulty::Normal => FILE_NAME,
+        Difficulty::Hard => "records-hard.json",
+    }
+}
+
+/// Путь к файлу рекордов уровня сложности. `None` — рекорды живут только в памяти.
+pub fn records_path_for(difficulty: Difficulty) -> Option<PathBuf> {
+    Some(records_path()?.with_file_name(file_name_for(difficulty)))
+}
+
+/// Путь к файлу рекордов нормальной сложности на этой системе. `None` — рекорды живут только
+/// в памяти. Рядом лежат таблицы других уровней и файл настроек.
 pub fn records_path() -> Option<PathBuf> {
     records_path_from(
         std::env::var("HOME").ok().as_deref(),

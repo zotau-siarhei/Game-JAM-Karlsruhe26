@@ -13,6 +13,7 @@ use bevy::prelude::*;
 
 use crate::aim::{AimPoint, MAX_AIM_RANGE};
 use crate::combat::Health;
+use crate::difficulty::{AimAssist, RunDifficulty};
 use crate::enemy::Enemy;
 use crate::frame::GameSet;
 use crate::gamepad::{InputDevice, PadInput};
@@ -38,10 +39,8 @@ mod tuning {
     pub const RANGE_SMOOTH: f32 = 12.0;
     /// Ближе этого помощь врага не ловит, м.
     pub const MIN_ASSIST_RANGE: f32 = 3.0;
-    /// Зона захвата: боковое отклонение врага от линии прицела, м.
-    pub const ASSIST_WIDTH: f32 = 2.5;
-    /// Пойманный враг удерживается, пока отклонение не больше этого, м.
-    pub const KEEP_WIDTH: f32 = 4.0;
+    // Зона захвата, удержание пойманного врага и замедление курсора над врагом — по сложности
+    // забега: `difficulty::Difficulty::aim_assist`.
     /// Поправка оценки на дистанцию: метров отклонения за метр дистанции.
     pub const RANGE_WEIGHT: f32 = 0.05;
     /// Новый враг перехватывает прицел, только если его оценка лучше на столько, м.
@@ -50,8 +49,6 @@ mod tuning {
     pub const CURSOR_SPEED: f32 = 30.0;
     /// Степень кривой скорости курсора от наклона: малый наклон — точная доводка.
     pub const CURSOR_CURVE: f32 = 2.0;
-    /// Множитель скорости курсора над врагом.
-    pub const CURSOR_FRICTION: f32 = 0.4;
     /// Курсор ближе этого к врагу замедляется, м.
     pub const CURSOR_FRICTION_RADIUS: f32 = 2.5;
     /// Толчок слабого мотора при захвате нового врага.
@@ -146,13 +143,14 @@ fn angle_diff(to: f32, from: f32) -> f32 {
 }
 
 /// Враг для помощи в прицеливании: смещения врагов от лунохода, курс `dir` (единичный) и текущая
-/// цель. Враг ловится впереди, в пределах дальности и в полосе [`ASSIST_WIDTH`] вдоль линии
-/// прицела; текущий держится в полосе [`KEEP_WIDTH`] и сменяется, только если другой лучше на
+/// цель. Враг ловится впереди, в пределах дальности и в полосе захвата `assist` вдоль линии
+/// прицела; текущий держится в полосе удержания и сменяется, только если другой лучше на
 /// [`SWITCH_MARGIN`]. `visible` проверяет прямую видимость, её спрашивают только у прошедших отбор.
 fn pick_target(
     dir: Vec2,
     enemies: &[(Entity, Vec2)],
     current: Option<Entity>,
+    assist: AimAssist,
     mut visible: impl FnMut(Vec2) -> bool,
 ) -> Option<(Entity, Vec2)> {
     let mut scored: Vec<(Entity, Vec2, f32)> = enemies
@@ -163,7 +161,7 @@ fn pick_target(
                 return None;
             }
             let lateral = dir.perp_dot(offset).abs();
-            let width = if Some(entity) == current { KEEP_WIDTH } else { ASSIST_WIDTH };
+            let width = if Some(entity) == current { assist.keep_width } else { assist.catch_width };
             (lateral <= width).then_some((entity, offset, lateral + RANGE_WEIGHT * distance))
         })
         .collect();
@@ -181,12 +179,12 @@ fn pick_target(
 }
 
 /// Шаг курсора за кадр: скорость по кривой от наклона, над врагом медленнее.
-fn cursor_step(stick_world: Vec2, dt: f32, near_enemy: bool) -> Vec2 {
+fn cursor_step(stick_world: Vec2, dt: f32, near_enemy: bool, assist: AimAssist) -> Vec2 {
     let tilt = stick_world.length().min(1.0);
     if tilt <= 0.0 {
         return Vec2::ZERO;
     }
-    let friction = if near_enemy { CURSOR_FRICTION } else { 1.0 };
+    let friction = if near_enemy { assist.cursor_friction } else { 1.0 };
     stick_world / stick_world.length() * CURSOR_SPEED * tilt.powf(CURSOR_CURVE) * friction * dt
 }
 
@@ -199,6 +197,7 @@ fn aim_with_stick(
     device: Res<InputDevice>,
     input: Res<PadInput>,
     weapon: Res<CurrentWeapon>,
+    difficulty: Option<Res<RunDifficulty>>,
     terrain: Res<Terrain>,
     mut stick: ResMut<StickAim>,
     mut aim: ResMut<AimPoint>,
@@ -212,6 +211,7 @@ fn aim_with_stick(
     }
     // В наведении авиаудара время замедлено, а курсор идёт по реальному.
     let dt = if targeting.active() { real.delta_secs() } else { time.delta_secs() };
+    let assist = difficulty.map(|d| d.0).unwrap_or_default().aim_assist();
     let me = Vec2::new(rover.translation.x, rover.translation.z);
     if !stick.started {
         let forward = Vec2::new(rover.forward().x, rover.forward().z).normalize_or(Vec2::NEG_Y);
@@ -244,7 +244,7 @@ fn aim_with_stick(
         let near_enemy = alive
             .iter()
             .any(|(_, enemy)| enemy.distance(offset) <= CURSOR_FRICTION_RADIUS);
-        let moved = (offset + cursor_step(input.aim_world, dt * speed, near_enemy)).clamp_length_max(range);
+        let moved = (offset + cursor_step(input.aim_world, dt * speed, near_enemy, assist)).clamp_length_max(range);
         let length = moved.length();
         if length > 0.1 {
             stick.heading = moved.to_angle();
@@ -261,7 +261,7 @@ fn aim_with_stick(
             let target = Vec3::new(at.x, terrain.height_at(at.x, at.y) + TARGET_HEIGHT, at.y);
             steering::has_los(&terrain, obstacles.iter(), eye, target)
         };
-        match pick_target(dir, &alive, stick.locked, visible) {
+        match pick_target(dir, &alive, stick.locked, assist, visible) {
             Some((entity, offset)) => {
                 stick.locked = Some(entity);
                 stick.heading = offset.to_angle();
@@ -303,6 +303,26 @@ fn aim_with_stick(
 mod tests {
     use super::*;
 
+    const NORMAL: AimAssist = AimAssist {
+        catch_width: 2.5,
+        keep_width: 4.0,
+        cursor_friction: 0.4,
+    };
+
+    #[test]
+    fn враг_в_3_5_м_ловится_на_лёгкой_и_не_ловится_на_нормальной() {
+        use crate::difficulty::Difficulty;
+        let side = [(entity(1), Vec2::new(20.0, 3.5))];
+        let easy = pick_target(Vec2::X, &side, None, Difficulty::Easy.aim_assist(), |_| true);
+        assert_eq!(easy.map(|(e, _)| e), Some(entity(1)));
+        assert!(pick_target(Vec2::X, &side, None, Difficulty::Normal.aim_assist(), |_| true).is_none());
+        assert_eq!(Difficulty::Normal.aim_assist(), NORMAL);
+        // Над врагом курсор на лёгкой медленнее, чем на тяжёлой.
+        let easy = cursor_step(Vec2::X, 0.1, true, Difficulty::Easy.aim_assist()).length();
+        let hard = cursor_step(Vec2::X, 0.1, true, Difficulty::Hard.aim_assist()).length();
+        assert!(easy < hard);
+    }
+
     fn entity(n: u32) -> Entity {
         Entity::from_raw_u32(n).unwrap()
     }
@@ -323,21 +343,21 @@ mod tests {
     fn помощь_ловит_далёкого_врага_в_полосе_и_не_ловит_сзади() {
         let far = (entity(1), Vec2::new(35.0, 1.5));
         let behind = (entity(2), Vec2::new(-10.0, 0.0));
-        let found = pick_target(Vec2::X, &[far, behind], None, |_| true);
+        let found = pick_target(Vec2::X, &[far, behind], None, NORMAL, |_| true);
         assert_eq!(found.map(|(e, _)| e), Some(entity(1)));
-        assert!(pick_target(Vec2::X, &[behind], None, |_| true).is_none());
+        assert!(pick_target(Vec2::X, &[behind], None, NORMAL, |_| true).is_none());
         // За домом не ловится.
-        assert!(pick_target(Vec2::X, &[far], None, |_| false).is_none());
+        assert!(pick_target(Vec2::X, &[far], None, NORMAL, |_| false).is_none());
     }
 
     #[test]
     fn пойманный_враг_держится_пока_другой_не_заметно_лучше() {
         let held = (entity(1), Vec2::new(20.0, 2.0));
         let slightly_better = (entity(2), Vec2::new(20.0, 1.5));
-        let found = pick_target(Vec2::X, &[held, slightly_better], Some(entity(1)), |_| true);
+        let found = pick_target(Vec2::X, &[held, slightly_better], Some(entity(1)), NORMAL, |_| true);
         assert_eq!(found.map(|(e, _)| e), Some(entity(1)));
         let much_better = (entity(3), Vec2::new(20.0, 0.0));
-        let found = pick_target(Vec2::X, &[held, much_better], Some(entity(1)), |_| true);
+        let found = pick_target(Vec2::X, &[held, much_better], Some(entity(1)), NORMAL, |_| true);
         assert_eq!(found.map(|(e, _)| e), Some(entity(3)));
     }
 }

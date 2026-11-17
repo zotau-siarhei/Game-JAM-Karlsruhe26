@@ -20,6 +20,11 @@
 //! - `SPACE_GUARD_SCENE=collapse` — через 2 с забега луноход встаёт в 9 м от ближайшего дома
 //!   лицом к нему, на 5-й секунде дом рушится: посмотреть куски модели (`fragments`), снимок
 //!   на `SPACE_GUARD_SHOT_AT` (обрушение — около 6,5, руины — 10).
+//! - `SPACE_GUARD_MENU=difficulty|settings|records|records-hard|authors` — меню сразу открывает
+//!   этот подэкран (`menu`): снять его без рук.
+//! - `SPACE_GUARD_KEYS=down,down,enter,left` — через секунду после входа в меню клавиши нажимаются
+//!   по одной раз в 0,4 с (`up`, `down`, `left`, `right`, `enter`, `space`, `esc`, `q`): пройти
+//!   меню без рук.
 
 use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
@@ -43,7 +48,23 @@ impl Plugin for DebugShotPlugin {
         let shot = std::env::var("SPACE_GUARD_SHOT").ok();
         let autostart = std::env::var("SPACE_GUARD_AUTOSTART").is_ok();
         let scene = std::env::var("SPACE_GUARD_SCENE").ok();
-        if shot.is_none() && !autostart && scene.is_none() {
+        let menu = std::env::var("SPACE_GUARD_MENU").ok();
+        let keys: Vec<KeyCode> = std::env::var("SPACE_GUARD_KEYS")
+            .unwrap_or_default()
+            .split(',')
+            .filter_map(|name| match name.trim() {
+                "up" => Some(KeyCode::ArrowUp),
+                "down" => Some(KeyCode::ArrowDown),
+                "left" => Some(KeyCode::ArrowLeft),
+                "right" => Some(KeyCode::ArrowRight),
+                "enter" => Some(KeyCode::Enter),
+                "space" => Some(KeyCode::Space),
+                "esc" => Some(KeyCode::Escape),
+                "q" => Some(KeyCode::KeyQ),
+                _ => None,
+            })
+            .collect();
+        if shot.is_none() && !autostart && scene.is_none() && menu.is_none() && keys.is_empty() {
             return;
         }
         let at = std::env::var("SPACE_GUARD_SHOT_AT").ok().and_then(|s| s.parse().ok()).unwrap_or(8.0);
@@ -52,9 +73,12 @@ impl Plugin for DebugShotPlugin {
             at,
             autostart,
             scene,
+            menu,
+            keys,
             taken: None,
             staged: false,
         })
+        .add_systems(Update, (open_menu_page, press_keys).before(GameSet::Screens))
         .add_systems(Update, (press_start, stage_scene, stage_train, stage_collapse, stage_airstrike, keep_shocked, drive, take_shot).before(GameSet::Screens));
     }
 }
@@ -65,9 +89,66 @@ struct DebugShot {
     at: f32,
     autostart: bool,
     scene: Option<String>,
+    /// Подэкран меню, который открыть сразу.
+    menu: Option<String>,
+    /// Клавиши, которые нажать по очереди после входа в меню.
+    keys: Vec<KeyCode>,
     /// Когда снимок заказан, по реальному времени.
     taken: Option<f32>,
     staged: bool,
+}
+
+/// Открывает подэкран меню из `SPACE_GUARD_MENU` при первом входе в меню.
+fn open_menu_page(
+    debug: Res<DebugShot>,
+    state: Res<State<GameState>>,
+    mut menu: ResMut<crate::menu::Menu>,
+    mut done: Local<bool>,
+) {
+    use crate::difficulty::Difficulty;
+    use crate::menu::MenuPage;
+    if *done || *state.get() != GameState::Menu {
+        return;
+    }
+    *done = true;
+    let page = match debug.menu.as_deref() {
+        Some("difficulty") => MenuPage::Difficulty,
+        Some("settings") => MenuPage::Settings,
+        Some("records") => MenuPage::Records(Difficulty::Normal),
+        Some("records-hard") => MenuPage::Records(Difficulty::Hard),
+        Some("authors") => MenuPage::Authors,
+        _ => return,
+    };
+    menu.page = page;
+}
+
+/// Нажимает клавиши из `SPACE_GUARD_KEYS` по одной: каждая держится один кадр.
+fn press_keys(
+    time: Res<Time<Real>>,
+    debug: Res<DebugShot>,
+    state: Res<State<GameState>>,
+    mut keys: ResMut<ButtonInput<KeyCode>>,
+    mut start: Local<Option<f32>>,
+    mut held: Local<Option<KeyCode>>,
+    mut next: Local<usize>,
+) {
+    if let Some(key) = held.take() {
+        keys.release(key);
+    }
+    let now = time.elapsed_secs();
+    if start.is_none() && *state.get() == GameState::Menu {
+        *start = Some(now + 1.0);
+    }
+    let Some(begin) = *start else {
+        return;
+    };
+    if *next < debug.keys.len() && now >= begin + 0.4 * *next as f32 {
+        let key = debug.keys[*next];
+        info!("Отладка: клавиша {key:?}");
+        keys.press(key);
+        *held = Some(key);
+        *next += 1;
+    }
 }
 
 /// Начинает забег, как Enter в меню.

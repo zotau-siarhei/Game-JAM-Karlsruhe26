@@ -15,6 +15,7 @@ use bevy::prelude::*;
 
 use crate::frame::GameSet;
 use crate::run::WorldRebuilt;
+use crate::settings::{Settings, SoundGroup};
 use crate::sound_list::{SoundEntry, SoundList};
 
 /// Каталог реплик внутри `assets`.
@@ -47,7 +48,7 @@ impl Plugin for VoicePlugin {
             .add_systems(Update, silence_on_rebuild.in_set(GameSet::Reset))
             .add_systems(
                 Update,
-                (play_voice, expire_lines)
+                (play_voice, expire_lines, follow_volume)
                     .chain()
                     // Пока идёт загрузка, штаб молчит (src/loading.rs).
                     .run_if(not(in_state(crate::run::GameState::Loading)))
@@ -130,6 +131,7 @@ fn play_voice(
     mut commands: Commands,
     mut requests: MessageReader<PlayVoice>,
     voice: Res<VoiceLines>,
+    settings: Res<Settings>,
     time: Res<Time<Real>>,
     playing: Query<Entity, With<VoicePlayback>>,
 ) {
@@ -156,8 +158,22 @@ fn play_voice(
             silent_seconds: silent_seconds(&loaded.entry.text),
         },
         AudioPlayer::new(sound.clone()),
-        PlaybackSettings::DESPAWN,
+        // При нулевой громкости реплика всё равно идёт: субтитры держатся, пока она звучит.
+        PlaybackSettings {
+            volume: bevy::audio::Volume::Linear(settings.gain(SoundGroup::Voice)),
+            ..PlaybackSettings::DESPAWN
+        },
     ));
+}
+
+/// Громкость голоса из настроек меняется и у звучащей реплики.
+fn follow_volume(settings: Res<Settings>, mut playing: Query<&mut AudioSink, With<VoicePlayback>>) {
+    if !settings.is_changed() {
+        return;
+    }
+    for mut sink in &mut playing {
+        sink.set_volume(bevy::audio::Volume::Linear(settings.gain(SoundGroup::Voice)));
+    }
 }
 
 /// Убирает реплики, которые звуковая подсистема не удалит: без устройства, с незагрузившимся звуком.

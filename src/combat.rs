@@ -337,6 +337,7 @@ impl Immortal {
 fn apply_damage(
     mut commands: Commands,
     immortal: Option<Res<Immortal>>,
+    difficulty: Option<Res<crate::difficulty::RunDifficulty>>,
     mut damages: MessageReader<Damage>,
     mut died: MessageWriter<Died>,
     mut targets: Query<(&mut Health, Option<&GlobalTransform>, Has<Rover>, Option<&Team>, Has<AllyProof>)>,
@@ -352,9 +353,14 @@ fn apply_damage(
         if ally_proof && team == Some(&damage.source_team) {
             continue;
         }
-        // Бессмертный луноход вспыхивает от попаданий, но здоровья не теряет.
+        // Бессмертный луноход вспыхивает от попаданий, но здоровья не теряет. Урон по луноходу
+        // множится по сложности забега, по остальным целям — нет.
         if !(rover && immortal) {
-            health.damage(damage.amount);
+            let scale = match (&difficulty, rover) {
+                (Some(difficulty), true) => difficulty.0.damage_to_rover(),
+                _ => 1.0,
+            };
+            health.damage(damage.amount * scale);
         }
         if health.is_dead() {
             died.write(Died {

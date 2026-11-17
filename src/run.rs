@@ -1,4 +1,5 @@
-//! Забег и экраны вокруг него: меню, гибель лунохода, экран конца забега и рестарт.
+//! Забег и экраны вокруг него: пролёт над планетой в меню, гибель лунохода, экран конца забега
+//! и рестарт. Экраны главного меню — в `src/menu.rs`.
 //!
 //! Игра открывается загрузкой (`src/loading.rs`), после неё — меню: планета летит под камерой,
 //! забега нет. Начало забега, рестарт и выход в меню идут через затемнение (`src/fade.rs`):
@@ -12,13 +13,13 @@
 //! в наборе `GameSet::Reset`. [`RunStarted`] приходит только в начале забега, сразу за
 //! [`WorldRebuilt`]: на него подписано то, чего не должно быть при выходе в меню.
 
-use bevy::app::AppExit;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy::window::WindowFocused;
 
 use crate::camera::Focus;
 use crate::combat::{Died, Health, SurvivalTime, Team, ROVER_MAX_HEALTH};
+use crate::difficulty::{Difficulty, RunDifficulty};
 use crate::explosion::Explosion;
 use crate::fade::{Appear, Curtain};
 use crate::gamepad::{DeviceHint, InputDevice};
@@ -51,7 +52,7 @@ const STEADY_FRAMES: u32 = 5;
 const STEADY_FRAME: f32 = 0.05;
 const SETTLE_LIMIT: f32 = 1.5;
 /// Время проявления экранов, с.
-const MENU_APPEAR: f32 = 0.5;
+pub(crate) const MENU_APPEAR: f32 = 0.5;
 const PAUSE_APPEAR: f32 = 0.15;
 const GAME_OVER_APPEAR: f32 = 0.6;
 
@@ -76,8 +77,9 @@ impl Plugin for RunPlugin {
             .add_systems(
                 Update,
                 (
-                    // Сначала полёт, потом ввод: иначе полёт спрятал бы луноход, только что поставленный на старт.
-                    (fly_over_planet, menu_input).chain().run_if(in_state(GameState::Menu)),
+                    // Ввод меню (`menu.rs`) идёт после полёта: иначе полёт спрятал бы луноход, только что
+                    // поставленный на старт.
+                    fly_over_planet.run_if(in_state(GameState::Menu)),
                     pause_on_escape_or_blur.run_if(in_state(GameState::Playing)),
                     (pause_input, highlight_pause_choice)
                         .chain()
@@ -91,8 +93,6 @@ impl Plugin for RunPlugin {
             )
             // После всех, кто двигает луноход в этом кадре: погибший стоит на месте.
             .add_systems(Update, (watch_rover_death, hold_dead_rover).chain().in_set(GameSet::Death))
-            .add_systems(OnEnter(GameState::Menu), show_menu)
-            .add_systems(OnExit(GameState::Menu), hide_screen::<MenuScreen>)
             .add_systems(OnEnter(GameState::Paused), (stop_time, show_pause))
             .add_systems(OnExit(GameState::Paused), (resume_time, hide_screen::<PauseScreen>))
             .add_systems(OnEnter(GameState::GameOver), prepare_result)
@@ -217,19 +217,26 @@ fn key_char(key: KeyCode) -> Option<char> {
     at(&LETTERS, b'A').or_else(|| at(&DIGITS, b'0'))
 }
 
-/// Таблица рекордов в памяти и путь к её файлу.
-#[derive(Resource)]
-struct RecordsTable {
-    table: Records,
-    path: Option<std::path::PathBuf>,
+/// Таблицы рекордов всех уровней сложности в памяти и пути к их файлам.
+#[derive(Resource, Default)]
+pub(crate) struct RecordsTable {
+    tables: [Records; 3],
+    paths: [Option<std::path::PathBuf>; 3],
 }
 
 impl RecordsTable {
-    /// Вносит результат в таблицу и записывает файл. Возвращает занятое место.
-    fn add(&mut self, name: &str, seconds: f32) -> Option<usize> {
-        let place = self.table.insert(name, f64::from(seconds));
-        if let Some(path) = self.path.as_deref()
-            && let Err(error) = self.table.save(path)
+    /// Таблица уровня сложности.
+    pub(crate) fn table(&self, difficulty: Difficulty) -> &Records {
+        &self.tables[difficulty.index()]
+    }
+
+    /// Вносит результат в таблицу уровня и записывает её файл. Возвращает занятое место.
+    fn add(&mut self, difficulty: Difficulty, name: &str, seconds: f32) -> Option<usize> {
+        let index = difficulty.index();
+        let table = &mut self.tables[index];
+        let place = table.insert(name, f64::from(seconds));
+        if let Some(path) = self.paths[index].as_deref()
+            && let Err(error) = table.save(path)
         {
             warn!("Рекорды: не записан {}: {error}", path.display());
         }
@@ -237,9 +244,9 @@ impl RecordsTable {
     }
 
     fn load() -> Self {
-        let path = records::records_path();
-        let table = path.as_deref().map(Records::load).unwrap_or_default();
-        Self { table, path }
+        let paths = Difficulty::ALL.map(records::records_path_for);
+        let tables = paths.clone().map(|path| path.as_deref().map(Records::load).unwrap_or_default());
+        Self { tables, paths }
     }
 }
 
@@ -247,13 +254,9 @@ impl RecordsTable {
 #[derive(Component)]
 struct GameOverScreen;
 
-/// Корень стартового экрана.
-#[derive(Component)]
-struct MenuScreen;
-
 /// Всё, что меняется, когда забег заканчивается и мир строится заново.
 #[derive(SystemParam)]
-struct RunWorld<'w, 's> {
+pub(crate) struct RunWorld<'w, 's> {
     commands: Commands<'w, 's>,
     death: ResMut<'w, Death>,
     survival: ResMut<'w, SurvivalTime>,
@@ -314,8 +317,18 @@ impl RunWorld<'_, '_> {
         self.rebuilt.write(WorldRebuilt { seed: seed.0 });
     }
 
+    /// Идёт переход через затемнение: экраны ввод не принимают.
+    pub(crate) fn busy(&self) -> bool {
+        self.transition.busy()
+    }
+
+    /// Левая кнопка мыши нажата в этом кадре.
+    pub(crate) fn clicked(&self) -> bool {
+        self.mouse.just_pressed(MouseButton::Left)
+    }
+
     /// Новый забег на новом рельефе — через затемнение.
-    fn start_run(&mut self) {
+    pub(crate) fn start_run(&mut self) {
         // Нажатие, которое начало забег, не стреляет: кнопка считается отпущенной до нового нажатия.
         self.mouse.reset_all();
         self.transition.request(Action::StartRun);
@@ -438,7 +451,7 @@ fn announce_first_world(seed: Res<RunSeed>, mut rebuilt: MessageWriter<WorldRebu
 
 /// Фон меню: фокус, за которым следят камера и подгрузка мира, медленно летит по прямой.
 /// Луноход в меню спрятан и стоит на старте: игровые системы его не видят и не двигают.
-fn fly_over_planet(
+pub(crate) fn fly_over_planet(
     time: Res<Time>,
     terrain: Res<Terrain>,
     mut focus: ResMut<Focus>,
@@ -454,43 +467,19 @@ fn fly_over_planet(
     focus.0 = position;
 }
 
-/// Меню: Enter, пробел или клик начинают забег, Esc закрывает игру.
-fn menu_input(
-    keys: Res<ButtonInput<KeyCode>>,
-    bench: Option<Res<crate::perf::Bench>>,
-    real: Res<Time<Real>>,
-    mut world: RunWorld,
-    mut exit: MessageWriter<AppExit>,
-) {
-    if world.transition.busy() {
-        return;
-    }
-    if keys.just_pressed(KeyCode::Escape) {
-        exit.write(AppExit::Success);
-        return;
-    }
-    // Прогон замера начинает забег сам, когда мир уже поднялся, — как Enter через секунду.
-    let start = keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter, KeyCode::Space])
-        || world.mouse.just_pressed(MouseButton::Left)
-        || (bench.is_some_and(|b| b.on) && real.elapsed_secs() > 1.0);
-    if start {
-        world.start_run();
-    }
-}
-
 /// Строка лучшего результата для меню.
-fn best_line(best: Option<&Record>) -> Option<String> {
+pub(crate) fn best_line(best: Option<&Record>) -> Option<String> {
     best.map(|record| format!("BEST {}  {}", format_time(record.seconds as f32), record.name))
 }
 
 /// Строка-подсказка: свой текст для клавиатуры и для геймпада (метки кнопок — см. `DeviceHint`).
-fn hint_line(keys: impl Into<String>, pad: impl Into<String>, size: f32, color: Color) -> impl Bundle {
+pub(crate) fn hint_line(keys: impl Into<String>, pad: impl Into<String>, size: f32, color: Color) -> impl Bundle {
     let hint = DeviceHint::new(keys, pad);
     (screen_line(hint.keys.clone(), size, color), hint)
 }
 
 /// Строка текста на экране.
-fn screen_line(text: impl Into<String>, size: f32, color: Color) -> impl Bundle {
+pub(crate) fn screen_line(text: impl Into<String>, size: f32, color: Color) -> impl Bundle {
     (
         Text::new(text),
         TextFont {
@@ -502,7 +491,7 @@ fn screen_line(text: impl Into<String>, size: f32, color: Color) -> impl Bundle 
 }
 
 /// Корневой узел экрана на весь кадр с затемнением `shade`.
-fn screen_root(shade: f32) -> impl Bundle {
+pub(crate) fn screen_root(shade: f32) -> impl Bundle {
     (
         Node {
             position_type: PositionType::Absolute,
@@ -520,40 +509,11 @@ fn screen_root(shade: f32) -> impl Bundle {
     )
 }
 
-const TITLE_COLOR: Color = Color::srgb(1.0, 0.85, 0.3);
-const HINT_COLOR: Color = Color::srgb(0.8, 0.8, 0.8);
-
-fn show_menu(mut commands: Commands, records: Res<RecordsTable>) {
-    let best = best_line(records.table.best());
-    commands
-        .spawn((MenuScreen, screen_root(0.35), Appear::over(MENU_APPEAR)))
-        .with_children(|screen| {
-            screen.spawn(screen_line("SPACE GUARD", 96.0, TITLE_COLOR));
-            screen.spawn(screen_line("SURVIVE AS LONG AS YOU CAN", 26.0, Color::WHITE));
-            if let Some(best) = best {
-                screen.spawn(screen_line(best, 26.0, TITLE_COLOR));
-            }
-            screen.spawn(screen_line("", 10.0, Color::NONE));
-            screen.spawn(hint_line(
-                "WASD - DRIVE     MOUSE - AIM     LEFT BUTTON - FIRE",
-                "LEFT STICK - DRIVE     RIGHT STICK - AIM     HOLD {CURSOR} - FREE AIM     {FIRE} - FIRE",
-                20.0,
-                HINT_COLOR,
-            ));
-            screen.spawn(hint_line(
-                "1-6, WHEEL - WEAPON     HOLD SPACE - REPAIR     ESC - PAUSE",
-                "{BUMPERS} - WEAPON     HOLD {A} - REPAIR     {START} - PAUSE",
-                20.0,
-                HINT_COLOR,
-            ));
-            screen.spawn(screen_line("", 10.0, Color::NONE));
-            screen.spawn(hint_line("ENTER, SPACE OR CLICK - START", "{A} - START", 32.0, Color::WHITE));
-            screen.spawn(hint_line("ESC - QUIT", "", 20.0, HINT_COLOR));
-        });
-}
+pub(crate) const TITLE_COLOR: Color = Color::srgb(1.0, 0.85, 0.3);
+pub(crate) const HINT_COLOR: Color = Color::srgb(0.8, 0.8, 0.8);
 
 /// Убирает экран с маркером `T`.
-fn hide_screen<T: Component>(mut commands: Commands, screens: Query<Entity, With<T>>) {
+pub(crate) fn hide_screen<T: Component>(mut commands: Commands, screens: Query<Entity, With<T>>) {
     for screen in &screens {
         commands.entity(screen).despawn();
     }
@@ -608,14 +568,17 @@ fn hold_dead_rover(
 fn prepare_result(
     survival: Res<SurvivalTime>,
     records: Res<RecordsTable>,
+    difficulty: Res<RunDifficulty>,
     mut result: ResMut<RunResult>,
     mut placed: MessageWriter<RecordPlaced>,
 ) {
-    let place = records.table.place_for(f64::from(survival.0));
+    // Таблица — уровня сложности этого забега.
+    let table = records.table(difficulty.0);
+    let place = table.place_for(f64::from(survival.0));
     *result = RunResult {
         seconds: survival.0,
         place,
-        entry: place.map(|_| NameEntry::new(&records.table.last_name)),
+        entry: place.map(|_| NameEntry::new(&table.last_name)),
         input_delay: GAME_OVER_INPUT_DELAY,
     };
     if let Some(place) = place {
@@ -636,7 +599,7 @@ fn rank_line(place: Option<usize>) -> String {
 }
 
 /// Строка таблицы рекордов.
-fn table_row(place: usize, record: &Record) -> String {
+pub(crate) fn table_row(place: usize, record: &Record) -> String {
     format!("{:>2}. {}  {:>7}", place + 1, record.name, format_time(record.seconds as f32))
 }
 
@@ -645,11 +608,13 @@ fn draw_game_over(
     mut commands: Commands,
     result: Res<RunResult>,
     records: Res<RecordsTable>,
+    difficulty: Res<RunDifficulty>,
     old: Query<Entity, With<GameOverScreen>>,
 ) {
     if !result.is_changed() {
         return;
     }
+    let run_table = records.table(difficulty.0);
     // Первый показ проявляется, перерисовка при вводе имени — сразу.
     let appear = if old.is_empty() { Appear::over(GAME_OVER_APPEAR) } else { Appear::shown() };
     for screen in &old {
@@ -661,6 +626,7 @@ fn draw_game_over(
             screen.spawn(screen_line("ROVER LOST", 56.0, Color::srgb(1.0, 0.35, 0.25)));
             screen.spawn(screen_line(format!("TIME  {}", format_time(result.seconds)), 34.0, Color::WHITE));
             screen.spawn(screen_line(rank_line(result.place), 26.0, TITLE_COLOR));
+            screen.spawn(screen_line(format!("DIFFICULTY: {}", difficulty.0.title()), 20.0, HINT_COLOR));
 
             if let Some(entry) = &result.entry {
                 screen.spawn(screen_line("ENTER YOUR NAME", 22.0, Color::WHITE));
@@ -677,7 +643,7 @@ fn draw_game_over(
                     });
                 screen.spawn(hint_line(
                     "LETTERS, DIGITS, BACKSPACE     ENTER - SAVE",
-                    format!("{{A}} - SAVE AS {}", records.table.last_name),
+                    format!("{{A}} - SAVE AS {}", run_table.last_name),
                     20.0,
                     HINT_COLOR,
                 ));
@@ -691,7 +657,7 @@ fn draw_game_over(
                     ..default()
                 })
                 .with_children(|table| {
-                    for (place, record) in records.table.records.iter().enumerate() {
+                    for (place, record) in run_table.records.iter().enumerate() {
                         let color = if result.place == Some(place) { TITLE_COLOR } else { Color::WHITE };
                         table.spawn(screen_line(table_row(place, record), 22.0, color));
                     }
@@ -707,6 +673,7 @@ fn game_over_input(
     time: Res<Time<Real>>,
     keys: Res<ButtonInput<KeyCode>>,
     device: Res<InputDevice>,
+    difficulty: Res<RunDifficulty>,
     mut result: ResMut<RunResult>,
     mut records: ResMut<RecordsTable>,
     mut world: RunWorld,
@@ -732,9 +699,10 @@ fn game_over_input(
         // Esc с недописанным именем сохраняет результат под прежним именем: рекорд не теряется.
         // С геймпада букв не набрать: «да» сохраняет под прежним именем.
         let keep_last = escape || (enter && device.gamepad());
-        let name = entry.name().or_else(|| keep_last.then(|| records.table.last_name.clone()));
+        let last = &records.table(difficulty.0).last_name;
+        let name = entry.name().or_else(|| keep_last.then(|| last.clone()));
         if let (true, Some(name)) = (enter || escape, name) {
-            result.place = records.add(&name, result.seconds);
+            result.place = records.add(difficulty.0, &name, result.seconds);
             result.entry = None;
         } else if result.entry.as_ref() != Some(&entry) {
             result.entry = Some(entry);
@@ -936,6 +904,15 @@ mod tests {
         assert_eq!(moved_choice(0, 1), 1);
         assert_eq!(moved_choice(2, 1), 0);
         assert_eq!(moved_choice(0, -1), 2);
+    }
+
+    #[test]
+    fn результат_на_лёгкой_не_попадает_в_таблицу_нормальной() {
+        let mut records = RecordsTable::default();
+        assert_eq!(records.add(Difficulty::Easy, "IVA", 90.0), Some(0));
+        assert_eq!(records.table(Difficulty::Easy).records.len(), 1);
+        assert!(records.table(Difficulty::Normal).records.is_empty());
+        assert!(records.table(Difficulty::Hard).records.is_empty());
     }
 
     #[test]

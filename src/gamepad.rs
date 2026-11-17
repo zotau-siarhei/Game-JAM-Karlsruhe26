@@ -2,7 +2,7 @@
 //!
 //! Кнопки геймпада нажимают виртуальные клавиши: в `PreUpdate` после ввода Bevy кнопка жмёт в
 //! `ButtonInput` ту клавишу или кнопку мыши, которую заменяет в текущем состоянии игры (в забеге
-//! крест — пробел ремонта, в меню — Enter), и отпускает её вместе с собой. Поэтому стрельба, меню,
+//! крест — пробел ремонта, в меню — Enter, крестовина — стрелки), и отпускает её вместе с собой. Поэтому стрельба, меню,
 //! пауза и ремонт работают с геймпада без правок в своих модулях. Аналоговое — в ресурсе
 //! [`PadInput`]: езду читает `rover`, смену оружия — `arsenal`, прицел — `stick_aim`.
 //!
@@ -28,6 +28,9 @@ const STICK_DEADZONE: f32 = 0.2;
 const STICK_ACTIVE: f32 = 0.5;
 /// Сдвиг мыши за кадр, точек, который возвращает устройство на мышь: дрожь стола не считается.
 const MOUSE_ACTIVE: f32 = 4.0;
+/// Удержанный в меню стик повторяет шаг: первый повтор через столько секунд, дальше — чаще.
+const MENU_REPEAT_FIRST: f32 = 0.4;
+const MENU_REPEAT: f32 = 0.14;
 /// Производитель геймпадов PlayStation (USB vendor id Sony).
 const SONY_VENDOR: u16 = 0x054C;
 
@@ -108,6 +111,22 @@ struct Held {
     taps: Vec<KeyCode>,
     /// Наклон левого стика по вертикали в прошлом кадре: пункты паузы листаются по пересечению порога.
     last_stick_y: f32,
+    /// Стрелка, которую левый стик держит в меню, и сколько секунд до её повтора.
+    menu_stick: Option<(KeyCode, f32)>,
+}
+
+/// Стрелка, куда наклонён левый стик в меню: по преобладающей оси, `None` — стик почти прямо.
+fn menu_stick_key(stick: Vec2) -> Option<KeyCode> {
+    if stick.length() <= STICK_ACTIVE {
+        return None;
+    }
+    Some(if stick.x.abs() > stick.y.abs() {
+        if stick.x > 0.0 { KeyCode::ArrowRight } else { KeyCode::ArrowLeft }
+    } else if stick.y > 0.0 {
+        KeyCode::ArrowUp
+    } else {
+        KeyCode::ArrowDown
+    })
 }
 
 /// Клавиша или кнопка мыши, которую кнопка геймпада заменяет в состоянии игры.
@@ -125,8 +144,13 @@ fn virtual_for(state: GameState, button: GamepadButton) -> Option<Press> {
         (GameState::Paused, B::Select) => Some(Key(KeyCode::KeyQ)),
         (GameState::Paused, B::DPadUp) => Some(Key(KeyCode::ArrowUp)),
         (GameState::Paused, B::DPadDown) => Some(Key(KeyCode::ArrowDown)),
-        // В меню «назад» ничего не делает: Esc там закрывает игру.
+        // Меню: крестовина — стрелки, «да» — Enter, «назад» — Esc (в главном меню он ничего не делает).
         (GameState::Menu, B::South | B::Start) => Some(Key(KeyCode::Enter)),
+        (GameState::Menu, B::East) => Some(Key(KeyCode::Escape)),
+        (GameState::Menu, B::DPadUp) => Some(Key(KeyCode::ArrowUp)),
+        (GameState::Menu, B::DPadDown) => Some(Key(KeyCode::ArrowDown)),
+        (GameState::Menu, B::DPadLeft) => Some(Key(KeyCode::ArrowLeft)),
+        (GameState::Menu, B::DPadRight) => Some(Key(KeyCode::ArrowRight)),
         (GameState::GameOver, B::South | B::Start) => Some(Key(KeyCode::Enter)),
         (GameState::GameOver, B::East) => Some(Key(KeyCode::Escape)),
         _ => None,
@@ -161,6 +185,7 @@ fn to_world(stick: Vec2, (right, up): (Vec2, Vec2)) -> Vec2 {
 #[allow(clippy::too_many_arguments)]
 fn read_pad(
     state: Option<Res<State<GameState>>>,
+    time: Res<Time<Real>>,
     pads: Query<(Entity, &Gamepad)>,
     camera: Query<&Transform, With<GameCamera>>,
     motion: Res<AccumulatedMouseMotion>,
@@ -260,6 +285,27 @@ fn read_pad(
             }
         }
         held.last_stick_y = y;
+        // Меню листается стиком во все стороны, удержание повторяет шаг.
+        let stick_key = (state == GameState::Menu).then(|| menu_stick_key(pad.left_stick())).flatten();
+        let tap = match (stick_key, held.menu_stick) {
+            (Some(key), Some((was, wait))) if key == was => {
+                let wait = wait - time.delta_secs();
+                held.menu_stick = Some((key, if wait <= 0.0 { MENU_REPEAT } else { wait }));
+                (wait <= 0.0).then_some(key)
+            }
+            (Some(key), _) => {
+                held.menu_stick = Some((key, MENU_REPEAT_FIRST));
+                Some(key)
+            }
+            (None, _) => {
+                held.menu_stick = None;
+                None
+            }
+        };
+        if let Some(key) = tap {
+            keys.press(key);
+            held.taps.push(key);
+        }
     }
 
     let drive = deadzone(pad.left_stick(), STICK_DEADZONE);
@@ -375,8 +421,18 @@ mod tests {
     }
 
     #[test]
-    fn назад_в_меню_не_закрывает_игру() {
-        assert_eq!(virtual_for(GameState::Menu, GamepadButton::East), None);
+    fn назад_в_меню_это_esc_а_крестовина_стрелки() {
+        assert_eq!(
+            virtual_for(GameState::Menu, GamepadButton::East),
+            Some(Press::Key(KeyCode::Escape))
+        );
+        assert_eq!(
+            virtual_for(GameState::Menu, GamepadButton::DPadLeft),
+            Some(Press::Key(KeyCode::ArrowLeft))
+        );
+        assert_eq!(menu_stick_key(Vec2::new(0.1, -0.9)), Some(KeyCode::ArrowDown));
+        assert_eq!(menu_stick_key(Vec2::new(0.8, 0.2)), Some(KeyCode::ArrowRight));
+        assert_eq!(menu_stick_key(Vec2::new(0.2, 0.3)), None);
         assert_eq!(
             virtual_for(GameState::Menu, GamepadButton::South),
             Some(Press::Key(KeyCode::Enter))

@@ -15,6 +15,7 @@
 use bevy::audio::Volume;
 use bevy::prelude::*;
 
+use crate::settings::{Settings, SoundGroup};
 use crate::sound_list::SoundList;
 use crate::voice::VoicePlayback;
 
@@ -167,7 +168,7 @@ fn duck_target(voice_playing: bool, paused: bool) -> f32 {
     target
 }
 
-fn spawn_layer(commands: &mut Commands, player: &MusicPlayer, track: Track, level: f32) {
+fn spawn_layer(commands: &mut Commands, player: &MusicPlayer, track: Track, level: f32, gain: f32) {
     let Some(sound) = track
         .id()
         .and_then(|id| player.tracks.get(id))
@@ -182,7 +183,7 @@ fn spawn_layer(commands: &mut Commands, player: &MusicPlayer, track: Track, leve
         },
         AudioPlayer::new(sound),
         PlaybackSettings {
-            volume: Volume::Linear(BASE_VOLUME * level * player.duck),
+            volume: Volume::Linear(BASE_VOLUME * level * player.duck * gain),
             ..PlaybackSettings::LOOP
         },
     ));
@@ -193,10 +194,12 @@ fn switch_track(
     mut commands: Commands,
     time: Res<Time<Real>>,
     state: Res<MusicState>,
+    settings: Res<Settings>,
     mut player: ResMut<MusicPlayer>,
     mut layers: Query<(Entity, &mut MusicLayer)>,
     stings: Query<(), With<AudioPlayer>>,
 ) {
+    let gain = settings.gain(SoundGroup::Music);
     // Акцент гибели отзвучал или не дождались его конца: начинается музыка конца забега.
     let now = time.elapsed_secs_f64();
     if let Some((sting, started)) = player.sting
@@ -205,7 +208,7 @@ fn switch_track(
         player.sting = None;
         commands.entity(sting).try_despawn();
         if player.current == Track::GameOver {
-            spawn_layer(&mut commands, &player, Track::GameOver, 1.0);
+            spawn_layer(&mut commands, &player, Track::GameOver, 1.0, gain);
         }
     }
 
@@ -232,7 +235,7 @@ fn switch_track(
             .spawn((
                 AudioPlayer::new(sound),
                 PlaybackSettings {
-                    volume: Volume::Linear(BASE_VOLUME),
+                    volume: Volume::Linear(BASE_VOLUME * gain),
                     ..PlaybackSettings::DESPAWN
                 },
             ))
@@ -244,7 +247,7 @@ fn switch_track(
     for (_, mut layer) in &mut layers {
         layer.fading_out = true;
     }
-    spawn_layer(&mut commands, &player, state.track, 0.0);
+    spawn_layer(&mut commands, &player, state.track, 0.0, gain);
 }
 
 /// Ведёт затухание слоёв и приглушение под реплику и паузу.
@@ -252,12 +255,17 @@ fn fade_layers(
     mut commands: Commands,
     time: Res<Time<Real>>,
     state: Res<MusicState>,
+    settings: Res<Settings>,
     mut player: ResMut<MusicPlayer>,
     voice: Query<(), With<VoicePlayback>>,
     mut layers: Query<(Entity, &mut MusicLayer, Option<&mut AudioSink>)>,
 ) {
     let delta = time.delta_secs();
-    let target = duck_target(!voice.is_empty(), state.paused);
+    // Неслышный голос музыку не приглушает.
+    let speaking = !voice.is_empty() && settings.gain(SoundGroup::Voice) > 0.0;
+    let target = duck_target(speaking, state.paused);
+    // Громкость из настроек: играющие слои подхватывают её в этом же кадре.
+    let gain = settings.gain(SoundGroup::Music);
     player.duck = approach(player.duck, target, DUCK_SPEED * delta);
 
     for (entity, mut layer, sink) in &mut layers {
@@ -268,7 +276,7 @@ fn fade_layers(
             continue;
         }
         if let Some(mut sink) = sink {
-            sink.set_volume(Volume::Linear(BASE_VOLUME * layer.level * player.duck));
+            sink.set_volume(Volume::Linear(BASE_VOLUME * layer.level * player.duck * gain));
         }
     }
 }

@@ -197,7 +197,6 @@ impl Plugin for AudioEventsPlugin {
                 )
                     .in_set(GameSet::Presentation),
             )
-            .add_systems(OnExit(GameState::Menu), click)
             .add_systems(OnExit(GameState::GameOver), click)
             .add_systems(OnEnter(GameState::Paused), pause_blip)
             .add_systems(OnExit(GameState::Paused), click)

@@ -21,6 +21,7 @@ use bevy::prelude::*;
 use crate::combat::Health;
 use crate::rover::{MAX_FORWARD_SPEED, Rover, RoverMotion};
 use crate::run::{GameState, WorldRebuilt};
+use crate::settings::{Settings, SoundGroup};
 use crate::sound_list::{Dice, SoundList};
 
 /// Каталог звуков внутри `assets`.
@@ -229,6 +230,7 @@ struct EngineSound;
 fn drive_engine(
     mut commands: Commands,
     sounds: Res<Sounds>,
+    settings: Res<Settings>,
     state: Res<State<GameState>>,
     time: Res<Time<Virtual>>,
     rover: Query<(&RoverMotion, &Health), With<Rover>>,
@@ -258,7 +260,7 @@ fn drive_engine(
         0.0
     };
     for mut sink in &mut engine {
-        sink.set_volume(Volume::Linear(ENGINE_VOLUME * load));
+        sink.set_volume(Volume::Linear(ENGINE_VOLUME * load * settings.gain(SoundGroup::Effects)));
         sink.set_speed((ENGINE_PITCH.0 + ENGINE_PITCH.1 * load) * time_stretch(&time));
     }
 }
@@ -329,6 +331,7 @@ fn play_sounds(
     mut commands: Commands,
     mut requests: MessageReader<PlaySound>,
     sounds: Res<Sounds>,
+    settings: Res<Settings>,
     mut dice: ResMut<Dice>,
     time: Res<Time<Virtual>>,
     listener: Query<&GlobalTransform, With<SoundListener>>,
@@ -339,6 +342,8 @@ fn play_sounds(
         return;
     }
     let listener_position = listener.iter().next().map(GlobalTransform::translation);
+    // Громкость эффектов из настроек: звуки мира и интерфейса.
+    let gain = settings.gain(SoundGroup::Effects);
     // Сколько экземпляров каждой группы и всех звуков мира уже звучит, вместе с созданными
     // в этом кадре.
     let mut in_group: HashMap<String, usize> = HashMap::new();
@@ -399,7 +404,7 @@ fn play_sounds(
             age: 0.0,
         };
         let settings = PlaybackSettings {
-            volume: Volume::Linear(volume),
+            volume: Volume::Linear(volume * gain),
             speed,
             ..PlaybackSettings::DESPAWN
         };

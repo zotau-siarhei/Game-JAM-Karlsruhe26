@@ -22,6 +22,7 @@ mod combat;
 mod comic;
 mod debris;
 mod debug_shot;
+mod difficulty;
 mod craters;
 mod enemy;
 mod enemy_look;
@@ -38,6 +39,7 @@ mod hud;
 mod impact;
 mod intro;
 mod minimap;
+mod menu;
 mod models;
 mod laser;
 mod lava;
@@ -67,6 +69,7 @@ mod rng;
 mod rockets;
 mod rover;
 mod rover_look;
+mod settings;
 mod tank_look;
 mod ui_scale;
 mod run;
@@ -147,6 +150,8 @@ fn main() {
 
 /// Все плагины игры. Отдельной функцией, чтобы тест собирал тот же кадр, что и игра.
 fn game_plugins(app: &mut App) {
+    // Настройки игрока и сложность: из них берут начальные значения качество и меню.
+    app.add_plugins((settings::SettingsPlugin, difficulty::DifficultyPlugin, menu::MenuPlugin));
     // Порядок кадра и игровой генератор случайных чисел.
     app.add_plugins((
         frame::FramePlugin,
