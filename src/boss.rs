@@ -568,6 +568,7 @@ fn fight(
                 }
                 let attack = boss.next_attack;
                 boss.next_attack = (attack + 1) % 3;
+                info!("Босс: атака {}", ["залп мортиры", "веер ракет", "таран"][attack]);
                 boss.phase = BossPhase::Walking(WALK_TIME);
                 let muzzle = me + Vec3::Y * (BODY.y * 0.5 + 1.0);
                 match attack {

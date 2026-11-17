@@ -261,6 +261,13 @@ pub struct HeavyTank {
     flank: Option<f32>,
 }
 
+impl HeavyTank {
+    /// Танк стоит и целится: видна линия прицела.
+    pub fn aiming(&self) -> bool {
+        matches!(self.state, TankState::Aiming(_))
+    }
+}
+
 /// Угол точки фланга вокруг лунохода в `rover` для танка в `me`, заходящего со стороны `side`:
 /// на [`FLANK_OFFSET`] вбок от линии «луноход — танк» на расстоянии [`FLANK_DISTANCE`].
 fn flank_angle(me: Vec3, rover: Vec3, side: f32) -> f32 {
@@ -275,7 +282,7 @@ fn heading_error(heading: f32, target: f32) -> f32 {
 
 /// Мортирщик: время до следующего выстрела, с.
 #[derive(Component)]
-struct Mortarman {
+pub(crate) struct Mortarman {
     reload: f32,
 }
 

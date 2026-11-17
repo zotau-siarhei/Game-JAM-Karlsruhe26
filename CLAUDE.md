@@ -131,6 +131,9 @@ cargo test                                  # тесты
   SPACE_GUARD_SHOT=/путь/кадр.png CARGO_MANIFEST_DIR=$PWD ./target/debug/space_guard` — забег
   начинается сам, перед луноходом встают огни, через 8 с кадр сохраняется и игра закрывается
   (`src/debug_shot.rs`).
+- Проверка сценой без рук: `SPACE_GUARD_AUTOSTART=1 SPACE_GUARD_CHECK=ruins|ruins_all|trees|alarm
+  SPACE_GUARD_SHOT_DIR=/папка CARGO_MANIFEST_DIR=$PWD ./target/release/space_guard --immortal` — итог
+  в лог строками «Проверка», снимки в папку, игра закрывается сама (`src/debug_checks.rs`).
 - Прогрев шейдеров — `src/prewarm.rs`: при запуске и смене качества каждый класс меша рисуется с каждым
   классом материала, плюс сцены всех моделей и эффекты частиц, под землёй под камерой. Иначе Bevy
   компилирует конвейер при первом появлении объекта, а на macOS и в браузере кадр при этом стоит.

@@ -22,6 +22,7 @@ mod combat;
 mod comic;
 mod debris;
 mod debris_forms;
+mod debug_checks;
 mod debug_shot;
 mod difficulty;
 mod craters;
@@ -226,7 +227,7 @@ fn game_plugins(app: &mut App) {
         // Облицовка окон в туннель: рядом с путями, но в группе путей нет места.
         .add_plugins(tunnel_view::TunnelViewPlugin)
         .add_plugins(grass::GrassPlugin)
-        .add_plugins((fire::FirePlugin, debug_shot::DebugShotPlugin))
+        .add_plugins((fire::FirePlugin, debug_shot::DebugShotPlugin, debug_checks::DebugChecksPlugin))
         // Лужи и вода в кратерах.
         .add_plugins(puddles::PuddlesPlugin)
         .add_plugins((

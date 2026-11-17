@@ -1,0 +1,748 @@
+//! Сцены проверки без рук: забег идёт по сценарию, итог пишется в лог, по ходу — снимки.
+//!
+//! Запуск: `SPACE_GUARD_AUTOSTART=1 SPACE_GUARD_CHECK=<сцена> SPACE_GUARD_SHOT_DIR=/папка
+//! CARGO_MANIFEST_DIR=$PWD ./target/release/space_guard --immortal`. Строки лога начинаются
+//! с «Проверка», в конце игра закрывается сама.
+//!
+//! - `ruins` — луноход у посёлка: взрыв рядом с домом пугает жителей, потом посёлок сносится;
+//!   луноход уезжает за 450 м и возвращается. В лог — жители по домам: живые, прячутся, в сцене.
+//! - `trees` — взрыв у края качает дерево, взрыв рядом валит его, второй взрыв в кратере опускает
+//!   пень и ствол; три взрыва у валуна — наклон к склону; надстреленный валун после отъезда
+//!   и возвращения хранит здоровье.
+//! - `alarm` — враги всех видов, один выезжает из дома; тревога на третьей ступени зовёт Службу,
+//!   потом тревога сбрасывается и Служба уезжает. В лог — расстояния, линия прицела танков.
+
+use bevy::prelude::*;
+use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
+
+use crate::alarm::Alarm;
+use crate::buildings::{House, Ruin};
+use crate::combat::{Damage, Health, Team};
+use crate::enemy::{Enemy, EnemyKind, HeavyTank, Mortarman, SpawnEnemy, SpawnPlace};
+use crate::explosion::Explosion;
+use crate::frame::GameSet;
+use crate::interceptor::Interceptor;
+use crate::props::{Prop, PropKind, PropStatus, Props, Remains};
+use crate::residents::Resident;
+use crate::rover::Rover;
+use crate::run::GameState;
+use crate::service::ServiceVehicle;
+use crate::settlements::Settlements;
+use crate::terrain::Terrain;
+
+pub struct DebugChecksPlugin;
+
+impl Plugin for DebugChecksPlugin {
+    fn build(&self, app: &mut App) {
+        let Ok(scene) = std::env::var("SPACE_GUARD_CHECK") else {
+            return;
+        };
+        let dir = std::env::var("SPACE_GUARD_SHOT_DIR").unwrap_or_else(|_| ".".into());
+        app.insert_resource(Check {
+            scene,
+            dir,
+            clock: 0.0,
+            step: 0,
+            anchor: Vec3::ZERO,
+            away: Vec3::X,
+            target: None,
+            remains: None,
+            shelter: None,
+        })
+        .add_systems(
+            Update,
+            (tick, check_ruins, check_trees, check_alarm)
+                .chain()
+                .in_set(GameSet::Presentation),
+        );
+    }
+}
+
+#[derive(Resource)]
+struct Check {
+    scene: String,
+    dir: String,
+    /// Секунды забега.
+    clock: f32,
+    /// Сколько шагов сценария пройдено.
+    step: u32,
+    /// Точка сценария: центр посёлка, дерево, валун.
+    anchor: Vec3,
+    /// Направление от точки к луноходу.
+    away: Vec3,
+    /// Адрес проверяемого объекта: участок и номер.
+    target: Option<(IVec2, usize)>,
+    /// Здоровье валуна перед отъездом.
+    remains: Option<f32>,
+    /// Дом, к которому бегут жители.
+    shelter: Option<Entity>,
+}
+
+impl Check {
+    /// Шаг `n` наступил: сценарий дошёл до него и время пришло.
+    fn at(&mut self, n: u32, time: f32) -> bool {
+        if self.step == n && self.clock >= time {
+            self.step += 1;
+            return true;
+        }
+        false
+    }
+
+    fn shot(&self, commands: &mut Commands, name: &str) {
+        let path = format!("{}/{}_{}.png", self.dir, self.scene, name);
+        info!("Проверка: снимок {path}");
+        commands
+            .spawn(Screenshot::primary_window())
+            .observe(save_to_disk(path));
+    }
+}
+
+fn tick(time: Res<Time<Real>>, state: Res<State<GameState>>, mut check: ResMut<Check>) {
+    if *state.get() == GameState::Playing {
+        check.clock += time.delta_secs();
+    }
+}
+
+/// Ставит луноход в точку на рельефе лицом к `look`.
+fn place_rover(rover: &mut Transform, terrain: &Terrain, at: Vec3, look: Vec3) {
+    rover.translation = Vec3::new(at.x, terrain.height_at(at.x, at.z) + 0.5, at.z);
+    let d = (at - look).with_y(0.0).normalize_or(Vec3::Z);
+    // Перёд лунохода — −Z: смотрит на `look`.
+    rover.rotation = Quat::from_rotation_y(d.x.atan2(d.z));
+}
+
+fn blast(
+    explosions: &mut MessageWriter<Explosion>,
+    terrain: &Terrain,
+    at: Vec3,
+    radius: f32,
+    power: f32,
+) {
+    explosions.write(Explosion {
+        position: Vec3::new(at.x, terrain.height_at(at.x, at.z), at.z),
+        radius,
+        power,
+        source_team: Team::Player,
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn check_ruins(
+    mut commands: Commands,
+    mut check: ResMut<Check>,
+    terrain: Res<Terrain>,
+    settlements: Res<Settlements>,
+    mut rover: Query<&mut Transform, With<Rover>>,
+    houses: Query<(Entity, &House, &Transform), Without<Rover>>,
+    ruins: Query<(&Ruin, &Transform), Without<Rover>>,
+    residents: Query<(&Resident, &Transform), Without<Rover>>,
+    mut damage: MessageWriter<Damage>,
+    mut explosions: MessageWriter<Explosion>,
+    mut exit: MessageWriter<AppExit>,
+    mut deaths: MessageReader<crate::residents::ResidentDied>,
+    mut dead: Local<u32>,
+    mut ids: Local<Vec<crate::settlements::HouseId>>,
+    service: Query<&ServiceVehicle>,
+) {
+    if !check.scene.starts_with("ruins") {
+        return;
+    }
+    *dead += deaths.read().count() as u32;
+    let Ok(mut rover) = rover.single_mut() else {
+        return;
+    };
+    const VILLAGE: f32 = 45.0;
+    let report = |check: &Check, ids: &[crate::settlements::HouseId], label: &str| {
+        let c = check.anchor;
+        let near = |p: Vec3| (p - c).with_y(0.0).length() < VILLAGE + 15.0;
+        let house_count = houses
+            .iter()
+            .filter(|(_, _, t)| near(t.translation))
+            .count();
+        let ruin_ids: Vec<_> = ruins
+            .iter()
+            .filter(|(_, t)| near(t.translation))
+            .map(|(r, _)| r.0)
+            .collect();
+        let people: Vec<&Resident> = residents
+            .iter()
+            .filter(|(_, t)| near(t.translation))
+            .map(|(r, _)| r)
+            .collect();
+        let panicking = people.iter().filter(|r| r.is_panicking()).count();
+        let chatting = people.iter().filter(|r| r.is_chatting()).count();
+        info!(
+            "Проверка ruins [{label}]: домов {house_count}, руин {}, жителей в сцене {} (паника {panicking}, болтают {chatting})",
+            ruin_ids.len(),
+            people.len()
+        );
+        info!(
+            "Проверка ruins [{label}]:   погибло жителей с начала {}, машин Службы {}",
+            *dead,
+            service.iter().count()
+        );
+        for &id in ids {
+            let Some(state) = settlements.house(id) else {
+                continue;
+            };
+            let present = people.iter().filter(|r| r.home() == id).count();
+            let expected = state.residents.saturating_sub(state.hiding);
+            info!(
+                "Проверка ruins [{label}]:   дом {id:?} {:?}: живых {}, прячутся {}, в сцене {present}{}",
+                state.status,
+                state.residents,
+                state.hiding,
+                if present as u8 == expected {
+                    ""
+                } else {
+                    "  <-- НЕ СХОДИТСЯ"
+                }
+            );
+        }
+    };
+
+    if check.at(0, 2.0) {
+        let me = rover.translation;
+        // Самый большой посёлок: дом, у которого больше всего соседей.
+        let neighbours = |p: Vec3| {
+            houses
+                .iter()
+                .filter(|(_, _, t)| t.translation.distance(p) < VILLAGE)
+                .count()
+        };
+        let Some((_, _, nearest)) = houses
+            .iter()
+            .max_by_key(|(_, _, t)| neighbours(t.translation))
+        else {
+            check.step = 0;
+            return;
+        };
+        check.anchor = nearest.translation;
+        check.away = (me - check.anchor).with_y(0.0).normalize_or(Vec3::X);
+        let at = check.anchor + check.away * 35.0;
+        place_rover(&mut rover, &terrain, at, check.anchor);
+        info!("Проверка ruins: посёлок у {:.0?}", check.anchor);
+    } else if check.at(1, 7.0) {
+        let c = check.anchor;
+        *ids = houses
+            .iter()
+            .filter(|(_, _, t)| (t.translation - c).with_y(0.0).length() < VILLAGE)
+            .map(|(_, h, _)| h.0)
+            .collect();
+        report(&check, &ids, "до");
+        if check.scene == "ruins_all" {
+            // Вариант: все дома рушатся разом, жители снаружи не успевают спрятаться.
+            for (e, _, t) in &houses {
+                if (t.translation - c).with_y(0.0).length() < VILLAGE {
+                    damage.write(Damage {
+                        target: e,
+                        amount: 1.0e4,
+                        source_team: Team::Player,
+                    });
+                }
+            }
+            check.step = 5;
+            return;
+        }
+        // Хлопок в стороне: жители бегут прятаться в ближайший дом.
+        blast(
+            &mut explosions,
+            &terrain,
+            check.anchor + check.away.cross(Vec3::Y) * 16.0,
+            3.0,
+            0.4,
+        );
+    } else if check.at(2, 7.15) {
+        // Дом, к которому бегут жители (ближайший к ним), рушится, пока они не добежали.
+        let c = check.anchor;
+        let outside: Vec<Vec3> = residents
+            .iter()
+            .filter(|(_, t)| (t.translation - c).with_y(0.0).length() < VILLAGE + 15.0)
+            .map(|(_, t)| t.translation)
+            .collect();
+        let mean = outside.iter().copied().sum::<Vec3>() / outside.len().max(1) as f32;
+        check.shelter = houses
+            .iter()
+            .filter(|(_, _, t)| (t.translation - c).with_y(0.0).length() < VILLAGE)
+            .min_by(|a, b| {
+                a.2.translation
+                    .distance_squared(mean)
+                    .total_cmp(&b.2.translation.distance_squared(mean))
+            })
+            .map(|(e, _, _)| e);
+        if let Some(shelter) = check.shelter {
+            damage.write(Damage {
+                target: shelter,
+                amount: 1.0e4,
+                source_team: Team::Player,
+            });
+        }
+        report(&check, &ids, "испуг, укрытие рушится");
+    } else if check.at(3, 9.0) {
+        report(&check, &ids, "укрытие снесено +2 с");
+    } else if check.at(4, 16.0) {
+        report(&check, &ids, "укрытие снесено +9 с");
+        let c = check.anchor;
+        for (e, _, t) in &houses {
+            if (t.translation - c).with_y(0.0).length() < VILLAGE {
+                damage.write(Damage {
+                    target: e,
+                    amount: 1.0e4,
+                    source_team: Team::Player,
+                });
+            }
+        }
+    } else if check.at(5, 26.0) {
+        report(&check, &ids, "весь посёлок снесён +10 с");
+        check.shot(&mut commands, "1_after");
+        // Кратер под руинами: руины должны опуститься на новую поверхность.
+        if let Some((_, t)) = ruins.iter().next() {
+            let p = t.translation;
+            info!(
+                "Проверка ruins [руины до взрыва]: y {:.2}, рельеф {:.2}",
+                p.y,
+                terrain.height_at(p.x, p.z)
+            );
+            blast(
+                &mut explosions,
+                &terrain,
+                p,
+                crate::mortar::EXPLOSION_RADIUS,
+                crate::mortar::EXPLOSION_POWER,
+            );
+        }
+    } else if check.at(6, 27.0) {
+        for (_, t) in ruins.iter().take(1) {
+            let p = t.translation;
+            info!(
+                "Проверка ruins [руины после взрыва]: y {:.2}, рельеф {:.2}",
+                p.y,
+                terrain.height_at(p.x, p.z)
+            );
+        }
+        report(&check, &ids, "перед отъездом");
+        let at = check.anchor + check.away * 450.0;
+        place_rover(&mut rover, &terrain, at, check.anchor);
+    } else if check.at(7, 35.0) {
+        report(&check, &ids, "луноход за 450 м");
+    } else if check.at(8, 36.0) {
+        let at = check.anchor + check.away * 35.0;
+        place_rover(&mut rover, &terrain, at, check.anchor);
+    } else if check.at(9, 46.0) {
+        report(&check, &ids, "вернулся");
+        check.shot(&mut commands, "2_back");
+    } else if check.at(10, 48.0) {
+        exit.write(AppExit::Success);
+    }
+}
+
+/// Наклон от вертикали, градусы.
+fn tilt(rotation: Quat) -> f32 {
+    (rotation * Vec3::Y).angle_between(Vec3::Y).to_degrees()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn check_trees(
+    mut commands: Commands,
+    mut check: ResMut<Check>,
+    terrain: Res<Terrain>,
+    mut props: ResMut<Props>,
+    mut rover: Query<&mut Transform, With<Rover>>,
+    objects: Query<(Entity, &Prop, &Transform, Option<&Health>), Without<Rover>>,
+    remains: Query<(&Remains, &Transform), Without<Rover>>,
+    mut damage: MessageWriter<Damage>,
+    mut explosions: MessageWriter<Explosion>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    if check.scene != "trees" {
+        return;
+    }
+    let Ok(mut rover) = rover.single_mut() else {
+        return;
+    };
+    let r = crate::mortar::EXPLOSION_RADIUS;
+    let power = crate::mortar::EXPLOSION_POWER;
+    let find = |check: &Check| {
+        let (chunk, index) = check.target?;
+        objects
+            .iter()
+            .find(|(_, p, _, _)| p.chunk == chunk && p.index == index)
+    };
+    let remains_report = |check: &Check, label: &str| {
+        let Some((chunk, index)) = check.target else {
+            return;
+        };
+        for (rem, t) in &remains {
+            if rem.chunk == chunk && rem.index == index {
+                let ground = terrain.height_at(t.translation.x, t.translation.z);
+                info!(
+                    "Проверка trees [{label}]: {} y {:.2}, рельеф {:.2}, наклон {:.0}°",
+                    if rem.stump { "пень" } else { "ствол" },
+                    t.translation.y,
+                    ground,
+                    tilt(t.rotation)
+                );
+            }
+        }
+    };
+
+    if check.at(0, 2.0) {
+        let me = rover.translation;
+        let tree = objects
+            .iter()
+            .filter(|(_, p, t, h)| {
+                p.kind == PropKind::Tree && h.is_some() && t.translation.distance(me) > 12.0
+            })
+            .min_by(|a, b| {
+                a.2.translation
+                    .distance_squared(me)
+                    .total_cmp(&b.2.translation.distance_squared(me))
+            });
+        let Some((_, prop, t, _)) = tree else {
+            check.step = 0;
+            return;
+        };
+        check.target = Some((prop.chunk, prop.index));
+        check.anchor = t.translation;
+        check.away = (me - check.anchor).with_y(0.0).normalize_or(Vec3::X);
+        place_rover(
+            &mut rover,
+            &terrain,
+            check.anchor + check.away * 22.0,
+            check.anchor,
+        );
+        info!(
+            "Проверка trees: дерево {:?} у {:.0?}",
+            check.target, check.anchor
+        );
+    } else if check.at(1, 4.0) {
+        // Край: дальше радиуса, ближе предела качания.
+        let side = check.away.cross(Vec3::Y);
+        blast(
+            &mut explosions,
+            &terrain,
+            check.anchor + side * r * 1.35,
+            r,
+            power,
+        );
+    } else if (2..=5).contains(&check.step) {
+        let times = [4.25, 4.6, 5.2, 6.5];
+        let i = (check.step - 2) as usize;
+        let step = check.step;
+        if check.at(step, times[i]) {
+            if let Some((_, _, t, h)) = find(&check) {
+                info!(
+                    "Проверка trees [качание +{:.2} с]: наклон {:.1}°, здоровье {:?}",
+                    times[i] - 4.0,
+                    tilt(t.rotation),
+                    h.map(|h| h.current)
+                );
+            }
+        }
+    } else if check.at(6, 8.0) {
+        let side = check.away.cross(Vec3::Y);
+        blast(
+            &mut explosions,
+            &terrain,
+            check.anchor + side * 2.0,
+            r,
+            power,
+        );
+    } else if check.at(7, 12.0) {
+        if let Some((chunk, index)) = check.target {
+            let status = props.get_mut(chunk, index).map(|s| s.status);
+            info!(
+                "Проверка trees [свален]: состояние {}",
+                match status {
+                    Some(PropStatus::Fallen(_)) => "Fallen",
+                    Some(PropStatus::Intact) => "Intact",
+                    Some(PropStatus::Destroyed) => "Destroyed",
+                    None => "нет",
+                }
+            );
+        }
+        remains_report(&check, "свален");
+        check.shot(&mut commands, "1_fallen");
+    } else if check.at(8, 13.0) {
+        let side = check.away.cross(Vec3::Y);
+        blast(
+            &mut explosions,
+            &terrain,
+            check.anchor + side * 2.0,
+            r,
+            power,
+        );
+    } else if check.at(9, 16.0) {
+        remains_report(&check, "второй взрыв");
+        check.shot(&mut commands, "2_second");
+    } else if check.at(10, 17.0) {
+        let me = rover.translation;
+        let boulder = objects
+            .iter()
+            .filter(|(_, p, _, h)| p.kind == PropKind::Boulder && h.is_some())
+            .min_by(|a, b| {
+                a.2.translation
+                    .distance_squared(me)
+                    .total_cmp(&b.2.translation.distance_squared(me))
+            });
+        let Some((_, prop, t, h)) = boulder else {
+            info!("Проверка trees: валуна рядом нет");
+            check.step = 99;
+            return;
+        };
+        check.target = Some((prop.chunk, prop.index));
+        check.anchor = t.translation;
+        check.away = (me - check.anchor).with_y(0.0).normalize_or(Vec3::X);
+        place_rover(
+            &mut rover,
+            &terrain,
+            check.anchor + check.away * 22.0,
+            check.anchor,
+        );
+        info!(
+            "Проверка trees: валун {:?} у {:.0?}, здоровье {:?}, наклон {:.0}°, низ над рельефом {:.2}",
+            check.target,
+            check.anchor,
+            h.map(|h| h.current),
+            tilt(t.rotation),
+            t.translation.y - terrain.height_at(t.translation.x, t.translation.z)
+        );
+    } else if (11..=13).contains(&check.step) {
+        let times = [19.0, 21.0, 23.0];
+        let i = (check.step - 11) as usize;
+        let step = check.step;
+        if check.at(step, times[i]) {
+            let angle = i as f32 * 2.1;
+            let dir = Quat::from_rotation_y(angle) * check.away.cross(Vec3::Y);
+            blast(
+                &mut explosions,
+                &terrain,
+                check.anchor + dir * (r * 0.6),
+                r,
+                power,
+            );
+        }
+    } else if check.at(14, 25.5) {
+        match find(&check) {
+            Some((_, _, t, h)) => {
+                let p = t.translation;
+                let normal = terrain.normal_at(p.x, p.z);
+                let up = t.rotation * Vec3::Y;
+                info!(
+                    "Проверка trees [валун после трёх взрывов]: от вертикали {:.0}°, от нормали склона {:.0}°, склон {:.0}°, здоровье {:?}, низ над рельефом {:.2}",
+                    tilt(t.rotation),
+                    up.angle_between(normal).to_degrees(),
+                    normal.angle_between(Vec3::Y).to_degrees(),
+                    h.map(|h| h.current),
+                    p.y - terrain.height_at(p.x, p.z)
+                );
+            }
+            None => info!("Проверка trees [валун после трёх взрывов]: валуна нет (разрушен)"),
+        }
+        check.shot(&mut commands, "3_boulder");
+    } else if check.at(15, 26.0) {
+        if let Some((e, _, _, Some(h))) = find(&check) {
+            let amount = h.current * 0.5;
+            damage.write(Damage {
+                target: e,
+                amount,
+                source_team: Team::Player,
+            });
+        }
+    } else if check.at(16, 27.0) {
+        let health = find(&check).and_then(|(_, _, _, h)| h.map(|h| h.current));
+        check.remains = health;
+        info!("Проверка trees [валун надстрелен]: здоровье {health:?}");
+        let at = check.anchor + check.away * 450.0;
+        place_rover(&mut rover, &terrain, at, check.anchor);
+    } else if check.at(17, 35.0) {
+        info!(
+            "Проверка trees [луноход за 450 м]: валун в сцене {}",
+            find(&check).is_some()
+        );
+        let at = check.anchor + check.away * 22.0;
+        place_rover(&mut rover, &terrain, at, check.anchor);
+    } else if check.at(18, 43.0) {
+        let health = find(&check).and_then(|(_, _, _, h)| h.map(|h| h.current));
+        info!(
+            "Проверка trees [вернулся]: здоровье валуна {health:?}, было {:?}{}",
+            check.remains,
+            if health == check.remains {
+                ""
+            } else {
+                "  <-- НЕ СХОДИТСЯ"
+            }
+        );
+    } else if check.at(19, 44.0) || check.step == 99 {
+        exit.write(AppExit::Success);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn check_alarm(
+    mut commands: Commands,
+    mut check: ResMut<Check>,
+    mut alarm: ResMut<Alarm>,
+    settlements: Res<Settlements>,
+    rover: Query<&Transform, With<Rover>>,
+    houses: Query<(Entity, &House, &Transform), Without<Rover>>,
+    enemies: Query<
+        (
+            Entity,
+            &Transform,
+            Has<Mortarman>,
+            Option<&HeavyTank>,
+            Has<Interceptor>,
+        ),
+        (With<Enemy>, Without<Rover>),
+    >,
+    service: Query<(Entity, &ServiceVehicle, &Transform), Without<Rover>>,
+    mut spawn: MessageWriter<SpawnEnemy>,
+    mut exit: MessageWriter<AppExit>,
+    mut next_log: Local<f32>,
+    mut door: Local<Option<(Entity, crate::settlements::HouseId)>>,
+    mut last: Local<std::collections::HashMap<Entity, (Vec3, u32)>>,
+) {
+    if check.scene != "alarm" {
+        return;
+    }
+    let Ok(me) = rover.single().map(|t| t.translation) else {
+        return;
+    };
+    if check.at(0, 2.0) {
+        let nearest = houses.iter().min_by(|a, b| {
+            a.2.translation
+                .distance_squared(me)
+                .total_cmp(&b.2.translation.distance_squared(me))
+        });
+        if let Some((e, h, t)) = nearest {
+            info!(
+                "Проверка alarm: враг выезжает из дома {:?} в {:.0} м",
+                h.0,
+                t.translation.distance(me)
+            );
+            *door = Some((e, h.0));
+            spawn.write(SpawnEnemy {
+                place: SpawnPlace::House(e),
+                kind: EnemyKind::RamShooter,
+            });
+        }
+        for (i, kind) in [
+            EnemyKind::Mortar,
+            EnemyKind::HeavyTank,
+            EnemyKind::LaserTank,
+            EnemyKind::Interceptor,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            spawn.write(SpawnEnemy {
+                place: SpawnPlace::Edge {
+                    angle: i as f32 * 1.6,
+                },
+                kind,
+            });
+        }
+    } else if check.at(1, 5.0) {
+        if let Some((e, id)) = *door {
+            let state = settlements.house(id);
+            info!(
+                "Проверка alarm: дом после выезда — сущность {}, состояние {:?}, выбитая дверь {:?}",
+                if houses.get(e).is_ok() {
+                    "есть"
+                } else {
+                    "нет"
+                },
+                state.map(|s| s.status),
+                state.and_then(|s| s.broken_door)
+            );
+        }
+        alarm.add(30.0);
+        info!(
+            "Проверка alarm: тревога поднята до ступени {}",
+            alarm.level()
+        );
+    } else if check.at(2, 40.0) {
+        *alarm = Alarm::default();
+        info!("Проверка alarm: тревога сброшена");
+    }
+    if check.step == 2 && check.clock >= 20.0 && check.remains.is_none() {
+        check.remains = Some(0.0);
+        check.shot(&mut commands, "1_ring");
+    }
+    if check.step == 3 && check.clock >= 58.0 {
+        exit.write(AppExit::Success);
+    }
+
+    if check.step == 0 || check.clock < *next_log {
+        return;
+    }
+    *next_log = check.clock + 2.0;
+    let mut line = format!(
+        "Проверка alarm [{:>4.0} с, ступень {}]:",
+        check.clock,
+        alarm.level()
+    );
+    // Сколько замеров подряд машина не сдвинулась больше чем на метр.
+    let mut still = |e: Entity, p: Vec3| {
+        let entry = last.entry(e).or_insert((p, 0));
+        entry.1 = if entry.0.distance(p) < 1.0 {
+            entry.1 + 1
+        } else {
+            0
+        };
+        entry.0 = p;
+        entry.1
+    };
+    for (e, t, mortar, tank, interceptor) in &enemies {
+        let d = t.translation.distance(me);
+        let stuck = still(e, t.translation);
+        let in_house = houses.iter().any(|(_, h, _)| {
+            settlements
+                .house(h.0)
+                .is_some_and(|s| s.footprint().distance(t.translation.xz()) < 0.5)
+        });
+        let name = if mortar {
+            "мортира"
+        } else if let Some(tank) = tank {
+            if tank.arm == crate::enemy::TankArm::Laser {
+                "лазер-танк"
+            } else {
+                "ракет-танк"
+            }
+        } else if interceptor {
+            "перехватчик"
+        } else {
+            "таранщик"
+        };
+        let aim = tank.is_some_and(|t| t.aiming());
+        line += &format!(
+            " {name} {d:.0} м{}{}{};",
+            if aim { " ЦЕЛИТСЯ" } else { "" },
+            if in_house { " В ДОМЕ" } else { "" },
+            if stuck >= 3 && d > 25.0 {
+                format!(" СТОИТ {}с @{:.0?}", stuck * 2, t.translation.xz())
+            } else {
+                String::new()
+            }
+        );
+    }
+    let ring: Vec<String> = service
+        .iter()
+        .map(|(e, v, t)| {
+            let stuck = still(e, t.translation);
+            format!(
+                "{:.0}{}{}",
+                t.translation.distance(me),
+                if v.is_leaving() { "↗" } else { "" },
+                if stuck >= 3 && v.is_leaving() {
+                    format!(" СТОИТ {}с @{:.0?}", stuck * 2, t.translation.xz())
+                } else {
+                    String::new()
+                }
+            )
+        })
+        .collect();
+    line += &format!(" | Служба {}: [{}]", ring.len(), ring.join(" "));
+    info!("{line}");
+}

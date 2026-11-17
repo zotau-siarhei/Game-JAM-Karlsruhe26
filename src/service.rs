@@ -258,6 +258,11 @@ impl ServiceVehicle {
     pub fn takes_passengers(&self) -> bool {
         !self.leaving && self.passengers < balance::SEATS
     }
+
+    /// Машина уезжает прочь.
+    pub fn is_leaving(&self) -> bool {
+        self.leaving
+    }
 }
 
 /// Антенна-тарелка: вращается.

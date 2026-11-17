@@ -1191,7 +1191,11 @@ fn break_props(
                 // Качавшееся дерево падает от положения покоя: качание снимается, иначе оно
                 // вернуло бы ствол в вертикаль.
                 let rest = sway.map_or(transform.rotation, |s| s.rest);
+                // Высота — с основания в хранилище: взрыв, сваливший дерево, в этом же кадре уже
+                // опустил его в кратер (`subsidence::sink_props`), а сущность ещё оседает сверху.
+                // Со старой высотой следующий кратер опустил бы ствол лишний раз, под землю.
                 let fallen = Transform {
+                    translation: state.transform.translation,
                     rotation: Quat::from_axis_angle(axis, std::f32::consts::FRAC_PI_2) * rest,
                     ..*transform
                 };
