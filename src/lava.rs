@@ -217,6 +217,13 @@ pub struct LavaPools {
     burn_clock: f32,
 }
 
+impl LavaPools {
+    /// Уровень, целевой уровень, число ячеек и есть ли плоскость у каждого озера: для отладочной сцены `lava`.
+    pub fn summary(&self) -> Vec<(f32, f32, usize, bool)> {
+        self.pools.iter().map(|p| (p.level, p.target_level, p.cells.len(), p.mesh.is_some())).collect()
+    }
+}
+
 /// Горящие деревья и дома: огонь над целью и сколько ему ещё гореть.
 #[derive(Resource, Default)]
 struct LavaFires {
@@ -483,6 +490,7 @@ fn watch_crust(
             continue;
         }
         // Прорыв: извержение и новое озеро.
+        info!("Лава: прорыв коры на глубине {d:.1} м");
         pools.pools.push(Pool::new(cell, bottom.y, terrain.original_height(cell.x, cell.y)));
         spots.spots.retain(|s| s.distance(bottom) > 10.0);
         // Взрыв прорыва — от того, кто пробил кору: вражеский снаряд угрозу не растит.

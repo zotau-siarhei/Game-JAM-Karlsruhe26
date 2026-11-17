@@ -22,6 +22,9 @@
 //!   посмотреть оружие по уровням (`upgrades`). Авиаудар подтверждается следующим нажатием.
 //! - `SPACE_GUARD_SCENE=gadflies` — на 2-й секунде забега у лунохода появляются два дрона-овода:
 //!   кружат, по очереди разгоняют ядро и бросаются (`interceptor::Gadfly`).
+//! - `SPACE_GUARD_SCENE=lava` — через 2 с забега в 14 м перед луноходом раз в 1,5 с бьёт
+//!   взрыв мортиры первого уровня, 8 раз в одну точку; глубина кратера после каждого — в лог:
+//!   сколько выстрелов нужно до прорыва коры (`lava::CRUST`).
 //! - `SPACE_GUARD_SCENE=collapse` — через 2 с забега луноход встаёт в 9 м от ближайшего дома
 //!   лицом к нему, на 5-й секунде дом рушится: посмотреть куски модели (`fragments`), снимок
 //!   на `SPACE_GUARD_SHOT_AT` (обрушение — около 6,5, руины — 10).
@@ -96,7 +99,7 @@ impl Plugin for DebugShotPlugin {
             staged: false,
         })
         .add_systems(Update, (open_menu_page, press_keys).before(GameSet::Screens))
-        .add_systems(Update, (press_start, stage_scene, stage_train, stage_collapse, stage_airstrike, stage_weapons, stage_gadflies, stage_pieces, stage_wrecks, keep_shocked, drive, take_shot).before(GameSet::Screens));
+        .add_systems(Update, (press_start, stage_scene, stage_train, stage_collapse, stage_lava, stage_airstrike, stage_weapons, stage_gadflies, stage_pieces, stage_wrecks, keep_shocked, drive, take_shot).before(GameSet::Screens));
     }
 }
 
@@ -206,9 +209,16 @@ fn stage_train(
     debug: Res<DebugShot>,
     terrain: Res<Terrain>,
     mut rover: Query<&mut Transform, With<Rover>>,
+    state: Res<State<GameState>>,
     mut done: Local<bool>,
+    mut clock: Local<f32>,
 ) {
-    if *done || !matches!(debug.scene.as_deref(), Some("train" | "derail")) || time.elapsed_secs() < 2.0 {
+    if *done || !matches!(debug.scene.as_deref(), Some("train" | "derail")) || *state.get() != GameState::Playing {
+        return;
+    }
+    // Время с начала забега: перенос до старта забега сбрасывается и оставляет чёрный экран.
+    *clock += time.delta_secs();
+    if *clock < 2.0 {
         return;
     }
     let Some(mut rover) = rover.iter_mut().next() else {
@@ -799,4 +809,53 @@ fn take_shot(
         }
         _ => {}
     }
+}
+
+/// Сцена `lava`: взрывы мортиры раз за разом в одну точку перед луноходом, глубина — в лог.
+fn stage_lava(
+    time: Res<Time>,
+    debug: Res<DebugShot>,
+    terrain: Res<Terrain>,
+    state: Res<State<GameState>>,
+    rover: Query<&Transform, With<Rover>>,
+    mut explosions: MessageWriter<Explosion>,
+    pools: Res<crate::lava::LavaPools>,
+    mut target: Local<Option<(Vec3, f32)>>,
+    mut clock: Local<f32>,
+    mut shots: Local<u32>,
+) {
+    if debug.scene.as_deref() != Some("lava") || *state.get() != GameState::Playing {
+        return;
+    }
+    *clock += time.delta_secs();
+    let Some(rover) = rover.iter().next() else {
+        return;
+    };
+    let (at, start) = *target.get_or_insert_with(|| {
+        let p = rover.translation + rover.forward() * 14.0;
+        (Vec3::new(p.x, 0.0, p.z), terrain.height_at(p.x, p.z))
+    });
+    let due = 2.0 + *shots as f32 * 1.5;
+    if *clock < due {
+        return;
+    }
+    if *shots >= 8 {
+        // После серии — состояние озера раз в 2 с.
+        if *clock >= due + 0.5 && *shots < 20 {
+            *shots += 1;
+            info!("Сцена lava: {:.0} с, озёра (уровень, цель, ячеек, плоскость): {:?}", *clock, pools.summary());
+        }
+        return;
+    }
+    if *shots > 0 {
+        let depth = start - terrain.height_at(at.x, at.z);
+        info!("Сцена lava: после {} взрывов глубина {:.1} м, озёра (уровень, ячеек): {:?}", *shots, depth, pools.summary());
+    }
+    *shots += 1;
+    explosions.write(Explosion {
+        position: Vec3::new(at.x, terrain.height_at(at.x, at.z), at.z),
+        radius: crate::mortar::EXPLOSION_RADIUS,
+        power: crate::mortar::EXPLOSION_POWER,
+        source_team: Team::Player,
+    });
 }
