@@ -50,7 +50,11 @@ const SECOND_PLANE_DELAY: f32 = 0.4;
 pub const DELAY: f32 = 2.0;
 
 /// Высота и скорость самолёта.
-const PLANE_HEIGHT: f32 = 25.0;
+/// Высота пролёта над отметкой, м: выше камеры (обычная — 25–35 м над луноходом, на узком экране
+/// до 55 м), иначе самолёт пролетал сквозь неё и закрывал экран.
+const PLANE_HEIGHT: f32 = 55.0;
+/// Масштаб самолёта: с такой высоты он виден, как прежде с 25 м.
+const PLANE_SCALE: f32 = 1.8;
 const PLANE_SPEED: f32 = 60.0;
 
 /// Запас захода сверх упреждения первой бомбы, м: самолёт появляется до точки её сброса.
@@ -427,7 +431,8 @@ fn show_targeting_ui(
                 position_type: PositionType::Absolute,
                 left: Val::Percent(10.0),
                 right: Val::Percent(10.0),
-                bottom: Val::Px(110.0),
+                // Сверху, под временем забега: внизу субтитры штаба.
+                top: Val::Px(80.0),
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,
                 row_gap: Val::Px(8.0),
@@ -609,7 +614,13 @@ fn run_strikes(
         if !strike.plane_spawned {
             strike.plane_spawned = true;
             let plane = commands
-                .spawn((RunScoped, Transform::from_translation(plane_pos).with_rotation(rotation), Visibility::default()))
+                .spawn((
+                    RunScoped,
+                    Transform::from_translation(plane_pos)
+                        .with_rotation(rotation)
+                        .with_scale(Vec3::splat(PLANE_SCALE)),
+                    Visibility::default(),
+                ))
                 .with_children(|p| {
                     // Фюзеляж, крылья, хвост.
                     for (offset, scale) in [
@@ -646,7 +657,7 @@ fn run_strikes(
             let y = terrain.height_at(plane_pos.x, plane_pos.z) + 0.1;
             *t = Transform::from_xyz(plane_pos.x, y, plane_pos.z)
                 .with_rotation(rotation)
-                .with_scale(Vec3::new(10.0, 0.05, 8.0));
+                .with_scale(Vec3::new(10.0 * PLANE_SCALE, 0.05, 8.0 * PLANE_SCALE));
         }
         // Бомба сбрасывается над своей точкой отметки с упреждением на падение.
         let lead = PLANE_SPEED * fall_time();
