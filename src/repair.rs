@@ -29,13 +29,10 @@ const SPARK_RATE: f32 = 24.0;
 /// Сколько секунд живёт искра.
 const SPARK_LIFE: f32 = 0.45;
 
-/// Как часто появляется аптечка, с.
+/// Как часто появляется аптечка, с; на тяжёлой реже (`Difficulty::healing`).
 const MEDKIT_INTERVAL: f32 = 20.0;
 
-/// Сколько аптечек может лежать рядом с луноходом.
-const MAX_MEDKITS: usize = 2;
-
-/// Аптечки ближе этого к луноходу входят в предел [`MAX_MEDKITS`], м.
+/// Аптечки ближе этого к луноходу входят в предел (`Healing::max_medkits`), м.
 const MEDKIT_COUNT_RADIUS: f32 = 70.0;
 
 /// Аптечка дальше этого от лунохода убирается, м.
@@ -44,7 +41,8 @@ const MEDKIT_FORGET_RADIUS: f32 = 150.0;
 /// Кольцо появления аптечек вокруг лунохода, м.
 const MEDKIT_RING: (f32, f32) = (15.0, 30.0);
 
-/// Сколько здоровья даёт аптечка: до полного (лечение выше максимума не поднимает).
+/// Сколько здоровья даёт аптечка: до полного (лечение выше максимума не поднимает); на тяжёлой —
+/// доля (`Healing::medkit_share`).
 pub const MEDKIT_HEAL: f32 = ROVER_MAX_HEALTH;
 
 /// С какого расстояния аптечка подбирается, м.
@@ -70,6 +68,8 @@ impl Plugin for RepairPlugin {
                 (
                     reset_repair.in_set(GameSet::Reset),
                     repair.before(rover::drive_rover).in_set(GameSet::Input),
+                    // До ввода: оружие этого кадра уже не видит нажатия.
+                    block_fire_while_repairing.after(GameSet::Reset).before(GameSet::Input),
                     (spawn_sparks, spawn_medkits, pick_medkits).chain().in_set(GameSet::Simulation),
                     move_sparks.in_set(GameSet::Presentation),
                 ),
@@ -166,9 +166,27 @@ fn can_repair(health: &Health) -> bool {
 ///
 /// Здоровье прибавляет сообщение [`Heal`] позже в этом кадре, поэтому конец ремонта
 /// считается по здоровью после лечения.
+/// На тяжёлой во время ремонта стрелять нельзя: нажатие спуска гасится до систем оружия.
+fn block_fire_while_repairing(
+    state: Res<State<crate::run::GameState>>,
+    difficulty: Res<crate::difficulty::RunDifficulty>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut mouse: ResMut<ButtonInput<MouseButton>>,
+    rover: Query<&Health, With<Rover>>,
+) {
+    if *state.get() != crate::run::GameState::Playing || difficulty.0.healing().fire_while_repairing {
+        return;
+    }
+    let repairing = keys.pressed(KeyCode::Space) && rover.iter().next().is_some_and(can_repair);
+    if repairing {
+        mouse.reset(MouseButton::Left);
+    }
+}
+
 fn repair(
     mut commands: Commands,
     time: Res<Time>,
+    difficulty: Res<crate::difficulty::RunDifficulty>,
     keys: Res<ButtonInput<KeyCode>>,
     rover: Query<(Entity, &Health, Has<Repairing>), With<Rover>>,
     mut changed: MessageWriter<RepairChanged>,
@@ -179,7 +197,7 @@ fn repair(
     };
     let repairing = keys.pressed(KeyCode::Space) && can_repair(health);
     if repairing {
-        let amount = REPAIR_RATE * time.delta_secs();
+        let amount = REPAIR_RATE * difficulty.0.healing().repair_share * time.delta_secs();
         heals.write(Heal { target: entity, amount });
         if !was_repairing {
             commands.entity(entity).try_insert((Repairing, SpeedFactor(REPAIR_SLOWDOWN)));
@@ -262,6 +280,7 @@ fn spawn_medkits(
     mut commands: Commands,
     time: Res<Time>,
     mut timer: ResMut<MedkitTimer>,
+    difficulty: Res<crate::difficulty::RunDifficulty>,
     mut dice: ResMut<GameRng>,
     assets: Res<RepairAssets>,
     mut models: Models,
@@ -289,8 +308,9 @@ fn spawn_medkits(
     if timer.0 > 0.0 {
         return;
     }
-    timer.0 = MEDKIT_INTERVAL;
-    if near >= MAX_MEDKITS {
+    let healing = difficulty.0.healing();
+    timer.0 = healing.medkit_interval;
+    if near >= healing.max_medkits {
         return;
     }
 
@@ -335,6 +355,7 @@ fn pick_medkits(
     mut commands: Commands,
     rover: Query<(Entity, &Transform, &Health), With<Rover>>,
     medkits: Query<(Entity, &Transform), With<Medkit>>,
+    difficulty: Res<crate::difficulty::RunDifficulty>,
     mut picked: MessageWriter<MedkitPicked>,
     mut heals: MessageWriter<Heal>,
 ) {
@@ -347,7 +368,7 @@ fn pick_medkits(
         if can_pick(offset.length(), health) {
             heals.write(Heal {
                 target: rover_entity,
-                amount: MEDKIT_HEAL,
+                amount: MEDKIT_HEAL * difficulty.0.healing().medkit_share,
             });
             commands.entity(entity).despawn();
             picked.write(MedkitPicked {

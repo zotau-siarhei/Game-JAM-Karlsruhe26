@@ -159,10 +159,11 @@ mod tests {
     }
 
     #[test]
-    fn на_тяжёлой_через_6_секунд_ещё_не_растёт() {
+    fn на_тяжёлой_самовосстановления_нет() {
         let hard = crate::difficulty::Difficulty::Hard.regen();
         assert_eq!(regen_amount(&hard, 6.0, &wounded(), 1.0), 0.0);
-        assert!(regen_amount(&hard, 8.5, &wounded(), 1.0) > 0.0);
+        // На тяжёлой самовосстановления нет вовсе.
+        assert_eq!(regen_amount(&hard, 30.0, &wounded(), 1.0), 0.0);
     }
 
     #[test]

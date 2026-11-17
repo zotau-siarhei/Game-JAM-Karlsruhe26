@@ -152,14 +152,13 @@ const TANK_AIM_TOLERANCE: f32 = 0.08;
 pub(crate) const TANK_FIRE_RANGE: f32 = 36.0;
 /// Сколько видна линия прицела перед выстрелом, с.
 const TANK_AIM_TIME: f32 = 1.0;
-/// Перезарядка танка, с.
+/// Перезарядка танка, с; на тяжёлой короче (`Difficulty::tank_reload`).
 const TANK_RELOAD: f32 = 4.0;
 /// Ракетный танк наводит башню без линии прицела: столько стоит перед выстрелом, с.
 const ROCKET_AIM_TIME: f32 = 0.5;
 /// Насколько башня ракетного танка может не смотреть на луноход при выстреле, рад.
 const ROCKET_AIM_TOLERANCE: f32 = 0.12;
-/// Перезарядка ракетного танка, с.
-const ROCKET_TANK_RELOAD: f32 = 3.5;
+// Перезарядка ракетного танка — `Difficulty::tank_reload`: 3,5 с, на тяжёлой 2 с.
 /// Скорость поворота башни танка, рад/с.
 const TANK_TURRET_TURN_SPEED: f32 = 1.5;
 
@@ -672,6 +671,7 @@ fn drive_mortarmen(
 #[allow(clippy::too_many_arguments)]
 fn drive_tanks(
     time: Res<Time>,
+    difficulty: Res<crate::difficulty::RunDifficulty>,
     terrain: Res<Terrain>,
     obstacles: Query<(Entity, &Obstacle)>,
     rover: Query<(&Transform, &Health), With<Rover>>,
@@ -744,7 +744,7 @@ fn drive_tanks(
                         target,
                         team: Team::Enemy,
                     });
-                    tank.reload = ROCKET_TANK_RELOAD;
+                    tank.reload = difficulty.0.tank_reload().1;
                     tank.state = TankState::Flank;
                     tank.side = -tank.side;
                     tank.flank = None;
@@ -774,7 +774,7 @@ fn drive_tanks(
                         damage: enemy_damage::TANK_LASER,
                         ..FireLaser::BASE
                     });
-                    tank.reload = TANK_RELOAD;
+                    tank.reload = difficulty.0.tank_reload().0;
                     tank.state = TankState::Flank;
                     // После выстрела — новый заход с другой стороны.
                     tank.side = -tank.side;
