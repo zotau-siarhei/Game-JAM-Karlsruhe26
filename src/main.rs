@@ -73,6 +73,7 @@ mod run;
 mod service;
 mod shock;
 mod settlements;
+mod showcase;
 mod sound;
 mod subsidence;
 mod sound_list;
@@ -163,6 +164,8 @@ fn game_plugins(app: &mut App) {
         .add_plugins(ui_scale::UiScalePlugin)
         // Посёлки, объекты поверхности и разрушение; куски моделей для обломков.
         .add_plugins(fragments::FragmentsPlugin)
+        // Облёт разрушений за экраном рекордов.
+        .add_plugins(showcase::ShowcasePlugin)
         .add_plugins((
             settlements::SettlementsPlugin,
             buildings::BuildingsPlugin,
