@@ -171,6 +171,22 @@ struct BossWarning {
 #[derive(Component)]
 struct BossCore;
 
+/// Ореол ядра: прозрачная оболочка, пульсирует чуть иначе, чем само ядро.
+#[derive(Component)]
+struct BossHalo {
+    /// Размер оболочки относительно ядра.
+    size: f32,
+    /// Сдвиг фазы пульса, рад.
+    offset: f32,
+}
+
+/// Свет ядра: янтарные отблески на корпусе и земле, разгораются с ядром.
+#[derive(Component)]
+struct BossCoreLight;
+
+/// Яркость света ядра: в покое, на подготовке атаки (пик) и на таране.
+const CORE_LIGHT: (f32, f32, f32) = (600_000.0, 6_000_000.0, 3_000_000.0);
+
 /// Походка босса: фаза шага по пройденному пути, вес шага и поджатость ног.
 #[derive(Component)]
 struct BossGait {
@@ -217,6 +233,8 @@ struct BossAssets {
     body_material: Handle<StandardMaterial>,
     leg_material: Handle<StandardMaterial>,
     core_material: Handle<StandardMaterial>,
+    /// Оболочки ореола: ближняя ярче, дальняя бледнее.
+    halo_materials: [Handle<StandardMaterial>; 2],
 }
 
 fn create_assets(
@@ -227,14 +245,22 @@ fn create_assets(
     commands.insert_resource(BossAssets {
         body: meshes.add(Cuboid::from_size(BODY)),
         leg: meshes.add(Cuboid::new(0.9, RIDE_HEIGHT + 0.4, 0.9)),
-        core: meshes.add(Sphere::new(0.9).mesh().ico(2).expect("ядро босса")),
+        core: meshes.add(Sphere::new(0.9).mesh().ico(3).expect("ядро босса")),
         body_material: materials.add(BODY_COLOR),
         leg_material: materials.add(LEG_COLOR),
+        // У `unlit` Bevy берёт только `base_color`, без `emissive`: яркость выше 1 даёт свечение (bloom).
         core_material: materials.add(StandardMaterial {
-            base_color: Color::srgb(1.0, 0.3, 0.1),
-            emissive: LinearRgba::rgb(4.0, 0.8, 0.2),
+            base_color: Color::linear_rgb(8.0, 2.4, 0.5),
             unlit: true,
             ..default()
+        }),
+        halo_materials: [0.35, 0.15].map(|alpha| {
+            materials.add(StandardMaterial {
+                base_color: Color::linear_rgba(1.6, 0.5, 0.08, alpha),
+                alpha_mode: AlphaMode::Add,
+                unlit: true,
+                ..default()
+            })
         }),
     });
 }
@@ -368,13 +394,37 @@ fn spawn_boss(
                             MeshMaterial3d(assets.body_material.clone()),
                         ));
                     });
-                    torso.spawn((
-                        BossCore,
-                        NotShadowCaster,
-                        Mesh3d(assets.core.clone()),
-                        MeshMaterial3d(assets.core_material.clone()),
-                        core,
-                    ));
+                    torso
+                        .spawn((
+                            BossCore,
+                            NotShadowCaster,
+                            Mesh3d(assets.core.clone()),
+                            MeshMaterial3d(assets.core_material.clone()),
+                            core,
+                        ))
+                        .with_children(|core| {
+                            for ((size, offset), material) in [(1.35, 0.0), (1.9, 1.3)].into_iter().zip(&assets.halo_materials) {
+                                core.spawn((
+                                    BossHalo { size, offset },
+                                    NotShadowCaster,
+                                    Mesh3d(assets.core.clone()),
+                                    MeshMaterial3d(material.clone()),
+                                    Transform::from_scale(Vec3::splat(size)),
+                                ));
+                            }
+                            // Тени точечным источникам не включать: на Adreno шейдер тени падает (web/index.html).
+                            core.spawn((
+                                BossCoreLight,
+                                PointLight {
+                                    color: Color::srgb(1.0, 0.45, 0.1),
+                                    intensity: CORE_LIGHT.0,
+                                    range: 22.0,
+                                    shadow_maps_enabled: false,
+                                    ..default()
+                                },
+                                Transform::from_xyz(0.0, 0.0, -1.5),
+                            ));
+                        });
                 });
             // Диагональные пары: передняя левая с задней правой, передняя правая с задней левой.
             for (x, z, offset) in [(-1.0, -1.0, 0.0), (1.0, -1.0, 0.5), (-1.0, 1.0, 0.5), (1.0, 1.0, 0.0)] {
@@ -787,26 +837,45 @@ fn animate_gait(
     }
 }
 
-/// Ядро разгорается и пульсирует во время подготовки атаки.
+/// Ядро разгорается и пульсирует во время подготовки атаки, ореол дышит, свет ядра разгорается с ним.
 fn animate_core(
     time: Res<Time>,
     bosses: Query<&Boss>,
     torsos: Query<&ChildOf, With<BossTorso>>,
-    mut cores: Query<(&ChildOf, &mut Transform), With<BossCore>>,
+    mut cores: Query<(&ChildOf, &mut Transform, &Children), With<BossCore>>,
+    mut halos: Query<(&BossHalo, &mut Transform), Without<BossCore>>,
+    mut lights: Query<&mut PointLight, With<BossCoreLight>>,
 ) {
-    for (child_of, mut core) in &mut cores {
+    let t = time.elapsed_secs();
+    for (child_of, mut core, children) in &mut cores {
         let Ok(torso) = torsos.get(child_of.parent()) else {
             continue;
         };
         let Ok(boss) = bosses.get(torso.parent()) else {
             continue;
         };
-        let scale = match boss.phase {
-            BossPhase::Preparing(left) => 1.0 + (1.0 - left / PREPARE_TIME) * 1.2 + 0.2 * (time.elapsed_secs() * 30.0).sin(),
-            BossPhase::Ramming(_) => 1.6,
-            _ => 1.0,
+        // Насколько разгорелось ядро: 0 — покой, 1 — пик подготовки.
+        let (scale, glow, light) = match boss.phase {
+            BossPhase::Preparing(left) => {
+                let charge = 1.0 - left / PREPARE_TIME;
+                let flicker = 0.2 * (t * 30.0).sin();
+                (1.0 + charge * 1.2 + flicker, 1.0 + charge * 0.6, CORE_LIGHT.0.lerp(CORE_LIGHT.1, charge) * (1.0 + flicker))
+            }
+            BossPhase::Ramming(_) => (1.6, 1.2, CORE_LIGHT.2),
+            // При гибели ядро мигает, как сбоящая лампа.
+            BossPhase::Dying(..) => (1.0, 1.0, CORE_LIGHT.0 * (0.5 + 0.5 * (t * 23.0).sin() * (t * 7.0).sin()).max(0.0)),
+            _ => (1.0, 1.0, CORE_LIGHT.0 * (1.0 + 0.15 * (t * 2.5).sin())),
         };
         core.scale = Vec3::splat(scale);
+        for child in children {
+            if let Ok((halo, mut transform)) = halos.get_mut(*child) {
+                let breath = 1.0 + 0.08 * (t * 3.0 + halo.offset).sin();
+                transform.scale = Vec3::splat(halo.size * glow * breath);
+            }
+            if let Ok(mut point) = lights.get_mut(*child) {
+                point.intensity = light;
+            }
+        }
     }
 }
 
