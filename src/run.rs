@@ -87,7 +87,9 @@ impl Plugin for RunPlugin {
                     (game_over_input, draw_game_over)
                         .chain()
                         .run_if(in_state(GameState::GameOver)),
-                    run_transition,
+                    // После полёта: забег начинается за занавесом ещё в состоянии меню, и полёт,
+                    // пройдя позже в том же кадре, снова спрятал бы луноход на весь забег.
+                    run_transition.after(fly_over_planet),
                 )
                     .in_set(GameSet::Screens),
             )
