@@ -59,7 +59,7 @@ pub mod balance {
     pub const SEATS: u8 = 4;
     /// Машина с местами едет к паникующему жителю ближе этого, м.
     pub const PICKUP_SEEK: f32 = 12.0;
-    /// Житель садится в машину ближе этого, м.
+    /// Житель садится в патрульную машину ближе этого от её центра, м; у крупных — во столько же раз дальше.
     pub const PICKUP_REACH: f32 = 2.5;
     /// Скорость у жителя: медленнее, чем жители отскакивают от машин, м/с.
     pub const PICKUP_SPEED: f32 = 2.5;
@@ -195,12 +195,16 @@ impl ServiceKind {
         }
     }
 
-    /// Во сколько раз машина крупнее патрульной.
+    /// Во сколько раз машина крупнее корпуса [`HULL`]. Подобрано по росту жителей (1,65–1,72 м):
+    /// патрульный вездеход — 4,2 × 2,7 м, корпус в рост человека; транспортёр с десантом —
+    /// 6,5 × 2,7 м, высотой в полтора человека; тяжёлая машина поддержки — 6,3 × 2,9 м,
+    /// с мортирой 3,7 м. Длина короче настоящей (7 м и больше): модели коренастые, и иначе
+    /// машины вышли бы шире домов.
     fn scale(self) -> f32 {
         match self {
-            ServiceKind::Patrol => 1.0,
-            ServiceKind::Transport => 1.25,
-            ServiceKind::Support => 1.45,
+            ServiceKind::Patrol => 1.5,
+            ServiceKind::Transport => 2.2,
+            ServiceKind::Support => 2.2,
         }
     }
 
@@ -563,7 +567,7 @@ fn evacuate(
                 continue;
             }
             let gap = (resident_transform.translation - transform.translation).with_y(0.0).length();
-            if gap > balance::PICKUP_REACH {
+            if gap > balance::PICKUP_REACH * vehicle.kind.scale() {
                 continue;
             }
             taken.push(entity);
