@@ -38,8 +38,9 @@ use crate::subsidence::TerrainChanged;
 use crate::terrain::{CRATER_EXTENT, Terrain, VisibleChunks};
 use crate::waves::Threat;
 
-/// Толщина коры, м: мортира углубляет на 4,9 м за выстрел, прорыв — на седьмом.
-pub const CRUST: f32 = 32.0;
+/// Толщина коры, м: мортира углубляет на 4,9 м за выстрел, прорыв — на шестом. Тоньше прежних
+/// 32 м: шахта под луноходом до прорыва была такой глубокой, что камера смотрела в колодец.
+pub const CRUST: f32 = 27.0;
 /// С какой доли коры на дне появляются трещины и с какой — дым.
 const CRACKS_FROM: f32 = 0.6;
 const SMOKE_FROM: f32 = 0.75;
@@ -1067,14 +1068,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn после_семи_выстрелов_мортиры_глубина_больше_коры() {
+    fn после_шести_выстрелов_мортиры_глубина_больше_коры() {
         let mut terrain = Terrain::new(7);
         let p = Vec3::new(40.0, 0.0, 40.0);
         // Как в craters.rs: радиус 7, глубина 0,5·R·мощность 1,4, вал 0,12·R·1,4.
-        for _ in 0..6 {
+        for _ in 0..5 {
             terrain.apply_crater(p, 7.0, 4.9, 1.176);
         }
-        assert!(depth(&terrain, 40, 40) < CRUST, "шесть выстрелов кору не пробивают");
+        assert!(depth(&terrain, 40, 40) < CRUST, "пять выстрелов кору не пробивают");
         terrain.apply_crater(p, 7.0, 4.9, 1.176);
         assert!(depth(&terrain, 40, 40) > CRUST);
     }
