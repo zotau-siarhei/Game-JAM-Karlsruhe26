@@ -86,6 +86,8 @@ impl Plugin for PickupsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CrateDirector>()
             .add_run_message::<SpawnLoot>()
+            .add_run_message::<SpawnCrate>()
+            .init_resource::<CrateLook>()
             .add_run_message::<SpawnUpgrade>()
             .add_run_message::<WeaponPicked>()
             .add_systems(Startup, create_pickup_assets)
@@ -93,12 +95,12 @@ impl Plugin for PickupsPlugin {
                 Update,
                 (
                     reset_crates.in_set(GameSet::Reset),
-                    (remember_ruins, drop_crates, spawn_loot, spawn_upgrades, descend, collect)
+                    (remember_ruins, drop_crates, spawn_loot, spawn_tossed_crates, spawn_upgrades, descend, collect)
                         .chain()
                         .in_set(GameSet::Simulation),
                     // Враг ещё существует: трофей берёт оружие с него.
                     drop_loot.in_set(GameSet::Death),
-                    (float_popups, spin_sparkles).in_set(GameSet::Presentation),
+                    (float_popups, spin_sparkles, split_crate_model).in_set(GameSet::Presentation),
                 ),
             );
     }
@@ -123,6 +125,23 @@ struct Parachuting {
 /// Ящик лежит на земле.
 #[derive(Component)]
 struct Crate;
+
+/// Ящик летит по дуге: выброшен, например, из гибнущего босса.
+#[derive(Component)]
+struct Tossed {
+    velocity: Vec3,
+}
+
+/// Гравитация для выброшенных ящиков, м/с².
+const TOSS_GRAVITY: f32 = 20.0;
+
+/// Просьба выбросить ящик с оружием: из `position` со скоростью `velocity`, без парашюта.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct SpawnCrate {
+    pub position: Vec3,
+    pub velocity: Vec3,
+    pub weapon: CurrentWeapon,
+}
 
 /// Золотой ящик улучшения: подбор поднимает уровень оружия, а не даёт заряды.
 #[derive(Component)]
@@ -242,6 +261,93 @@ fn weapon_index(weapon: CurrentWeapon) -> usize {
     CurrentWeapon::ALL.iter().position(|w| *w == weapon).unwrap_or(0)
 }
 
+/// Крышка модели `pickup_crate` по высоте в осях файла: верхняя плоскость (0,29–0,31) с кромкой.
+/// Кольцо строп выше и остаётся в корпусе.
+const LID_BAND: (f32, f32) = (0.24, 0.345);
+/// Насколько светлее текстуры краска крышки: текстура ящика тёмная (около 0,1 в линейном цвете),
+/// цвет оружия на ней множится, чтобы крышка вышла цвета оружия с рисунком досок.
+const LID_PAINT: f32 = 5.0;
+
+/// Модель ящика, разделённая на корпус и крышку: крышка рисуется текстурой модели в цвет оружия.
+#[derive(Resource, Default)]
+struct CrateLook {
+    parts: Option<CrateParts>,
+    /// Разделить не удалось: остаётся модель с пластиной краски.
+    failed: bool,
+}
+
+struct CrateParts {
+    body: Handle<Mesh>,
+    lid: Handle<Mesh>,
+    material: Handle<StandardMaterial>,
+    /// Крышки по порядку `CurrentWeapon::ALL`.
+    lids: Vec<Handle<StandardMaterial>>,
+    /// Растяжка модели из `models.json`.
+    entry: Transform,
+}
+
+/// Делит модель ящика на корпус и крышку, когда модель загрузилась и её сцена появилась в мире
+/// (материал берётся у меша сцены).
+#[allow(clippy::too_many_arguments)]
+fn split_crate_model(
+    mut look: ResMut<CrateLook>,
+    bank: Res<crate::models::ModelBank>,
+    gltfs: Res<Assets<bevy::gltf::Gltf>>,
+    gltf_meshes: Res<Assets<bevy::gltf::GltfMesh>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    shown: Query<(&Mesh3d, &MeshMaterial3d<StandardMaterial>)>,
+) {
+    if look.parts.is_some() || look.failed {
+        return;
+    }
+    let Some(gltf) = bank.ready_gltf("pickup_crate").and_then(|h| gltfs.get(&h)) else {
+        return;
+    };
+    let Some(entry) = bank.entry_transform("pickup_crate") else {
+        return;
+    };
+    let Some(primitive) = gltf.meshes.first().and_then(|m| gltf_meshes.get(m)).and_then(|m| m.primitives.first()) else {
+        return;
+    };
+    let Some(material) = shown.iter().find(|(m, _)| m.0 == primitive.mesh).map(|(_, m)| m.0.clone()) else {
+        return;
+    };
+    let in_lid = |c: [Vec3; 3]| c.iter().all(|p| (LID_BAND.0..=LID_BAND.1).contains(&p.y));
+    let Some((lid, body)) = meshes.get(&primitive.mesh).and_then(|mesh| crate::fragments::split_mesh(mesh, in_lid)) else {
+        warn!("Ящик: модель не разделена на корпус и крышку, крышка — пластиной");
+        look.failed = true;
+        return;
+    };
+    let source = materials.get(&material).cloned();
+    let lids = CurrentWeapon::ALL
+        .iter()
+        .map(|w| {
+            let c = spec(*w).color.to_linear();
+            let paint = match source.clone() {
+                // Текстура модели под краской: видны доски и уголки.
+                Some(mut copy) => {
+                    copy.base_color = Color::LinearRgba(LinearRgba::rgb(c.red * LID_PAINT, c.green * LID_PAINT, c.blue * LID_PAINT));
+                    copy
+                }
+                None => StandardMaterial {
+                    base_color: spec(*w).color,
+                    perceptual_roughness: 0.55,
+                    ..default()
+                },
+            };
+            materials.add(paint)
+        })
+        .collect();
+    look.parts = Some(CrateParts {
+        body: meshes.add(body),
+        lid: meshes.add(lid),
+        material,
+        lids,
+        entry,
+    });
+}
+
 /// Верх крышки модели `pickup_crate` в масштабе ящика: плоскость на высоте 0,29–0,31 в осях
 /// модели при масштабе 1,05; выше неё только кольцо строп. У запасного куба — его верх.
 const MODEL_LID_TOP: f32 = 0.325;
@@ -293,6 +399,7 @@ fn drop_crates(
     inventory: Res<Inventory>,
     terrain: Res<Terrain>,
     assets: Res<PickupAssets>,
+    look: Res<CrateLook>,
     mut director: ResMut<CrateDirector>,
     mut dice: ResMut<GameRng>,
     crates: Query<(Entity, &Transform), With<Crate>>,
@@ -364,6 +471,57 @@ fn drop_crates(
             Transform::from_xyz(0.0, CANOPY_Y, 0.0).with_scale(CANOPY_SCALE),
         ))
         .id();
+    let at = Vec3::new(place.x, ground + DROP_HEIGHT, place.z);
+    let id = spawn_crate(&mut commands, &mut models, &assets, &look, at, weapon);
+    commands.entity(id).insert(Parachuting { canopy, sway: 0.0 }).add_child(canopy);
+}
+
+/// Выброшенные ящики: летят по дуге и ложатся, где упали.
+fn spawn_tossed_crates(
+    mut commands: Commands,
+    mut models: Models,
+    assets: Res<PickupAssets>,
+    look: Res<CrateLook>,
+    mut requests: MessageReader<SpawnCrate>,
+) {
+    for request in requests.read() {
+        let id = spawn_crate(&mut commands, &mut models, &assets, &look, request.position, request.weapon);
+        commands.entity(id).insert(Tossed {
+            velocity: request.velocity,
+        });
+    }
+}
+
+/// Ящик с оружием: модель с крышкой в цвет оружия. Пока модель не разделена на корпус и
+/// крышку — модель или куб с пластиной краски и светящейся полосой сверху.
+fn spawn_crate(
+    commands: &mut Commands,
+    models: &mut Models,
+    assets: &PickupAssets,
+    look: &CrateLook,
+    at: Vec3,
+    weapon: CurrentWeapon,
+) -> Entity {
+    if let Some(parts) = &look.parts {
+        let place = Transform::from_xyz(0.0, -0.5, 0.0) * parts.entry;
+        return commands
+            .spawn((
+                Pickup {
+                    weapon,
+                    amount: spec(weapon).per_crate,
+                    expires: None,
+                },
+                Crate,
+                RunScoped,
+                Transform::from_translation(at).with_scale(Vec3::splat(CRATE_SIZE)),
+                Visibility::default(),
+            ))
+            .with_children(|c| {
+                c.spawn((Mesh3d(parts.body.clone()), MeshMaterial3d(parts.material.clone()), place));
+                c.spawn((Mesh3d(parts.lid.clone()), MeshMaterial3d(parts.lids[weapon_index(weapon)].clone()), place));
+            })
+            .id();
+    }
     commands
         .spawn((
             Pickup {
@@ -372,12 +530,10 @@ fn drop_crates(
                 expires: None,
             },
             Crate,
-            Parachuting { canopy, sway: 0.0 },
             RunScoped,
-            Transform::from_xyz(place.x, ground + DROP_HEIGHT, place.z).with_scale(Vec3::splat(CRATE_SIZE)),
+            Transform::from_translation(at).with_scale(Vec3::splat(CRATE_SIZE)),
             Visibility::default(),
         ))
-        .add_child(canopy)
         .with_children(|c| {
             // Ящик — единичный куб в масштабе ящика; модель стоит на его дне.
             let lid_top = if models.has("pickup_crate") { MODEL_LID_TOP } else { 0.5 };
@@ -395,20 +551,40 @@ fn drop_crates(
                 MeshMaterial3d(glow_of(&assets, weapon)),
                 Transform::from_xyz(0.0, lid_top + 0.05, 0.0).with_scale(Vec3::new(LID_SIZE * 0.95, 0.03, 0.14)),
             ));
-        });
+        })
+        .id()
 }
 
-/// Ящики спускаются на парашюте, все предметы стоят на рельефе, трофеи вращаются и мигают.
+/// Ящики спускаются на парашюте или летят по дуге, все предметы стоят на рельефе и не
+/// вращаются, трофеи мигают перед исчезновением.
 fn descend(
     mut commands: Commands,
     time: Res<Time>,
     terrain: Res<Terrain>,
-    mut items: Query<(Entity, &mut Transform, &mut Pickup, Option<&mut Parachuting>, &mut Visibility)>,
+    mut items: Query<(
+        Entity,
+        &mut Transform,
+        &mut Pickup,
+        Option<&mut Parachuting>,
+        Option<&mut Tossed>,
+        &mut Visibility,
+    )>,
 ) {
     let dt = time.delta_secs();
-    for (entity, mut transform, mut pickup, chute, mut visibility) in &mut items {
+    for (entity, mut transform, mut pickup, chute, tossed, mut visibility) in &mut items {
         let p = transform.translation;
         let ground = terrain.height_at(p.x, p.z) + transform.scale.y * 0.5;
+        if let Some(mut tossed) = tossed {
+            tossed.velocity.y -= TOSS_GRAVITY * dt;
+            transform.translation += tossed.velocity * dt;
+            let p = transform.translation;
+            let ground = terrain.height_at(p.x, p.z) + transform.scale.y * 0.5;
+            if transform.translation.y <= ground && tossed.velocity.y <= 0.0 {
+                transform.translation.y = ground;
+                commands.entity(entity).try_remove::<Tossed>();
+            }
+            continue;
+        }
         if let Some(mut chute) = chute {
             chute.sway += dt;
             transform.translation.y -= PARACHUTE_SPEED * dt;
@@ -423,7 +599,6 @@ fn descend(
         transform.translation.y = ground;
         if let Some(left) = pickup.expires.as_mut() {
             *left -= dt;
-            transform.rotate_y(dt * 2.0);
             if *left <= 0.0 {
                 commands.entity(entity).despawn();
                 continue;
@@ -438,7 +613,7 @@ fn descend(
 fn collect(
     mut commands: Commands,
     mut inventory: ResMut<Inventory>,
-    items: Query<(Entity, &Transform, &Pickup, Has<GoldenCrate>), Without<Parachuting>>,
+    items: Query<(Entity, &Transform, &Pickup, Has<GoldenCrate>), (Without<Parachuting>, Without<Tossed>)>,
     rover: Single<(&Transform, &Health), With<Rover>>,
     mut upgrades: MessageWriter<UpgradePicked>,
     mut picked: MessageWriter<WeaponPicked>,
@@ -537,19 +712,7 @@ fn drop_loot(
         if carried.weapon == CurrentWeapon::MachineGun {
             continue;
         }
-        commands.spawn((
-            Pickup {
-                weapon: carried.weapon,
-                amount: spec(carried.weapon).per_crate,
-                expires: Some(LOOT_SECONDS),
-            },
-            RunScoped,
-            NotShadowCaster,
-            Mesh3d(assets.cube.clone()),
-            MeshMaterial3d(glow_of(&assets, carried.weapon)),
-            Transform::from_translation(transform.translation()).with_scale(Vec3::splat(LOOT_SIZE)),
-            Visibility::default(),
-        ));
+        spawn_loot_item(&mut commands, &mut models, &assets, transform.translation(), carried.weapon);
     }
 }
 
@@ -560,22 +723,48 @@ pub struct SpawnLoot {
     pub weapon: CurrentWeapon,
 }
 
-fn spawn_loot(mut commands: Commands, mut requests: MessageReader<SpawnLoot>, assets: Res<PickupAssets>) {
+fn spawn_loot(
+    mut commands: Commands,
+    mut models: Models,
+    mut requests: MessageReader<SpawnLoot>,
+    assets: Res<PickupAssets>,
+) {
     for r in requests.read() {
-        commands.spawn((
-            Pickup {
-                weapon: r.weapon,
-                amount: spec(r.weapon).per_crate,
-                expires: None,
-            },
-            RunScoped,
-            NotShadowCaster,
-            Mesh3d(assets.cube.clone()),
-            MeshMaterial3d(glow_of(&assets, r.weapon)),
-            Transform::from_translation(r.position).with_scale(Vec3::splat(LOOT_SIZE)),
-            Visibility::default(),
-        ));
+        spawn_loot_item(&mut commands, &mut models, &assets, r.position, r.weapon);
     }
+}
+
+/// Модель трофея по оружию: снаряды мортиры, кассета ракет (и самонаводящихся), ячейка лазера.
+fn loot_model(weapon: CurrentWeapon) -> Option<&'static str> {
+    match weapon {
+        CurrentWeapon::Mortar => Some("loot_mortar"),
+        CurrentWeapon::Rockets | CurrentWeapon::HomingRockets => Some("loot_rockets"),
+        CurrentWeapon::Laser => Some("loot_laser"),
+        _ => None,
+    }
+}
+
+/// Трофей — боекомплект погибшего врага: модель своего оружия, без модели — светящийся куб
+/// цвета оружия. Лежит [`LOOT_SECONDS`], перед исчезновением мигает.
+fn spawn_loot_item(commands: &mut Commands, models: &mut Models, assets: &PickupAssets, at: Vec3, weapon: CurrentWeapon) {
+    let pickup = Pickup {
+        weapon,
+        amount: spec(weapon).per_crate,
+        expires: Some(LOOT_SECONDS),
+    };
+    let cube = (Mesh3d(assets.cube.clone()), MeshMaterial3d(glow_of(assets, weapon)), NotShadowCaster);
+    let Some(id) = loot_model(weapon) else {
+        commands.spawn((pickup, RunScoped, cube, Transform::from_translation(at).with_scale(Vec3::splat(LOOT_SIZE)), Visibility::default()));
+        return;
+    };
+    // Единичный объём: предмет стоит центром на полметра над землёй, модель — на его дне.
+    commands
+        .spawn((pickup, RunScoped, Transform::from_translation(at), Visibility::default()))
+        .with_children(|c| {
+            models.spawn_visual(c, id, Transform::from_xyz(0.0, -0.5, 0.0), |spare| {
+                spare.spawn((cube.0, cube.1, cube.2, Transform::from_scale(Vec3::splat(LOOT_SIZE))));
+            });
+        });
 }
 
 /// Просьба положить золотой ящик улучшения: так босс оставляет его после гибели.

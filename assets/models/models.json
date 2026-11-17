@@ -371,6 +371,36 @@
       "top_colors": ["#e0e0e0", "#c3c3c3", "#919192"]
     },
     {
+      "id": "loot_mortar",
+      "file": "loot_mortar.glb",
+      "scale": 1.26,
+      "rotation_y": 0.0,
+      "offset_y": 0.382,
+      "budget": 1600,
+      "colors": ["#0a0802", "#211e14", "#5c5a53", "#ce5901"],
+      "top_colors": ["#21211d", "#020401", "#3d3c39", "#5d5e59"]
+    },
+    {
+      "id": "loot_rockets",
+      "file": "loot_rockets.glb",
+      "scale": 1.32,
+      "rotation_y": 0.0,
+      "offset_y": 0.33,
+      "budget": 1600,
+      "colors": ["#40403c", "#26282a", "#542c01", "#161413"],
+      "top_colors": ["#1c1a14", "#493108", "#46443d", "#a06400"]
+    },
+    {
+      "id": "loot_laser",
+      "file": "loot_laser.glb",
+      "scale": 1.15,
+      "rotation_y": 0.0,
+      "offset_y": 0.316,
+      "budget": 1600,
+      "colors": ["#4c4a4e", "#1d191c", "#302e32", "#020202"],
+      "top_colors": ["#4d4b4f", "#353437", "#000000"]
+    },
+    {
       "id": "service_patrol",
       "file": "service_patrol.glb",
       "scale": 2.9,

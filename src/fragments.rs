@@ -223,6 +223,41 @@ fn cut_mesh(mesh: &Mesh, count: usize) -> Option<Cut> {
     Some(Cut { pieces, low, high })
 }
 
+/// Делит сетку на две по треугольникам: `pick` получает углы треугольника и решает, идёт ли он
+/// в первую сетку. Атрибуты — позиции, нормали и UV, сетки без индексов. `None` — данных сетки
+/// нет в памяти игры.
+pub fn split_mesh(mesh: &Mesh, pick: impl Fn([Vec3; 3]) -> bool) -> Option<(Mesh, Mesh)> {
+    let positions = mesh.try_attribute(Mesh::ATTRIBUTE_POSITION).ok()?.as_float3()?;
+    let normals = mesh.try_attribute(Mesh::ATTRIBUTE_NORMAL).ok().and_then(|v| v.as_float3());
+    let uvs = match mesh.try_attribute(Mesh::ATTRIBUTE_UV_0).ok() {
+        Some(VertexAttributeValues::Float32x2(uvs)) => Some(uvs.as_slice()),
+        _ => None,
+    };
+    let indices: Vec<usize> = match mesh.try_indices_option().ok()? {
+        Some(indices) => indices.iter().collect(),
+        None => (0..positions.len()).collect(),
+    };
+    let source = Source { positions, normals, uvs };
+    let mut parts = [Builder::default(), Builder::default()];
+    for t in indices.chunks_exact(3) {
+        let corners = [source.p(t[0]), source.p(t[1]), source.p(t[2])];
+        let face = (corners[1] - corners[0]).cross(corners[2] - corners[0]).normalize_or(Vec3::Y);
+        let part = &mut parts[usize::from(!pick(corners))];
+        for &i in t {
+            part.vertex(source.p(i), source.n(i, face), source.uv(i));
+        }
+    }
+    let [first, second] = parts.map(|part| {
+        let count = part.positions.len() as u32;
+        Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, part.positions.iter().map(|p| p.to_array()).collect::<Vec<_>>())
+            .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, part.normals.iter().map(|n| n.to_array()).collect::<Vec<_>>())
+            .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, part.uvs)
+            .with_inserted_indices(Indices::U32((0..count).collect()))
+    });
+    Some((first, second))
+}
+
 /// Вершины исходной сетки.
 struct Source<'a> {
     positions: &'a [[f32; 3]],

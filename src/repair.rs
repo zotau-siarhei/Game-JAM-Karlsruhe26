@@ -71,7 +71,7 @@ impl Plugin for RepairPlugin {
                     reset_repair.in_set(GameSet::Reset),
                     repair.before(rover::drive_rover).in_set(GameSet::Input),
                     (spawn_sparks, spawn_medkits, pick_medkits).chain().in_set(GameSet::Simulation),
-                    (move_sparks, spin_medkits).in_set(GameSet::Presentation),
+                    move_sparks.in_set(GameSet::Presentation),
                 ),
             );
     }
@@ -358,11 +358,6 @@ fn pick_medkits(
     }
 }
 
-fn spin_medkits(time: Res<Time>, mut medkits: Query<&mut Transform, With<Medkit>>) {
-    for mut transform in &mut medkits {
-        transform.rotate_y(1.2 * time.delta_secs());
-    }
-}
 
 #[cfg(test)]
 mod tests {

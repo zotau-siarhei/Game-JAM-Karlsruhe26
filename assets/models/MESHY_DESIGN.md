@@ -211,3 +211,18 @@ https://claude.ai/code/artifact/b4f12db9-9374-47a5-b089-e5152581f280 (катал
 ## Решения по луноходу
 1. **Гусеницы вместо колёс — решено.** `rover-visuals` и `design.md` в `visual-style` обновлены: два гусеничных блока по 4 катка, грунтозацепы — отдельные меши, глаза на мачте.
 2. **Глаза** — добавлено требование «Глаза» в `rover-visuals`: смотрят на прицел, моргают, щурятся при попадании.
+
+### Трофейный боекомплект (2026-11-17)
+Боекомплект погибшего врага (`pickups::spawn_loot_item`): мортирщик оставляет снаряды, ракетчики — кассету
+ракет (и для самонаводящихся), лазерный танк — энергоячейку; от пулемётчиков трофея нет. Конвейер как у
+машин Службы: nano-banana-2 → meshy-t2.5 Smart Topology 1500, текстура meshy-n1 2K, 63 кредита за три.
+Цвет полос — цвет оружия в интерфейсе. Meshy кладёт длинную сторону (~0,95) по X, центр в нуле: `offset_y` —
+половина высоты в масштабе. Длина в игре 1,1–1,25 м, чтобы трофей читался сверху. Одобрены Ivan Tsarev и
+Sergei Zotov 17.11. Общий суффикс промптов: `, semi-realistic hard-surface 3D game asset, single object,
+centered, 3/4 view from above, plain light grey background, no text, no logos, no red`.
+
+| id | треуг. | промпт (без суффикса) |
+|---|---|---|
+| `loot_mortar` | 1486 | `A compact open ammunition rack with five mortar bombs, ammo pickup item dropped on the ground for a top-down action game: a low sturdy dark graphite steel frame box with open top and open sides, holding five short thick fat mortar bombs standing upright side by side, each bomb with a rounded nose, a bright orange band around the body and a finned tail, chunky steel carry handles on both ends, bold orange stripe along the frame, rugged military look` |
+| `loot_rockets` | 1461 | `A rocket ammunition cassette, ammo pickup item dropped on the ground for a top-down action game: a compact rectangular dark graphite steel launch container with an open top, holding four short thick missiles lying side by side in a row, each missile with a pointed amber-yellow nose cone and small tail fins, bold amber-yellow stripes on the container lid edges and sides, chunky steel latches and a carry handle, rugged military look` |
+| `loot_laser` | 1482 | `A heavy laser energy cell, ammo pickup item dropped on the ground for a top-down action game: a massive thick cylindrical battery lying on its side, held in a sturdy dark graphite steel cradle frame with clamps and a carry handle on top, glowing bright cyan translucent energy windows and glowing cyan rings around the cylinder, chunky metal end caps with connector terminals, dark graphite metal body, rugged sci-fi military look` |

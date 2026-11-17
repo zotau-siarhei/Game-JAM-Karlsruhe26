@@ -19,7 +19,7 @@ use crate::frame::{GameSet, RunMessages};
 use crate::models::Models;
 use crate::mortar::FireShell;
 use crate::obstacles::Obstacle;
-use crate::pickups::{SpawnLoot, SpawnUpgrade};
+use crate::pickups::{SpawnCrate, SpawnUpgrade};
 use crate::rng::GameRng;
 use crate::rockets::FireRocket;
 use crate::rover::Rover;
@@ -82,8 +82,10 @@ const DYING_TIME: f32 = 1.5;
 const DYING_BLASTS: usize = 6;
 /// Большой взрыв гибели: радиус, мощность. Мощность выше порога замедления времени.
 const DEATH_BLAST: (f32, f32) = (7.0, 2.2);
-/// Ящиков с оружием после гибели.
-const LOOT_CRATES: usize = 3;
+/// Ящиков с оружием, вываливающихся из корпуса при гибели.
+const LOOT_CRATES: usize = 12;
+/// Скорость вылета ящиков: вбок и вверх, м/с.
+const LOOT_TOSS: ((f32, f32), (f32, f32)) = ((4.0, 11.0), (7.0, 13.0));
 
 /// Длина ноги от бедра до земли, м.
 const LEG_LENGTH: f32 = RIDE_HEIGHT + MODEL_HIPS.y;
@@ -687,7 +689,7 @@ fn run_dying(
     mut dice: ResMut<GameRng>,
     mut bosses: Query<(Entity, &Transform, &mut Boss)>,
     mut explosions: MessageWriter<Explosion>,
-    mut loot: MessageWriter<SpawnLoot>,
+    mut crates: MessageWriter<SpawnCrate>,
     mut upgrade: MessageWriter<SpawnUpgrade>,
 ) {
     for (entity, transform, mut boss) in &mut bosses {
@@ -722,11 +724,17 @@ fn run_dying(
             power: DEATH_BLAST.1,
             source_team: Team::Enemy,
         });
-        let weapons = [CurrentWeapon::Airstrike, CurrentWeapon::Laser, CurrentWeapon::Rockets];
+        // Ящики всех видов оружия, кроме пулемёта, вываливаются из корпуса во все стороны.
+        let weapons: Vec<CurrentWeapon> =
+            CurrentWeapon::ALL.iter().copied().filter(|w| *w != CurrentWeapon::MachineGun).collect();
+        let body = transform.translation + Vec3::Y * BODY.y * 0.5;
         for i in 0..LOOT_CRATES {
-            let angle = i as f32 / LOOT_CRATES as f32 * TAU + dice.range(0.0, 1.0);
-            loot.write(SpawnLoot {
-                position: feet + Vec3::new(angle.cos(), 1.0, angle.sin()) * (DEATH_BLAST.0 + 3.0),
+            let angle = i as f32 / LOOT_CRATES as f32 * TAU + dice.range(-0.25, 0.25);
+            let out = dice.range(LOOT_TOSS.0.0, LOOT_TOSS.0.1);
+            let up = dice.range(LOOT_TOSS.1.0, LOOT_TOSS.1.1);
+            crates.write(SpawnCrate {
+                position: body + Vec3::new(angle.cos(), 0.0, angle.sin()) * 1.5,
+                velocity: Vec3::new(angle.cos() * out, up, angle.sin() * out),
                 weapon: weapons[i % weapons.len()],
             });
         }
