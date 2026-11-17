@@ -51,3 +51,8 @@ lto = "thin"
 [profile.web]
 inherits = "release"
 codegen-units = 16
+
+# Своя копия bevy_audio 0.20.1: вывод звука переоткрывается, когда устройство пропало или сменилось
+# (наушники отключились и вернулись). Правка — vendor/bevy_audio/PATCH.md.
+[patch.crates-io]
+bevy_audio = { path = "vendor/bevy_audio" }
