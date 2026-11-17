@@ -333,12 +333,12 @@
     {
       "id": "enemy_interceptor",
       "file": "enemy_interceptor.glb",
-      "scale": 4.6,
-      "rotation_y": -1.5708,
-      "offset_y": 0.54,
-      "budget": 5200,
-      "colors": ["#020201", "#3a3938", "#4e4e4f", "#7b7c7c"],
-      "top_colors": ["#ada294", "#8c8178", "#7f502d"]
+      "scale": 3.4,
+      "rotation_y": 1.5708,
+      "offset_y": 1.08,
+      "budget": 3000,
+      "colors": ["#666866", "#4a4946", "#a88041"],
+      "top_colors": ["#5bfbff", "#4a5a5c", "#6d7673", "#5fdbe6"]
     },
     {
       "id": "pickup_crate",

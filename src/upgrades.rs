@@ -80,6 +80,11 @@ impl WeaponLevels {
         self.0[slot(weapon)]
     }
 
+    /// Ставит уровень вида (отладочные сцены), в пределах 1..=[`MAX_LEVEL`].
+    pub fn set(&mut self, weapon: CurrentWeapon, level: u8) {
+        self.0[slot(weapon)] = level.clamp(1, MAX_LEVEL);
+    }
+
     /// Поднимает уровень вида на один, не выше [`MAX_LEVEL`]. Возвращает новый уровень.
     fn raise(&mut self, weapon: CurrentWeapon) -> u8 {
         let level = &mut self.0[slot(weapon)];

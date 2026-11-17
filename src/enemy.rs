@@ -171,7 +171,7 @@ const INTERCEPTOR_TURN_SPEED: f32 = 1.6;
 /// Корпус перехватчика: ширина, высота, длина, м.
 const INTERCEPTOR_HULL: Vec3 = Vec3::new(1.0, 0.45, 4.4);
 /// Круговой коллайдер перехватчика для пуль и взрывов, м: покрывает середину корпуса.
-const INTERCEPTOR_RADIUS: f32 = 1.3;
+const INTERCEPTOR_RADIUS: f32 = 1.7;
 /// Цвет полос на корпусе перехватчика.
 const STRIPE_COLOR: Color = Color::srgb(0.95, 0.78, 0.15);
 
@@ -338,6 +338,8 @@ struct EnemyAssets {
     interceptor_nose: Handle<Mesh>,
     nozzle: Handle<Mesh>,
     stripe: Handle<Mesh>,
+    /// Единичный брусок: лопасти винтов дрона.
+    blade: Handle<Mesh>,
     prong: Handle<Mesh>,
     electrode: Handle<Mesh>,
     shock_material: Handle<StandardMaterial>,
@@ -362,6 +364,7 @@ fn create_enemy_assets(
         interceptor_nose: meshes.add(Cone::new(0.5, 1.2)),
         nozzle: meshes.add(Cylinder::new(0.18, 0.4)),
         stripe: meshes.add(Cuboid::new(0.12, 0.02, INTERCEPTOR_HULL.z * 0.9)),
+        blade: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
         prong: meshes.add(Cylinder::new(0.05, 1.0)),
         electrode: meshes.add(Sphere::new(0.12)),
         shock_material: materials.add(StandardMaterial {
@@ -467,7 +470,7 @@ fn spawn_enemy(
         EnemyKind::Interceptor => (INTERCEPTOR_HEALTH, assets.hull_material.clone(), GROWTH, INTERCEPTOR_TURN_SPEED),
     };
     let (radius, half_base) = match kind {
-        EnemyKind::Interceptor => (INTERCEPTOR_RADIUS * scale, Vec2::new(0.5, 2.2) * scale),
+        EnemyKind::Interceptor => (INTERCEPTOR_RADIUS * scale, Vec2::new(1.6, 1.6) * scale),
         _ => (ENEMY_RADIUS * scale, Vec2::new(HULL_SIZE.x, HULL_SIZE.z) * 0.5 * scale),
     };
     position.y += RIDE_HEIGHT * (scale - 1.0);
@@ -518,6 +521,10 @@ fn spawn_enemy(
     // Модель врага стоит низом на земле; пока она грузится или без неё — корпус из примитивов.
     // Колёса машин — отдельные сущности, они крутятся и поворачивают.
     enemy.with_children(|parent| {
+        // Винты дрона крутятся поверх неподвижных лопастей модели.
+        if kind == EnemyKind::Interceptor {
+            interceptor::spawn_rotors(parent, assets.blade.clone(), assets.dark_material.clone());
+        }
         models.spawn_visual(parent, model, Transform::from_xyz(0.0, -RIDE_HEIGHT, 0.0), |spare| {
             if kind == EnemyKind::Interceptor {
                 spawn_interceptor_spare(spare, assets);

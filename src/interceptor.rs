@@ -22,10 +22,29 @@ use crate::steering::Steering;
 use crate::vehicle::{self, GroundVehicle};
 use crate::waves::{Threat, balance, enemy_damage};
 
-/// Половина длины отрезка корпуса перехватчика для удара, м.
-const HULL_HALF_LENGTH: f32 = 1.7;
+/// Половина длины отрезка корпуса дрона для удара, м: дрон — крест около 4,8 × 4,8 м, удар носом
+/// с электродами, поэтому корпус — короткая толстая капсула вдоль курса.
+const HULL_HALF_LENGTH: f32 = 1.0;
 /// Радиус капсулы корпуса вокруг отрезка, м.
-const HULL_RADIUS: f32 = 0.55;
+const HULL_RADIUS: f32 = 1.5;
+/// Концы электродов на носу дрона в системе перехватчика (до его масштаба): из модели
+/// `enemy_interceptor` (x 0,345, z ±0,05, y −0,04; нос +X при масштабе 3,4, поворот +90°, подъём 1,08).
+const PRONG_TIPS: [Vec3; 2] = [Vec3::new(-0.17, 0.944, -1.17), Vec3::new(0.17, 0.944, -1.17)];
+/// Кольца винтов в системе перехватчика (до его масштаба): центры (±0,335 в модели) и радиус,
+/// высота над лопастями.
+const ROTORS: [Vec2; 4] = [Vec2::new(1.14, 1.14), Vec2::new(-1.14, 1.14), Vec2::new(1.14, -1.14), Vec2::new(-1.14, -1.14)];
+const ROTOR_RADIUS: f32 = 0.45;
+const ROTOR_HEIGHT: f32 = 1.13;
+/// Скорость винтов, рад/с.
+const ROTOR_SPIN: f32 = 21.0;
+/// Сколько горит молния от электродов к луноходу при ударе, с, и как часто она меняет излом.
+const ZAP_SECONDS: f32 = 0.45;
+const ZAP_REDRAW: f32 = 0.04;
+/// Отрезков в молнии удара и наибольший излом поперёк, м.
+const ZAP_SEGMENTS: usize = 6;
+const ZAP_JITTER: f32 = 0.35;
+/// Молния бьёт, только если электроды не дальше этого от центра лунохода, м: дрон вплотную.
+const ZAP_REACH: f32 = 3.5;
 /// Запас к касанию, при котором удар засчитывается, м.
 const RAM_MARGIN: f32 = 0.2;
 
@@ -40,21 +59,43 @@ impl Plugin for InterceptorPlugin {
         app.init_resource::<Flight>()
             .add_run_message::<InterceptorHit>()
             .add_run_message::<InterceptStarted>()
+            .add_systems(Startup, create_zap_material)
             .add_systems(
                 Update,
                 (
                     reset_flight.in_set(GameSet::Reset),
                     (track_flight, dispatch_interceptors).chain().in_set(GameSet::Simulation),
                     remove_departed.in_set(GameSet::Cleanup),
+                    (spin_rotors, spawn_zaps, draw_zaps).in_set(GameSet::Presentation),
                 ),
             );
     }
 }
 
-/// Перехватчик ударил луноход в точке `position`.
+/// Перехватчик `drone` ударил луноход в точке `position`; разряд идёт с концов электродов `prongs`.
 #[derive(Message, Debug, Clone, Copy)]
 pub struct InterceptorHit {
     pub position: Vec3,
+    pub prongs: [Vec3; 2],
+    pub drone: Entity,
+}
+
+/// Винт дрона: крутится вокруг своей оси.
+#[derive(Component)]
+pub struct Rotor;
+
+/// Молния удара от электрода дрона `drone` (номер `prong`) к корпусу лунохода: концы идут
+/// за ними, пока молния горит.
+#[derive(Component)]
+struct Zap {
+    drone: Entity,
+    prong: usize,
+    from: Vec3,
+    to: Vec3,
+    left: f32,
+    redraw: f32,
+    seed: u32,
+    segments: Vec<Entity>,
 }
 
 /// Начался перехват: игрок уезжает от волны.
@@ -330,7 +371,7 @@ fn segment_contact(center: Vec2, forward: Vec2, rover: Vec2, rover_radius: f32) 
 #[allow(clippy::type_complexity)]
 pub fn ram_by_interceptors(
     mut rover: Query<(Entity, &Transform, &Collider, &Health, &mut RoverMotion, &mut Impact), With<Rover>>,
-    mut interceptors: Query<(&mut Transform, &GroundVehicle, &mut Interceptor), Without<Rover>>,
+    mut interceptors: Query<(Entity, &mut Transform, &GroundVehicle, &mut Interceptor), Without<Rover>>,
     mut damage: MessageWriter<Damage>,
     mut hits: MessageWriter<InterceptorHit>,
 ) {
@@ -341,7 +382,7 @@ pub fn ram_by_interceptors(
         return;
     }
     let center = Vec2::new(rover.translation.x, rover.translation.z);
-    for (mut transform, vehicle, mut interceptor) in &mut interceptors {
+    for (drone, mut transform, vehicle, mut interceptor) in &mut interceptors {
         let me = Vec2::new(transform.translation.x, transform.translation.z);
         let forward = vehicle.forward();
         let forward = Vec2::new(forward.x, forward.z).normalize_or(Vec2::NEG_Y);
@@ -365,7 +406,182 @@ pub fn ram_by_interceptors(
         let at = center + normal * collider.radius;
         hits.write(InterceptorHit {
             position: Vec3::new(at.x, rover.translation.y, at.y),
+            prongs: prong_tips(&transform),
+            drone,
         });
+    }
+}
+
+/// Концы электродов дрона в мире.
+pub fn prong_tips(transform: &Transform) -> [Vec3; 2] {
+    PRONG_TIPS.map(|tip| transform.transform_point(tip - Vec3::Y * crate::enemy::RIDE_HEIGHT))
+}
+
+/// Ставит дрону четыре винта над кольцами модели: две тёмные лопасти крестом.
+pub fn spawn_rotors(parent: &mut ChildSpawnerCommands, mesh: Handle<Mesh>, material: Handle<StandardMaterial>) {
+    for center in ROTORS {
+        parent
+            .spawn((
+                Rotor,
+                Transform::from_xyz(center.x, ROTOR_HEIGHT - crate::enemy::RIDE_HEIGHT, center.y),
+                Visibility::default(),
+            ))
+            .with_children(|rotor| {
+                for turn in [0.0, std::f32::consts::FRAC_PI_2] {
+                    rotor.spawn((
+                        Mesh3d(mesh.clone()),
+                        MeshMaterial3d(material.clone()),
+                        bevy::light::NotShadowCaster,
+                        Transform::from_rotation(Quat::from_rotation_y(turn))
+                            .with_scale(Vec3::new(ROTOR_RADIUS * 2.0, 0.02, 0.07)),
+                    ));
+                }
+            });
+    }
+}
+
+fn spin_rotors(time: Res<Time>, mut rotors: Query<&mut Transform, With<Rotor>>) {
+    for mut transform in &mut rotors {
+        transform.rotate_y(ROTOR_SPIN * time.delta_secs());
+    }
+}
+
+/// Материал молнии удара: ярче единицы, чтобы светилась через свечение камеры (у `unlit`
+/// работает только `base_color`). Создаётся при старте, чтобы его застал прогрев шейдеров.
+#[derive(Resource)]
+struct ZapMaterial(Handle<StandardMaterial>);
+
+fn create_zap_material(mut commands: Commands, mut materials: ResMut<Assets<StandardMaterial>>) {
+    commands.insert_resource(ZapMaterial(materials.add(StandardMaterial {
+        base_color: Color::linear_rgb(3.0, 5.5, 14.0),
+        unlit: true,
+        ..default()
+    })));
+}
+
+/// Удар: с каждого электрода к корпусу лунохода бьёт своя молния.
+fn spawn_zaps(
+    mut commands: Commands,
+    mut hits: MessageReader<InterceptorHit>,
+    assets: Res<crate::shock::ShockAssets>,
+    material: Res<ZapMaterial>,
+    rover: Query<&Transform, With<Rover>>,
+) {
+    let Some(rover) = rover.iter().next() else {
+        return;
+    };
+    for (n, hit) in hits.read().enumerate() {
+        for (i, from) in hit.prongs.into_iter().enumerate() {
+            let reach = from.with_y(0.0).distance(rover.translation.with_y(0.0));
+            if reach > ZAP_REACH {
+                continue;
+            }
+            let to = zap_target(rover, from);
+            let segments = (0..ZAP_SEGMENTS)
+                .map(|_| {
+                    commands
+                        .spawn((
+                            crate::run::RunScoped,
+                            Mesh3d(assets.segment.clone()),
+                            MeshMaterial3d(material.0.clone()),
+                            bevy::light::NotShadowCaster,
+                            Transform::default(),
+                        ))
+                        .id()
+                })
+                .collect();
+            commands.spawn((
+                crate::run::RunScoped,
+                Zap {
+                    drone: hit.drone,
+                    prong: i,
+                    from,
+                    to,
+                    left: ZAP_SECONDS,
+                    redraw: 0.0,
+                    seed: (n * 2 + i) as u32 * 977 + (from.x.abs() * 100.0) as u32,
+                    segments,
+                },
+            ));
+        }
+    }
+}
+
+/// Куда в корпус лунохода бьёт молния с электрода в `from`: в палубу со стороны удара, концы
+/// разведены по сторонам, как электроды.
+fn zap_target(rover: &Transform, from: Vec3) -> Vec3 {
+    let side = (from - rover.translation).with_y(0.0).normalize_or(Vec3::X);
+    let right = Vec3::new(-side.z, 0.0, side.x);
+    let own = (from - rover.translation).dot(right).signum();
+    rover.translation + side * 0.35 + right * own * 0.45 + Vec3::Y * 0.7
+}
+
+/// Псевдослучайное число 0..1 по номеру: облик молнии.
+fn zap_noise(seed: u32) -> f32 {
+    let mut x = seed.wrapping_mul(0x9E37_79B9) ^ 0x85EB_CA6B;
+    x ^= x >> 15;
+    x = x.wrapping_mul(0x2C1B_3C6D);
+    x ^= x >> 13;
+    (x >> 8) as f32 / (1u32 << 24) as f32
+}
+
+/// Молния удара ломается заново каждые [`ZAP_REDRAW`] с и гаснет за [`ZAP_SECONDS`].
+fn draw_zaps(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut zaps: Query<(Entity, &mut Zap)>,
+    mut segments: Query<&mut Transform, (Without<Rover>, Without<Interceptor>)>,
+    rover: Query<&Transform, With<Rover>>,
+    drones: Query<&Transform, (With<Interceptor>, Without<Rover>)>,
+) {
+    for (entity, mut zap) in &mut zaps {
+        zap.left -= time.delta_secs();
+        if zap.left <= 0.0 {
+            for segment in zap.segments.drain(..) {
+                commands.entity(segment).try_despawn();
+            }
+            commands.entity(entity).despawn();
+            continue;
+        }
+        zap.redraw -= time.delta_secs();
+        if zap.redraw > 0.0 {
+            continue;
+        }
+        zap.redraw = ZAP_REDRAW;
+        zap.seed = zap.seed.wrapping_add(1);
+        // Концы — за электродом и корпусом: дрон отскакивает, луноход едет.
+        if let Ok(drone) = drones.get(zap.drone) {
+            zap.from = prong_tips(drone)[zap.prong];
+        }
+        if let Ok(rover) = rover.single() {
+            zap.to = zap_target(rover, zap.from);
+        }
+        let axis = zap.to - zap.from;
+        let across = axis.cross(Vec3::Y).normalize_or(Vec3::X);
+        let points: Vec<Vec3> = (0..=ZAP_SEGMENTS)
+            .map(|k| {
+                let t = k as f32 / ZAP_SEGMENTS as f32;
+                let mut p = zap.from.lerp(zap.to, t);
+                if k > 0 && k < ZAP_SEGMENTS {
+                    let s = zap.seed.wrapping_mul(131).wrapping_add(k as u32 * 17);
+                    p += across * (zap_noise(s) - 0.5) * 2.0 * ZAP_JITTER
+                        + Vec3::Y * (zap_noise(s + 5) - 0.5) * ZAP_JITTER;
+                }
+                p
+            })
+            .collect();
+        // Тоньше к концу жизни.
+        let thickness = 0.16 * (zap.left / ZAP_SECONDS).max(0.4);
+        for (k, segment) in zap.segments.iter().enumerate() {
+            let Ok(mut transform) = segments.get_mut(*segment) else {
+                continue;
+            };
+            let (a, b) = (points[k], points[k + 1]);
+            let d = b - a;
+            *transform = Transform::from_translation((a + b) * 0.5)
+                .with_rotation(Quat::from_rotation_arc(Vec3::Y, d.normalize_or(Vec3::Y)))
+                .with_scale(Vec3::new(thickness, d.length(), thickness));
+        }
     }
 }
 
@@ -508,7 +724,7 @@ mod tests {
     fn удар_носом() {
         // Перехватчик едет на -Z, луноход перед носом.
         let rover_radius = 2.4;
-        let contact = segment_contact(Vec2::new(0.0, 4.5), Vec2::NEG_Y, Vec2::ZERO, rover_radius);
+        let contact = segment_contact(Vec2::new(0.0, 3.8), Vec2::NEG_Y, Vec2::ZERO, rover_radius);
         assert!(contact.is_some());
     }
 
@@ -524,8 +740,8 @@ mod tests {
 
     #[test]
     fn рядом_но_не_касается_нет() {
-        assert!(segment_contact(Vec2::new(0.0, -3.5), Vec2::X, Vec2::ZERO, 2.4).is_none());
+        assert!(segment_contact(Vec2::new(0.0, -4.5), Vec2::X, Vec2::ZERO, 2.4).is_none());
         // Вдоль корпуса за хвостом.
-        assert!(segment_contact(Vec2::new(5.0, 0.0), Vec2::X, Vec2::ZERO, 2.4).is_none());
+        assert!(segment_contact(Vec2::new(6.0, 0.0), Vec2::X, Vec2::ZERO, 2.4).is_none());
     }
 }

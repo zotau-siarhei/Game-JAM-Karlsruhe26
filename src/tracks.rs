@@ -466,11 +466,15 @@ fn reset_tracks(mut commands: Commands, mut rebuilt: MessageReader<WorldRebuilt>
     }
 }
 
-/// Вешает [`TrackMaker`] на луноход, машины врагов и Службы и на босса.
+/// Вешает [`TrackMaker`] на луноход, машины врагов и Службы и на босса. Дрон-перехватчик парит
+/// и следов не оставляет.
 fn attach_makers(
     mut commands: Commands,
     rovers: Query<Entity, Added<Rover>>,
-    vehicles: Query<(Entity, &GroundVehicle, Has<Boss>, Has<TankGun>), Added<GroundVehicle>>,
+    vehicles: Query<
+        (Entity, &GroundVehicle, Has<Boss>, Has<TankGun>),
+        (Added<GroundVehicle>, Without<crate::interceptor::Interceptor>),
+    >,
 ) {
     for rover in &rovers {
         let scale = crate::rover::ROVER_SCALE;
@@ -836,7 +840,11 @@ fn build_mesh(chunk: &ChunkTracks, terrain: &Terrain) -> Mesh {
 fn attach_dust(
     mut commands: Commands,
     effect: Res<DustEffect>,
-    vehicles: Query<(Entity, &GroundVehicle, &Transform), (Added<GroundVehicle>, Without<Boss>)>,
+    // Дрон-перехватчик парит: пыли из-под колёс у него нет.
+    vehicles: Query<
+        (Entity, &GroundVehicle, &Transform),
+        (Added<GroundVehicle>, Without<Boss>, Without<crate::interceptor::Interceptor>),
+    >,
 ) {
     for (entity, vehicle, transform) in &vehicles {
         // Эмиттер — дочерняя сущность: его сдвиг в единицах корпуса до масштаба.

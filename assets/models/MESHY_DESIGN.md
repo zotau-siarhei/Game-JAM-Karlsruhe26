@@ -226,3 +226,14 @@ centered, 3/4 view from above, plain light grey background, no text, no logos, n
 | `loot_mortar` | 1486 | `A compact open ammunition rack with five mortar bombs, ammo pickup item dropped on the ground for a top-down action game: a low sturdy dark graphite steel frame box with open top and open sides, holding five short thick fat mortar bombs standing upright side by side, each bomb with a rounded nose, a bright orange band around the body and a finned tail, chunky steel carry handles on both ends, bold orange stripe along the frame, rugged military look` |
 | `loot_rockets` | 1461 | `A rocket ammunition cassette, ammo pickup item dropped on the ground for a top-down action game: a compact rectangular dark graphite steel launch container with an open top, holding four short thick missiles lying side by side in a row, each missile with a pointed amber-yellow nose cone and small tail fins, bold amber-yellow stripes on the container lid edges and sides, chunky steel latches and a carry handle, rugged military look` |
 | `loot_laser` | 1482 | `A heavy laser energy cell, ammo pickup item dropped on the ground for a top-down action game: a massive thick cylindrical battery lying on its side, held in a sturdy dark graphite steel cradle frame with clamps and a carry handle on top, glowing bright cyan translucent energy windows and glowing cyan rings around the cylinder, chunky metal end caps with connector terminals, dark graphite metal body, rugged sci-fi military look` |
+
+### Электродрон-перехватчик (2026-11-17)
+`enemy_interceptor` заменён: вместо длинной «палки» 6,6 × 2,3 м — дрон крестом (изменение `interceptor-drones`).
+Конвейер как у трофеев, meshy-t2.5 Smart Topology 3000, две пробы за 42 кредита; выбрана проба B
+(выбор Ivan Tsarev 17.11). Нос (электроды) в файле на +X, `rotation_y` +π/2; кольца винтов на (±0,335, ±0,335),
+вращающиеся лопасти ставит код поверх них (`interceptor::spawn_rotors`). `scale` 3,4 при масштабе врага 1,5:
+размах около 4,8 м, `offset_y` 1,08 — дрон парит в 1,2 м над землёй.
+
+| id | треуг. | промпт |
+|---|---|---|
+| `enemy_interceptor` | 2847 | `A light agile combat electro drone, enemy for a top-down action game: a quadcopter with a slim X-shaped frame of four long thin straight arms, four ducted fans in thin round protective rings at the arm tips, each ring with static rotor blades inside, a small streamlined central pod, on top of the pod a bright glowing cyan-blue spherical energy core in an open cage of coils, clearly visible from above, at the front two short thin electrode prongs with glowing cyan-blue balls at the tips, taser look, no landing gear, no legs, no wheels, no guns, dark graphite metal with amber-yellow stripes on the arms and small amber lights, sleek military look` + общий суффикс |

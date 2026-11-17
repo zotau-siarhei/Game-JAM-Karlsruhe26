@@ -17,6 +17,9 @@
 //!   поезд выходит через секунду: посмотреть вагоны и крутящиеся колёса (`trains`).
 //! - `SPACE_GUARD_SCENE=airstrike` — на 3-й секунде забега луноход получает авиаудар и открывает
 //!   наведение: посмотреть вид сверху, отметку и полосу времени (`airstrike::Targeting`).
+//! - `SPACE_GUARD_SCENE=weapons` — оружие `SPACE_GUARD_WEAPON` (mg, mortar, rockets, homing, laser,
+//!   airstrike) уровня `SPACE_GUARD_LEVEL` (1–3) стреляет вперёд на 18 м каждые 0,7 с с 3-й секунды:
+//!   посмотреть оружие по уровням (`upgrades`). Авиаудар подтверждается следующим нажатием.
 //! - `SPACE_GUARD_SCENE=collapse` — через 2 с забега луноход встаёт в 9 м от ближайшего дома
 //!   лицом к нему, на 5-й секунде дом рушится: посмотреть куски модели (`fragments`), снимок
 //!   на `SPACE_GUARD_SHOT_AT` (обрушение — около 6,5, руины — 10).
@@ -79,7 +82,7 @@ impl Plugin for DebugShotPlugin {
             staged: false,
         })
         .add_systems(Update, (open_menu_page, press_keys).before(GameSet::Screens))
-        .add_systems(Update, (press_start, stage_scene, stage_train, stage_collapse, stage_airstrike, keep_shocked, drive, take_shot).before(GameSet::Screens));
+        .add_systems(Update, (press_start, stage_scene, stage_train, stage_collapse, stage_airstrike, stage_weapons, keep_shocked, drive, take_shot).before(GameSet::Screens));
     }
 }
 
@@ -207,6 +210,60 @@ fn stage_train(
     let to_line = (on - at).normalize_or(Vec2::X);
     // Перёд лунохода — −Z.
     rover.rotation = Quat::from_rotation_y((-to_line.x).atan2(-to_line.y));
+}
+
+/// Сцена `weapons`: выбранное оружие нужного уровня стреляет вперёд.
+#[allow(clippy::too_many_arguments)]
+fn stage_weapons(
+    time: Res<Time<Real>>,
+    debug: Res<DebugShot>,
+    state: Res<State<GameState>>,
+    mut inventory: ResMut<crate::arsenal::Inventory>,
+    mut levels: ResMut<crate::upgrades::WeaponLevels>,
+    mut weapon: ResMut<crate::weapons::CurrentWeapon>,
+    mut aim: ResMut<crate::aim::AimPoint>,
+    mut mouse: ResMut<ButtonInput<MouseButton>>,
+    terrain: Res<Terrain>,
+    rover: Query<&Transform, With<Rover>>,
+    mut since: Local<Option<f32>>,
+    mut last_shot: Local<f32>,
+) {
+    use crate::weapons::CurrentWeapon as W;
+    if debug.scene.as_deref() != Some("weapons") || *state.get() != GameState::Playing {
+        return;
+    }
+    let now = time.elapsed_secs();
+    let start = *since.get_or_insert(now);
+    if now - start < 3.0 {
+        return;
+    }
+    let chosen = match std::env::var("SPACE_GUARD_WEAPON").as_deref() {
+        Ok("mortar") => W::Mortar,
+        Ok("rockets") => W::Rockets,
+        Ok("homing") => W::HomingRockets,
+        Ok("laser") => W::Laser,
+        Ok("airstrike") => W::Airstrike,
+        _ => W::MachineGun,
+    };
+    let level = std::env::var("SPACE_GUARD_LEVEL").ok().and_then(|l| l.parse().ok()).unwrap_or(3);
+    if levels.level(chosen) != level {
+        levels.set(chosen, level);
+        inventory.add(chosen, 50);
+    }
+    *weapon = chosen;
+    if let Some(rover) = rover.iter().next() {
+        let p = rover.translation + rover.forward().with_y(0.0).normalize_or(Vec3::NEG_Z) * 18.0;
+        aim.position = Vec3::new(p.x, terrain.height_at(p.x, p.z), p.z);
+    }
+    // Пулемёт и лазер держат спуск, остальное — нажатие раз в 0,7 с.
+    if matches!(chosen, W::MachineGun | W::Laser) {
+        mouse.press(MouseButton::Left);
+    } else if mouse.pressed(MouseButton::Left) {
+        mouse.release(MouseButton::Left);
+    } else if now - *last_shot > 0.7 {
+        *last_shot = now;
+        mouse.press(MouseButton::Left);
+    }
 }
 
 /// Сцена `airstrike`: авиаудар в руки и открытое наведение.
@@ -397,12 +454,45 @@ fn stage_scene(
 }
 
 /// Сцена `shock`: луноход всё время под разрядом перехватчика.
-fn keep_shocked(debug: Res<DebugShot>, mut rover: Query<&mut crate::rover::Impact, With<Rover>>) {
+/// Сцена `shock`: луноход всё время под разрядом, ближайший дрон стоит вплотную к его борту
+/// и раз в 0,5 с бьёт молнией с электродов.
+fn keep_shocked(
+    time: Res<Time<Real>>,
+    debug: Res<DebugShot>,
+    mut rover: Query<(&Transform, &mut crate::rover::Impact), With<Rover>>,
+    mut drones: Query<
+        (Entity, &mut Transform, &mut crate::vehicle::GroundVehicle, &mut crate::steering::Steering),
+        (With<crate::interceptor::Interceptor>, Without<Rover>),
+    >,
+    mut hits: MessageWriter<crate::interceptor::InterceptorHit>,
+    mut last: Local<f32>,
+) {
     if debug.scene.as_deref() != Some("shock") {
         return;
     }
-    for mut impact in &mut rover {
+    for (transform, mut impact) in &mut rover {
         impact.left = crate::waves::balance::IMPACT_MAX;
+        let now = time.elapsed_secs();
+        if now - *last < 0.5 {
+            continue;
+        }
+        if let Some((entity, mut drone, mut vehicle, mut steering)) = drones.iter_mut().next() {
+            // Вплотную к левому борту, носом к луноходу: курс задаёт и поворот, и посадку.
+            let at = transform.translation + Vec3::new(-3.6, 0.0, 0.0);
+            drone.translation = at.with_y(drone.translation.y);
+            let heading = crate::vehicle::heading_towards(Vec3::X);
+            vehicle.heading = heading;
+            vehicle.speed = 0.0;
+            steering.desired = heading;
+            steering.speed = 0.0;
+            drone.rotation = Quat::from_rotation_y(heading);
+            *last = now;
+            hits.write(crate::interceptor::InterceptorHit {
+                position: transform.translation,
+                prongs: crate::interceptor::prong_tips(&drone),
+                drone: entity,
+            });
+        }
     }
 }
 
