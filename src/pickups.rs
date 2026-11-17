@@ -173,6 +173,8 @@ struct PickupAssets {
     sparkle_material: Handle<StandardMaterial>,
     canopy_material: Handle<StandardMaterial>,
     glow: Vec<Handle<StandardMaterial>>,
+    /// Крышка ящика, окрашенная в цвет оружия, по порядку `CurrentWeapon::ALL`.
+    lids: Vec<Handle<StandardMaterial>>,
 }
 
 fn create_pickup_assets(
@@ -188,6 +190,18 @@ fn create_pickup_assets(
                 base_color: c,
                 emissive: c.to_linear() * 3.0,
                 unlit: true,
+                ..default()
+            })
+        })
+        .collect();
+    // Крышка — краска цвета оружия: не светится, чуть темнее полосы, чтобы полоса читалась.
+    let lids = CurrentWeapon::ALL
+        .iter()
+        .map(|w| {
+            let c = spec(*w).color.to_srgba();
+            materials.add(StandardMaterial {
+                base_color: Color::srgb(c.red * 0.85, c.green * 0.85, c.blue * 0.85),
+                perceptual_roughness: 0.55,
                 ..default()
             })
         })
@@ -212,13 +226,27 @@ fn create_pickup_assets(
         }),
         canopy_material: materials.add(Color::srgb(0.95, 0.95, 0.95)),
         glow,
+        lids,
     });
 }
 
 fn glow_of(assets: &PickupAssets, weapon: CurrentWeapon) -> Handle<StandardMaterial> {
-    let i = CurrentWeapon::ALL.iter().position(|w| *w == weapon).unwrap_or(0);
-    assets.glow[i].clone()
+    assets.glow[weapon_index(weapon)].clone()
 }
+
+fn lid_of(assets: &PickupAssets, weapon: CurrentWeapon) -> Handle<StandardMaterial> {
+    assets.lids[weapon_index(weapon)].clone()
+}
+
+fn weapon_index(weapon: CurrentWeapon) -> usize {
+    CurrentWeapon::ALL.iter().position(|w| *w == weapon).unwrap_or(0)
+}
+
+/// Верх крышки модели `pickup_crate` в масштабе ящика: плоскость на высоте 0,29–0,31 в осях
+/// модели при масштабе 1,05; выше неё только кольцо строп. У запасного куба — его верх.
+const MODEL_LID_TOP: f32 = 0.325;
+/// Крышка — с отступом от края: тёмные стальные уголки модели остаются видны.
+const LID_SIZE: f32 = 0.78;
 
 fn reset_crates(mut rebuilt: MessageReader<WorldRebuilt>, mut director: ResMut<CrateDirector>) {
     if rebuilt.read().last().is_some() {
@@ -352,14 +380,20 @@ fn drop_crates(
         .add_child(canopy)
         .with_children(|c| {
             // Ящик — единичный куб в масштабе ящика; модель стоит на его дне.
+            let lid_top = if models.has("pickup_crate") { MODEL_LID_TOP } else { 0.5 };
             models.spawn_visual(c, "pickup_crate", Transform::from_xyz(0.0, -0.5, 0.0), |spare| {
                 spare.spawn((Mesh3d(assets.cube.clone()), MeshMaterial3d(assets.crate_material.clone())));
             });
-            // Полоса цвета оружия на крышке.
+            // Крышка в цвет оружия и светящаяся полоса того же цвета поверх неё.
+            c.spawn((
+                Mesh3d(assets.cube.clone()),
+                MeshMaterial3d(lid_of(&assets, weapon)),
+                Transform::from_xyz(0.0, lid_top + 0.02, 0.0).with_scale(Vec3::new(LID_SIZE, 0.05, LID_SIZE)),
+            ));
             c.spawn((
                 Mesh3d(assets.cube.clone()),
                 MeshMaterial3d(glow_of(&assets, weapon)),
-                Transform::from_xyz(0.0, 0.52, 0.0).with_scale(Vec3::new(0.9, 0.06, 0.2)),
+                Transform::from_xyz(0.0, lid_top + 0.05, 0.0).with_scale(Vec3::new(LID_SIZE * 0.95, 0.03, 0.14)),
             ));
         });
 }
