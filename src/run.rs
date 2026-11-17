@@ -782,11 +782,13 @@ fn pause_on_escape_or_blur(
     bench: Option<Res<crate::perf::Bench>>,
     mut focus: MessageReader<WindowFocused>,
     mut next: ResMut<NextState<GameState>>,
+    targeting: Res<crate::airstrike::Targeting>,
 ) {
     // В прогоне замера и при отладочном автозапуске окно может быть и не в фокусе.
     let unattended = bench.is_some_and(|b| b.on) || std::env::var_os("SPACE_GUARD_AUTOSTART").is_some();
     let blurred = focus.read().any(|change| !change.focused) && !unattended;
-    if blurred || keys.just_pressed(KeyCode::Escape) {
+    // Esc в наведении авиаудара отменяет его, а не ставит паузу.
+    if blurred || (keys.just_pressed(KeyCode::Escape) && !targeting.open) {
         next.set(GameState::Paused);
     }
 }

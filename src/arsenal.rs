@@ -234,7 +234,12 @@ fn select_weapon(
     mut cooldown: Local<f32>,
     mut weapon: ResMut<CurrentWeapon>,
     mut denied: MessageWriter<WeaponDenied>,
+    targeting: Res<crate::airstrike::Targeting>,
 ) {
+    // В наведении авиаудара колесо и бамперы поворачивают серию.
+    if targeting.open {
+        return;
+    }
     *cooldown = (*cooldown - time.delta_secs()).max(0.0);
     let mut chosen = *weapon;
     if let Some(&pressed) = CurrentWeapon::ALL

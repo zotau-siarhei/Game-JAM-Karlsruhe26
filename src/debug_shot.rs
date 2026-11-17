@@ -15,6 +15,8 @@
 //!   посмотреть колеи (`tracks`).
 //! - `SPACE_GUARD_SCENE=train` — через 2 с забега луноход переносится на 24 м от ближайшего пути,
 //!   поезд выходит через секунду: посмотреть вагоны и крутящиеся колёса (`trains`).
+//! - `SPACE_GUARD_SCENE=airstrike` — на 3-й секунде забега луноход получает авиаудар и открывает
+//!   наведение: посмотреть вид сверху, отметку и полосу времени (`airstrike::Targeting`).
 //! - `SPACE_GUARD_SCENE=collapse` — через 2 с забега луноход встаёт в 9 м от ближайшего дома
 //!   лицом к нему, на 5-й секунде дом рушится: посмотреть куски модели (`fragments`), снимок
 //!   на `SPACE_GUARD_SHOT_AT` (обрушение — около 6,5, руины — 10).
@@ -53,7 +55,7 @@ impl Plugin for DebugShotPlugin {
             taken: None,
             staged: false,
         })
-        .add_systems(Update, (press_start, stage_scene, stage_train, stage_collapse, keep_shocked, drive, take_shot).before(GameSet::Screens));
+        .add_systems(Update, (press_start, stage_scene, stage_train, stage_collapse, stage_airstrike, keep_shocked, drive, take_shot).before(GameSet::Screens));
     }
 }
 
@@ -126,6 +128,35 @@ fn stage_train(
     rover.rotation = Quat::from_rotation_y((-to_line.x).atan2(-to_line.y));
 }
 
+/// Сцена `airstrike`: авиаудар в руки и открытое наведение.
+fn stage_airstrike(
+    time: Res<Time<Real>>,
+    debug: Res<DebugShot>,
+    state: Res<State<GameState>>,
+    mut inventory: ResMut<crate::arsenal::Inventory>,
+    mut weapon: ResMut<crate::weapons::CurrentWeapon>,
+    mut mouse: ResMut<ButtonInput<MouseButton>>,
+    mut since: Local<Option<f32>>,
+    mut step: Local<u8>,
+) {
+    if debug.scene.as_deref() != Some("airstrike") || *state.get() != GameState::Playing {
+        return;
+    }
+    let now = time.elapsed_secs();
+    let start = *since.get_or_insert(now);
+    if *step == 0 && now - start > 2.5 {
+        *step = 1;
+        inventory.add(crate::weapons::CurrentWeapon::Airstrike, 2);
+        *weapon = crate::weapons::CurrentWeapon::Airstrike;
+    } else if *step == 1 && now - start > 3.0 {
+        *step = 2;
+        mouse.press(MouseButton::Left);
+    } else if *step == 2 {
+        *step = 3;
+        mouse.release(MouseButton::Left);
+    }
+}
+
 /// Сцена `collapse`: луноход встаёт у ближайшего дома, потом дом рушится.
 fn stage_collapse(
     time: Res<Time>,
@@ -187,11 +218,19 @@ fn stage_scene(
     mut enemies: MessageWriter<SpawnEnemy>,
     mut upgrades: MessageWriter<SpawnUpgrade>,
     mut loot: MessageWriter<SpawnLoot>,
+    mut crates: MessageWriter<crate::pickups::SpawnCrate>,
+    state: Res<State<GameState>>,
+    mut clock: Local<f32>,
 ) {
+    // Время с начала забега: загрузка и меню идут дольше двух секунд.
+    if *state.get() != GameState::Playing {
+        return;
+    }
+    *clock += time.delta_secs();
     let enemies_scene = debug.scene.as_deref() == Some("enemies");
     let shock_scene = debug.scene.as_deref() == Some("shock");
     let scene = debug.scene.as_deref();
-    if debug.staged || !matches!(scene, Some("fire" | "enemies" | "shock")) || time.elapsed_secs() < 2.0 {
+    if debug.staged || !matches!(scene, Some("fire" | "enemies" | "shock")) || *clock < 2.0 {
         return;
     }
     let Some(rover) = rover.iter().next() else {
@@ -225,6 +264,28 @@ fn stage_scene(
             position: ground(5.0, 2.0),
             weapon: crate::weapons::CurrentWeapon::Rockets,
         });
+        // Трофеи остальных видов и выброшенные ящики с крышками в цвет оружия.
+        for (i, weapon) in [crate::weapons::CurrentWeapon::Mortar, crate::weapons::CurrentWeapon::Laser].into_iter().enumerate() {
+            loot.write(SpawnLoot {
+                position: ground(8.0 + i as f32 * 3.0, 2.0),
+                weapon,
+            });
+        }
+        for (i, weapon) in [
+            crate::weapons::CurrentWeapon::Mortar,
+            crate::weapons::CurrentWeapon::Rockets,
+            crate::weapons::CurrentWeapon::Laser,
+            crate::weapons::CurrentWeapon::Airstrike,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            crates.write(crate::pickups::SpawnCrate {
+                position: ground(-10.0 + i as f32 * 3.0, 5.0) + Vec3::Y * 4.0,
+                velocity: Vec3::new(0.0, 3.0, 0.0),
+                weapon,
+            });
+        }
         return;
     }
     // Огни трёх размеров в ряд перед луноходом.

@@ -134,8 +134,10 @@ fn run_slowmo(
     mut time: ResMut<Time<Virtual>>,
     mut slowmo: ResMut<SlowMotion>,
     state: Res<State<GameState>>,
+    targeting: Res<crate::airstrike::Targeting>,
 ) {
-    if *state.get() == GameState::Paused {
+    // В наведении авиаудара скоростью времени владеет он.
+    if *state.get() == GameState::Paused || targeting.active() {
         return;
     }
     let dt = real.delta_secs();

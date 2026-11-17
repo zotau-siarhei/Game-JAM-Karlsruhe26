@@ -118,6 +118,8 @@ fn virtual_for(state: GameState, button: GamepadButton) -> Option<Press> {
         (GameState::Playing, B::RightTrigger2) => Some(Mouse(MouseButton::Left)),
         (GameState::Playing, B::South) => Some(Key(KeyCode::Space)),
         (GameState::Playing, B::Start) => Some(Key(KeyCode::Escape)),
+        // Правая кнопка мыши: отмена наведения авиаудара.
+        (GameState::Playing, B::East) => Some(Mouse(MouseButton::Right)),
         (GameState::Paused, B::South) => Some(Key(KeyCode::Enter)),
         (GameState::Paused, B::East | B::Start) => Some(Key(KeyCode::Escape)),
         (GameState::Paused, B::Select) => Some(Key(KeyCode::KeyQ)),

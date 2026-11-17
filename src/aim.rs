@@ -123,12 +123,18 @@ pub fn raycast_terrain(terrain: &Terrain, origin: Vec3, direction: Vec3) -> Opti
 /// Ограничивает точку прицела дальностью от лунохода по горизонтали и сажает её на рельеф.
 ///
 /// Возвращает точку и признак «на пределе дальности».
+#[cfg(test)]
 pub fn clamp_to_range(terrain: &Terrain, rover: Vec3, target: Vec3) -> (Vec3, bool) {
+    clamp_within(terrain, rover, target, MAX_AIM_RANGE)
+}
+
+/// Как [`clamp_to_range`], с дальностью `range`.
+pub fn clamp_within(terrain: &Terrain, rover: Vec3, target: Vec3, range: f32) -> (Vec3, bool) {
     let offset = Vec2::new(target.x - rover.x, target.z - rover.z);
-    if offset.length() <= MAX_AIM_RANGE {
+    if offset.length() <= range {
         return (target, false);
     }
-    let flat = Vec2::new(rover.x, rover.z) + offset.normalize() * MAX_AIM_RANGE;
+    let flat = Vec2::new(rover.x, rover.z) + offset.normalize() * range;
     (
         Vec3::new(flat.x, terrain.height_at(flat.x, flat.y), flat.y),
         true,
@@ -154,6 +160,7 @@ pub fn update_aim_point(
     window: Single<&Window, With<PrimaryWindow>>,
     camera: Single<(&Camera, &Transform), With<GameCamera>>,
     rover: Single<&Transform, With<Rover>>,
+    targeting: Res<crate::airstrike::Targeting>,
 ) {
     if device.gamepad() {
         return;
@@ -171,7 +178,9 @@ pub fn update_aim_point(
     let Some(hit) = raycast_terrain(&terrain, ray.origin, *ray.direction) else {
         return;
     };
-    let (position, at_limit) = clamp_to_range(&terrain, rover.translation, hit);
+    // В наведении авиаудара прицел дальше обычного.
+    let range = if targeting.open { crate::airstrike::TARGET_RANGE } else { MAX_AIM_RANGE };
+    let (position, at_limit) = clamp_within(&terrain, rover.translation, hit, range);
     *aim = AimPoint {
         position,
         at_limit,

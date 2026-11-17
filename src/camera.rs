@@ -106,9 +106,11 @@ impl Plugin for CameraPlugin {
                 Update,
                 (
                     // До подгрузки мира: участки появляются вокруг сегодняшнего места лунохода.
-                    // В меню фокус двигает `run`, а луноход спрятан и стоит на старте.
+                    // В меню фокус двигает `run`, а луноход спрятан и стоит на старте; после
+                    // гибели фокус облетает разрушения (`showcase`).
                     focus_on_rover
                         .run_if(not(in_state(GameState::Menu)))
+                        .run_if(not(in_state(GameState::GameOver)))
                         .after(GameSet::Cleanup)
                         .before(GameSet::Streaming),
                     (fit_view, follow_focus).chain().in_set(GameSet::Presentation),
@@ -190,27 +192,43 @@ pub fn fit_view(
     }
 }
 
+/// Вид наведения авиаудара: наклон, рад, и расстояние до фокуса, м. Видимая область — около
+/// ±50 м по вертикали экрана и ±85 м по горизонтали: внутри подгруженных ±112 м мира.
+const TARGETING_PITCH: f32 = 82.0 * std::f32::consts::PI / 180.0;
+const TARGETING_DISTANCE: f32 = CAMERA_DISTANCE * 3.2;
+
 /// Плавно двигает камеру за фокусом. Когда рельеф закрывает фокус, камера поднимается
 /// и смотрит круче, потом возвращается; ниже рельефа не опускается.
 pub fn follow_focus(
     time: Res<Time>,
+    real: Res<Time<Real>>,
     focus: Res<Focus>,
     terrain: Res<Terrain>,
+    targeting: Res<crate::airstrike::Targeting>,
     camera: Single<(&mut Transform, &mut GameCamera)>,
+    mut was_targeting: Local<bool>,
 ) {
     let (mut transform, mut camera) = camera.into_inner();
-    let dt = time.delta_secs();
+    // В наведении авиаудара время замедлено, а камера идёт по реальному.
+    let dt = if targeting.active() { real.delta_secs() } else { time.delta_secs() };
     let height = |x: f32, z: f32| terrain.height_at(x, z);
 
     let wanted = needed_steepness(height, focus.0 + Vec3::Y * LOOK_HEIGHT, camera.steepness, camera.zoom);
     let step = if wanted > camera.steepness { STEEPEN_SPEED } else { RELAX_SPEED } * dt;
     let steepness = camera.steepness + (wanted - camera.steepness).clamp(-step, step);
-    if steepness != camera.steepness {
-        camera.steepness = steepness;
-        transform.rotation = camera_rotation(steepness);
+    let changed = steepness != camera.steepness;
+    camera.steepness = steepness;
+    // Переход к виду наведения: плавно выше, круче и дальше.
+    let k = targeting.blend * targeting.blend * (3.0 - 2.0 * targeting.blend);
+    let top = Vec3::new(0.0, TARGETING_PITCH.sin(), TARGETING_PITCH.cos()) * TARGETING_DISTANCE;
+    if changed || targeting.active() || *was_targeting {
+        let top_rotation = Transform::from_translation(top).looking_at(Vec3::ZERO, Vec3::NEG_Z).rotation;
+        transform.rotation = camera_rotation(steepness).slerp(top_rotation, k);
     }
+    *was_targeting = targeting.active();
 
-    let target = focus.0 + camera_offset(camera.steepness) * camera.zoom;
+    let offset = (camera_offset(camera.steepness) * camera.zoom).lerp(top, k);
+    let target = focus.0 + offset;
     transform
         .translation
         .smooth_nudge(&target, FOLLOW_DECAY, dt);

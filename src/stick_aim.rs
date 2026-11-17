@@ -194,6 +194,8 @@ fn cursor_step(stick_world: Vec2, dt: f32, near_enemy: bool) -> Vec2 {
 #[allow(clippy::too_many_arguments)]
 fn aim_with_stick(
     time: Res<Time>,
+    real: Res<Time<Real>>,
+    targeting: Res<crate::airstrike::Targeting>,
     device: Res<InputDevice>,
     input: Res<PadInput>,
     weapon: Res<CurrentWeapon>,
@@ -208,7 +210,8 @@ fn aim_with_stick(
     if !device.gamepad() {
         return;
     }
-    let dt = time.delta_secs();
+    // В наведении авиаудара время замедлено, а курсор идёт по реальному.
+    let dt = if targeting.active() { real.delta_secs() } else { time.delta_secs() };
     let me = Vec2::new(rover.translation.x, rover.translation.z);
     if !stick.started {
         let forward = Vec2::new(rover.forward().x, rover.forward().z).normalize_or(Vec2::NEG_Y);
@@ -228,14 +231,20 @@ fn aim_with_stick(
     let tilt = input.aim.length();
     let previous = stick.locked;
 
-    if input.cursor {
-        // Курсор: точка едет по земле, без притяжения к врагу и без сглаживания.
+    if input.cursor || targeting.open {
+        // Курсор: точка едет по земле, без притяжения к врагу и без сглаживания. В наведении
+        // авиаудара стик сразу ведёт курсор, вдвое быстрее и до дальности наведения.
+        let (speed, range) = if targeting.open {
+            (2.0, crate::airstrike::TARGET_RANGE)
+        } else {
+            (1.0, MAX_AIM_RANGE)
+        };
         stick.locked = None;
         let offset = Vec2::from_angle(stick.shown_heading) * stick.shown_range;
         let near_enemy = alive
             .iter()
             .any(|(_, enemy)| enemy.distance(offset) <= CURSOR_FRICTION_RADIUS);
-        let moved = (offset + cursor_step(input.aim_world, dt, near_enemy)).clamp_length_max(MAX_AIM_RANGE);
+        let moved = (offset + cursor_step(input.aim_world, dt * speed, near_enemy)).clamp_length_max(range);
         let length = moved.length();
         if length > 0.1 {
             stick.heading = moved.to_angle();
