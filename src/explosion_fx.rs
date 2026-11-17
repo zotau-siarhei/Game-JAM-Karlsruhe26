@@ -28,7 +28,8 @@ use bevy::render::render_resource::Face;
 use bevy_hanabi::prelude::*;
 
 use crate::camera::Focus;
-use crate::debris::SpawnDebris;
+use crate::debris::{DebrisShape, SpawnDebris};
+use crate::debris_forms::FormKind;
 use crate::explosion::Explosion;
 use crate::frame::GameSet;
 use crate::run::RunScoped;
@@ -803,7 +804,8 @@ fn throw_debris(debris: &mut MessageWriter<SpawnDebris>, rng: &mut Rng, center: 
                 size: Vec3::new(s, s * rng.range(0.6, 0.9), s * rng.range(0.7, 1.0)),
                 color: CLOD_COLOR,
                 burning: false,
-                ..default()
+                shape: DebrisShape::Form(FormKind::Clod),
+                rotation: None,
             });
         }
         let shards = rng.range(BURNING_SHARDS.0 as f32, BURNING_SHARDS.1 as f32 + 0.999) as u32;
@@ -815,7 +817,8 @@ fn throw_debris(debris: &mut MessageWriter<SpawnDebris>, rng: &mut Rng, center: 
                 size: Vec3::new(s, s * 0.5, s * 1.4),
                 color: SHARD_COLOR,
                 burning: true,
-                ..default()
+                shape: DebrisShape::Form(FormKind::Sheet),
+                rotation: None,
             });
         }
     }

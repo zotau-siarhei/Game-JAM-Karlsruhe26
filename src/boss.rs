@@ -691,6 +691,7 @@ fn run_dying(
     mut explosions: MessageWriter<Explosion>,
     mut crates: MessageWriter<SpawnCrate>,
     mut upgrade: MessageWriter<SpawnUpgrade>,
+    mut breaker: crate::fragments::Breaker,
 ) {
     for (entity, transform, mut boss) in &mut bosses {
         let BossPhase::Dying(t, blasts) = boss.phase else {
@@ -738,6 +739,8 @@ fn run_dying(
                 weapon: weapons[i % weapons.len()],
             });
         }
+        // Корпус разлетается кусками, ноги отваливаются целиком.
+        crate::fragments::wreck_vehicle(&mut breaker, entity, transform, 2.0);
         // Золотой ящик улучшения — в центре, на месте гибели.
         upgrade.write(SpawnUpgrade {
             position: feet + Vec3::Y,

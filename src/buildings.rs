@@ -147,7 +147,8 @@ fn break_doors(
                 size: Vec3::new(0.12, 0.08, 0.5 + 0.3 * k),
                 color: Color::srgb(0.45, 0.3, 0.16),
                 burning: false,
-                ..default()
+                shape: crate::debris::DebrisShape::Form(crate::debris_forms::FormKind::Plank),
+                rotation: None,
             });
         }
         // Удар изнутри: дом вздрагивает.

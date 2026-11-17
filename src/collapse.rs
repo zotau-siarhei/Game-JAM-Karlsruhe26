@@ -13,6 +13,7 @@ use bevy::prelude::*;
 
 use crate::buildings::{house_fit, house_model};
 use crate::debris::{DebrisShape, SpawnDebris};
+use crate::debris_forms::FormKind;
 use crate::fire::Fire;
 use crate::fragments::ModelPieces;
 use crate::frame::{GameSet, RunMessages};
@@ -166,6 +167,7 @@ fn start_collapse(
     assets: Res<CollapseAssets>,
     pieces: Res<ModelPieces>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut debris: MessageWriter<SpawnDebris>,
 ) {
     for request in requests.read() {
         let house = &request.house;
@@ -182,6 +184,23 @@ fn start_collapse(
         });
 
         if let Some(set) = pieces.get(house_model(house.kind)) {
+            // Доски перекрытий и крошка штукатурки из библиотеки форм, в цветах дома.
+            for i in 0..10 {
+                let plank = i % 2 == 0;
+                let a = rng.range(0.0, std::f32::consts::TAU);
+                let out = Vec3::new(a.cos(), 0.0, a.sin());
+                let color = if plank { Color::srgb(0.42, 0.29, 0.17) } else { request.walls[i % request.walls.len()].0 };
+                let s = rng.range(0.7, 1.2);
+                debris.write(SpawnDebris {
+                    position: base + Vec3::Y * height * rng.range(0.3, 0.8) + out * half.min_element() * 0.5,
+                    velocity: out * rng.range(3.0, 7.0) + Vec3::Y * rng.range(4.0, 8.0),
+                    size: if plank { Vec3::new(0.18, 0.09, 1.6) * s } else { Vec3::splat(0.35) * s },
+                    color,
+                    burning: i == 0,
+                    shape: DebrisShape::Form(if plank { FormKind::Plank } else { FormKind::Crumb }),
+                    rotation: None,
+                });
+            }
             // Куски своей модели: дом стоит в `base` с поворотом, модель — под растяжкой `fit`.
             let fit = house_fit(house.kind);
             let frame = Transform::from_translation(base).with_rotation(rotation);

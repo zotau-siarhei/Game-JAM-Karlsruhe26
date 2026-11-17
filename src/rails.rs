@@ -580,7 +580,8 @@ fn open_tunnels(
                         size: Vec3::splat(0.5 + (k % 4) as f32 * 0.25),
                         color: Color::srgb(0.46, 0.44, 0.41),
                         burning: false,
-                        ..default()
+                        shape: crate::debris::DebrisShape::Form(crate::debris_forms::FormKind::Chunk),
+                        rotation: None,
                     });
                 }
                 commands.spawn((

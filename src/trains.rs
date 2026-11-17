@@ -29,7 +29,9 @@ use crate::camera::GameCamera;
 use crate::combat::{Collider, Damage, Died, Health, ROVER_MAX_HEALTH, Team, blast_damage};
 use crate::explosion::Explosion;
 use crate::frame::{GameSet, RunMessages};
-use crate::debris::SpawnDebris;
+use crate::debris::{DebrisShape, SpawnDebris};
+use crate::debris_forms::FormKind;
+use crate::fragments::{Breaker, Burst};
 use crate::models::{ModelBank, ModelShade, Models};
 use crate::obstacles::{Obstacle, Shape};
 use crate::pickups::{SpawnLoot, crate_weapons};
@@ -419,7 +421,8 @@ fn burst_car(
             },
             color,
             burning: i < burning,
-            ..default()
+            shape: DebrisShape::Form(if i % 3 == 0 { FormKind::Chunk } else { FormKind::Sheet }),
+            rotation: None,
         });
     }
 }
@@ -545,7 +548,7 @@ fn run_schedule(
     }
     let timer = schedule.timer.get_or_insert_with(|| {
         // Отладочная сцена поезда (`src/debug_shot.rs`): состав выходит сразу.
-        if std::env::var("SPACE_GUARD_SCENE").is_ok_and(|s| s == "train") {
+        if std::env::var("SPACE_GUARD_SCENE").is_ok_and(|s| s == "train" || s == "derail") {
             1.0
         } else {
             dice.range(SCHEDULE_DELAY.0, SCHEDULE_DELAY.1)
@@ -1101,7 +1104,7 @@ fn move_wrecks(
     terrain: Res<Terrain>,
     mut wrecks: Query<(Entity, &Car, &mut Transform, &mut Wreck)>,
     mut explosions: MessageWriter<Explosion>,
-    mut debris: MessageWriter<SpawnDebris>,
+    mut breaker: Breaker,
     bank: Res<ModelBank>,
     mut blast_wait: Local<f32>,
 ) {
@@ -1161,7 +1164,19 @@ fn move_wrecks(
                 power,
                 source_team: wreck.cause,
             });
-            burst_car(&mut debris, &bank, car.kind, &transform, 10, 9.0, 3);
+            // Взрыв рвёт кузов: треть кусков модели в копоти летит в стороны, остов остаётся.
+            breaker.burst(
+                entity,
+                Burst {
+                    from: transform.translation - Vec3::Y,
+                    speed: 8.0,
+                    lift: 9.0,
+                    share: 0.35,
+                    burning: 2,
+                    charred: true,
+                },
+            );
+            burst_car(&mut breaker.debris, &bank, car.kind, &transform, 8, 9.0, 2);
         }
         // Вагон загорается сразу после схода: свет, огонь и дым из кузова.
         if !wreck.lit {

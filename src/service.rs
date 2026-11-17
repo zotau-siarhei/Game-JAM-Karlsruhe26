@@ -850,11 +850,13 @@ fn service_deaths(
     mut alarm: ResMut<Alarm>,
     mut deaths: MessageWriter<ResidentDied>,
     mut explosions: MessageWriter<Explosion>,
+    mut breaker: crate::fragments::Breaker,
 ) {
     for message in died.read() {
         let Ok((transform, vehicle)) = vehicles.get(message.entity) else {
             continue;
         };
+        crate::fragments::wreck_vehicle(&mut breaker, message.entity, transform, 1.0);
         alarm.add(alarm::balance::SERVICE_VEHICLE_POINTS);
         for _ in 0..vehicle.passengers {
             deaths.write(ResidentDied {

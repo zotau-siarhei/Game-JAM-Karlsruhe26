@@ -25,6 +25,18 @@
 //! - `SPACE_GUARD_SCENE=collapse` — через 2 с забега луноход встаёт в 9 м от ближайшего дома
 //!   лицом к нему, на 5-й секунде дом рушится: посмотреть куски модели (`fragments`), снимок
 //!   на `SPACE_GUARD_SHOT_AT` (обрушение — около 6,5, руины — 10).
+//! - `SPACE_GUARD_SCENE=pieces` — через 2 с забега перед луноходом раскладываются куски
+//!   нарезанных моделей (`fragments`), каждая модель разнесена от центра и уменьшена до ~5 м,
+//!   и в ряд — формы библиотеки обломков (`debris_forms`) по вариантам. `SPACE_GUARD_PIECES` —
+//!   через запятую идентификаторы моделей (или `forms`), иначе всё.
+//! - `SPACE_GUARD_SCENE=wrecks` — через 2 с перед луноходом встают враги всех видов и машины
+//!   Службы, на 4-й секунде все гибнут: посмотреть куски корпуса и колёса.
+//! - `SPACE_GUARD_SCENE=derail` — как `train`, но первый вагон, подошедший ближе 30 м, гибнет:
+//!   состав сходит, локомотив и цистерны взрываются кусками корпуса и листами.
+//! - `SPACE_GUARD_SCENE=rocks` — на 3-й секунде забега три ближайших к луноходу валуна и кварца
+//!   разбиваются: куски модели и глыбы с осколками.
+//! - `SPACE_GUARD_SCENE=boss` — босс выходит сразу, после посадки встаёт в 26 м от лунохода
+//!   и гибнет: куски корпуса и ноги.
 //! - `SPACE_GUARD_MENU=difficulty|settings|records|records-hard|authors` — меню сразу открывает
 //!   этот подэкран (`menu`): снять его без рук.
 //! - `SPACE_GUARD_KEYS=down,down,enter,left` — через секунду после входа в меню клавиши нажимаются
@@ -84,7 +96,7 @@ impl Plugin for DebugShotPlugin {
             staged: false,
         })
         .add_systems(Update, (open_menu_page, press_keys).before(GameSet::Screens))
-        .add_systems(Update, (press_start, stage_scene, stage_train, stage_collapse, stage_airstrike, stage_weapons, stage_gadflies, keep_shocked, drive, take_shot).before(GameSet::Screens));
+        .add_systems(Update, (press_start, stage_scene, stage_train, stage_collapse, stage_airstrike, stage_weapons, stage_gadflies, stage_pieces, stage_wrecks, keep_shocked, drive, take_shot).before(GameSet::Screens));
     }
 }
 
@@ -196,7 +208,7 @@ fn stage_train(
     mut rover: Query<&mut Transform, With<Rover>>,
     mut done: Local<bool>,
 ) {
-    if *done || debug.scene.as_deref() != Some("train") || time.elapsed_secs() < 2.0 {
+    if *done || !matches!(debug.scene.as_deref(), Some("train" | "derail")) || time.elapsed_secs() < 2.0 {
         return;
     }
     let Some(mut rover) = rover.iter_mut().next() else {
@@ -377,6 +389,240 @@ fn stage_collapse(
             amount: 1.0e4,
             source_team: Team::Player,
         });
+    }
+}
+
+/// Сцена `pieces`: куски моделей и формы библиотеки разложены перед луноходом.
+fn stage_pieces(
+    mut commands: Commands,
+    time: Res<Time>,
+    debug: Res<DebugShot>,
+    state: Res<State<GameState>>,
+    terrain: Res<Terrain>,
+    pieces: Res<crate::fragments::ModelPieces>,
+    rover: Query<&Transform, With<Rover>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut clock: Local<f32>,
+    mut done: Local<bool>,
+) {
+    if *done || debug.scene.as_deref() != Some("pieces") || *state.get() != GameState::Playing {
+        return;
+    }
+    *clock += time.delta_secs();
+    let Some(rover) = rover.iter().next() else {
+        return;
+    };
+    if *clock < 2.0 {
+        return;
+    }
+    *done = true;
+    let wanted = std::env::var("SPACE_GUARD_PIECES").ok();
+    let wants = |id: &str| wanted.as_deref().is_none_or(|w| w.split(',').any(|x| x.trim() == id));
+    let mut sets: Vec<_> = pieces.all().filter(|(id, _)| wants(id)).collect();
+    sets.sort_by_key(|(id, _)| *id);
+    info!("Сцена pieces: моделей {}", sets.len());
+    let columns = 5usize;
+    let pitch = 7.0;
+    let origin = rover.translation + Vec3::new(-pitch * 2.5, 0.0, -2.0);
+    for (n, (id, set)) in sets.iter().enumerate() {
+        let cell = origin + Vec3::new((n % columns) as f32 * pitch, 0.0, -((n / columns) as f32) * pitch);
+        let locals: Vec<Transform> = set.pieces.iter().map(|p| set.local(p, Vec3::ONE)).collect();
+        let reach = set
+            .pieces
+            .iter()
+            .zip(&locals)
+            .map(|(p, l)| l.translation.length() + (p.half * l.scale).length())
+            .fold(0.1, f32::max);
+        let fit = 2.6 / reach;
+        let ground = terrain.height_at(cell.x, cell.z);
+        info!("Сцена pieces: «{id}» — {} кусков", set.pieces.len());
+        for (piece, local) in set.pieces.iter().zip(&locals) {
+            // Разнесено от центра в полтора раза.
+            let at = local.translation * fit;
+            let spread = at + at.with_y(0.0).normalize_or_zero() * 0.6 + Vec3::Y * at.y * 0.4;
+            commands.spawn((
+                RunScoped,
+                Mesh3d(piece.mesh.clone()),
+                MeshMaterial3d(set.material.clone()),
+                Transform::from_translation(Vec3::new(cell.x, ground + 1.0, cell.z) + spread)
+                    .with_rotation(local.rotation)
+                    .with_scale(local.scale * fit),
+            ));
+        }
+    }
+    if !wants("forms") {
+        return;
+    }
+    // Формы библиотеки: ряд на вид, столбец на вариант.
+    let colors = [
+        Color::srgb(0.5, 0.49, 0.47),
+        Color::srgb(0.85, 0.9, 0.95),
+        Color::srgb(0.45, 0.3, 0.16),
+        Color::srgb(0.35, 0.36, 0.38),
+        Color::srgb(0.42, 0.33, 0.24),
+        Color::srgb(0.6, 0.57, 0.5),
+    ];
+    let sizes = [
+        Vec3::new(0.9, 0.7, 0.8),
+        Vec3::new(0.35, 1.0, 0.35),
+        Vec3::new(0.25, 0.15, 1.4),
+        Vec3::new(1.3, 0.4, 1.0),
+        Vec3::new(0.8, 0.5, 0.7),
+        Vec3::new(0.35, 0.35, 0.35),
+    ];
+    let start = rover.translation + Vec3::new(4.0, 0.0, -12.0);
+    for (row, kind) in crate::debris_forms::FormKind::ALL.into_iter().enumerate() {
+        let material = materials.add(StandardMaterial {
+            base_color: colors[row],
+            perceptual_roughness: if kind.glossy() { 0.3 } else { 0.9 },
+            ..default()
+        });
+        for variant in 0..crate::debris_forms::VARIANTS {
+            let p = start + Vec3::new(variant as f32 * 3.0, 0.0, row as f32 * 3.0);
+            let y = terrain.height_at(p.x, p.z) + 0.8;
+            commands.spawn((
+                RunScoped,
+                Mesh3d(meshes.add(crate::debris_forms::build(kind, variant))),
+                MeshMaterial3d(material.clone()),
+                Transform::from_xyz(p.x, y, p.z)
+                    // Наклон к камере: видно и бок, и верх.
+                    .with_rotation(Quat::from_rotation_x(0.7) * Quat::from_rotation_y(0.6))
+                    .with_scale(sizes[row] * 2.0),
+            ));
+        }
+    }
+}
+
+/// Сцены `wrecks` и `boss`: техника встаёт перед луноходом и гибнет.
+#[allow(clippy::too_many_arguments)]
+fn stage_wrecks(
+    time: Res<Time>,
+    debug: Res<DebugShot>,
+    state: Res<State<GameState>>,
+    terrain: Res<Terrain>,
+    rover: Query<&Transform, With<Rover>>,
+    mut vehicles: Query<
+        (Entity, &mut Transform, Has<crate::boss::Boss>),
+        (Or<(With<crate::enemy::Enemy>, With<crate::service::ServiceVehicle>)>, Without<Rover>),
+    >,
+    mut enemies: MessageWriter<SpawnEnemy>,
+    mut service: MessageWriter<crate::service::SpawnService>,
+    mut boss: MessageWriter<crate::boss::SpawnBoss>,
+    mut damage: MessageWriter<crate::combat::Damage>,
+    cars: Query<(Entity, &GlobalTransform), With<crate::trains::Car>>,
+    props: Query<(Entity, &crate::props::Prop, &GlobalTransform), With<crate::combat::Health>>,
+    mut clock: Local<f32>,
+    mut step: Local<u8>,
+) {
+    let scene = debug.scene.as_deref();
+    if !matches!(scene, Some("wrecks" | "boss" | "derail" | "rocks")) || *state.get() != GameState::Playing {
+        return;
+    }
+    *clock += time.delta_secs();
+    let Some(rover) = rover.iter().next().copied() else {
+        return;
+    };
+    let ground = |x: f32, z: f32| {
+        let p = rover.translation + Vec3::new(x, 0.0, z);
+        Vec3::new(p.x, terrain.height_at(p.x, p.z), p.z)
+    };
+    let t = *clock;
+    let kill = |damage: &mut MessageWriter<crate::combat::Damage>, target: Entity| {
+        damage.write(crate::combat::Damage {
+            target,
+            amount: 1.0e5,
+            source_team: Team::Player,
+        });
+    };
+    if scene == Some("rocks") {
+        // Три ближайших валуна и кварца разбиваются.
+        if *step == 0 && t >= 3.0 {
+            *step = 1;
+            use crate::props::PropKind;
+            let mut near: Vec<_> = props
+                .iter()
+                .filter(|(_, p, _)| matches!(p.kind, PropKind::Boulder | PropKind::Crystal))
+                .map(|(e, _, g)| (e, g.translation().distance(rover.translation)))
+                .collect();
+            near.sort_by(|a, b| a.1.total_cmp(&b.1));
+            info!("Сцена rocks: разбиваются {}", near.len().min(3));
+            for (entity, _) in near.into_iter().take(3) {
+                kill(&mut damage, entity);
+            }
+        }
+        return;
+    }
+    if scene == Some("derail") {
+        // Первый вагон, подошедший ближе 30 м, гибнет: состав сходит, локомотив взрывается.
+        if *step == 0 && t >= 2.5 {
+            let near = cars
+                .iter()
+                .map(|(e, g)| (e, g.translation().distance(rover.translation)))
+                .filter(|(_, d)| *d < 30.0)
+                .min_by(|a, b| a.1.total_cmp(&b.1));
+            if let Some((car, _)) = near {
+                *step = 1;
+                info!("Сцена derail: вагон гибнет");
+                kill(&mut damage, car);
+            }
+        }
+        return;
+    }
+    if scene == Some("boss") {
+        if *step == 0 && t >= 1.0 {
+            *step = 1;
+            boss.write(crate::boss::SpawnBoss);
+        } else if *step == 1 && t >= 6.0 {
+            for (entity, mut transform, is_boss) in &mut vehicles {
+                if is_boss {
+                    *step = 2;
+                    let p = ground(0.0, -26.0);
+                    transform.translation.x = p.x;
+                    transform.translation.z = p.z;
+                    info!("Сцена boss: босс гибнет");
+                    kill(&mut damage, entity);
+                }
+            }
+        }
+        return;
+    }
+    if *step == 0 && t >= 2.0 {
+        *step = 1;
+        let kinds = [
+            EnemyKind::RamShooter,
+            EnemyKind::Mortar,
+            EnemyKind::HeavyTank,
+            EnemyKind::LaserTank,
+            EnemyKind::Interceptor,
+        ];
+        for (i, kind) in kinds.into_iter().enumerate() {
+            let place = SpawnPlace::Point(ground(-16.0 + i as f32 * 8.0, -12.0));
+            enemies.write(SpawnEnemy { place, kind });
+        }
+        for kind in [crate::service::ServiceKind::Patrol, crate::service::ServiceKind::Transport, crate::service::ServiceKind::Support] {
+            service.write(crate::service::SpawnService { kind, angle: 0.0 });
+        }
+    } else if *step == 1 && t >= 3.0 {
+        *step = 2;
+        // Машины Службы появились за кадром: ставим их во второй ряд.
+        let mut row = 0;
+        for (_, mut transform, is_boss) in &mut vehicles {
+            if is_boss || transform.translation.distance(rover.translation) < 30.0 {
+                continue;
+            }
+            let p = ground(-10.0 + row as f32 * 9.0, 3.0);
+            transform.translation = p + Vec3::Y * 1.0;
+            row += 1;
+        }
+    } else if *step == 2 && t >= 4.0 {
+        *step = 3;
+        info!("Сцена wrecks: техника гибнет");
+        for (entity, _, is_boss) in &vehicles {
+            if !is_boss {
+                kill(&mut damage, entity);
+            }
+        }
     }
 }
 

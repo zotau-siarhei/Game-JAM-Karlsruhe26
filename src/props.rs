@@ -21,7 +21,9 @@ use crate::rover::Rover;
 use crate::run::{RunScoped, WorldRebuilt};
 use crate::vehicle::GroundVehicle;
 use crate::combat::{Collider, Damage, Died, Health, blast_damage};
-use crate::debris::SpawnDebris;
+use crate::debris::{DebrisShape, SpawnDebris};
+use crate::debris_forms::FormKind;
+use crate::fragments::{Breaker, Burst};
 use crate::explosion::Explosion;
 use crate::settlements::{HouseState, REGION_SIZE, Settlements, region_of};
 use crate::terrain::{CHUNK_SIZE, Terrain, VisibleChunks, chunk_coord_at, chunk_origin};
@@ -841,10 +843,10 @@ fn crush_small_props(
     mut commands: Commands,
     mut props: ResMut<Props>,
     vehicles: Query<(&Transform, Option<&Collider>), Or<(With<Rover>, With<GroundVehicle>)>>,
-    crushable: Query<(Entity, &Prop, &Crushable, &Transform, &Children)>,
-    parts: Query<(&Mesh3d, &MeshMaterial3d<StandardMaterial>)>,
+    crushable: Query<(Entity, &Prop, &Crushable, &Transform)>,
+    breaker: Breaker,
 ) {
-    for (entity, prop, small, transform, children) in &crushable {
+    for (entity, prop, small, transform) in &crushable {
         let p = transform.translation;
         let hit = vehicles.iter().find(|(v, c)| {
             let r = c.map_or(1.0, |c| c.radius) + small.radius;
@@ -859,42 +861,40 @@ fn crush_small_props(
         commands.entity(entity).despawn();
 
         let away = (p - vehicle.translation).with_y(0.0).normalize_or(Vec3::X);
-        shatter(&mut commands, transform, children, &parts, away);
+        shatter(&mut commands, transform, &breaker, entity, away);
     }
 }
 
-/// Осколки — те же части объекта, уменьшенные, летят в сторону `away` и вверх.
-fn shatter(
-    commands: &mut Commands,
-    transform: &Transform,
-    children: &Children,
-    parts: &Query<(&Mesh3d, &MeshMaterial3d<StandardMaterial>)>,
-    away: Vec3,
-) {
+/// Осколки летят в сторону `away` и вверх. Берутся меши всех потомков объекта, в том числе
+/// сцены модели: у нарезанной модели (куст) — её куски со своих мест, у примитивов (забор,
+/// столб, антенна) — каждая деталь, уменьшенная, со своим масштабом.
+fn shatter(commands: &mut Commands, transform: &Transform, breaker: &Breaker, root: Entity, away: Vec3) {
     let p = transform.translation;
-    {
-        let mut rng = Rng::from_position(Vec2::new(p.x, p.z));
-        for (i, child) in children.iter().enumerate() {
-            let Ok((mesh, material)) = parts.get(child) else {
-                continue;
+    let mut rng = Rng::from_position(Vec2::new(p.x, p.z));
+    for (i, part) in breaker.parts(root).into_iter().enumerate() {
+        let copies = if part.piece { 1 } else { 2 };
+        for _ in 0..copies {
+            let velocity = away * rng.range(3.0, 7.0)
+                + Vec3::new(rng.range(-2.5, 2.5), rng.range(4.0, 8.0), rng.range(-2.5, 2.5));
+            let (at, scale) = if part.piece {
+                (part.transform.translation, part.transform.scale * rng.range(0.8, 1.0))
+            } else {
+                (p + Vec3::Y * 0.4, part.transform.scale * rng.range(0.2, 0.35))
             };
-            for _ in 0..2 {
-                let velocity = away * rng.range(3.0, 7.0)
-                    + Vec3::new(rng.range(-2.5, 2.5), rng.range(4.0, 8.0), rng.range(-2.5, 2.5));
-                commands.spawn((
-                    Shard {
-                        velocity,
-                        spin: Vec3::new(rng.range(-9.0, 9.0), rng.range(-9.0, 9.0), rng.range(-9.0, 9.0)),
-                        remaining: SHARD_LIFETIME + i as f32 * 0.05,
-                    },
-                    RunScoped,
-                    Mesh3d(mesh.0.clone()),
-                    MeshMaterial3d(material.0.clone()),
-                    NotShadowCaster,
-                    Transform::from_translation(p + Vec3::Y * 0.4)
-                        .with_scale(transform.scale * rng.range(0.2, 0.35)),
-                ));
-            }
+            commands.spawn((
+                Shard {
+                    velocity,
+                    spin: Vec3::new(rng.range(-9.0, 9.0), rng.range(-9.0, 9.0), rng.range(-9.0, 9.0)),
+                    remaining: SHARD_LIFETIME + i as f32 * 0.05,
+                },
+                RunScoped,
+                Mesh3d(part.mesh.clone()),
+                MeshMaterial3d(part.material.clone()),
+                NotShadowCaster,
+                Transform::from_translation(at)
+                    .with_rotation(part.transform.rotation)
+                    .with_scale(scale),
+            ));
         }
     }
 }
@@ -1103,16 +1103,16 @@ fn shockwave_props(
     mut explosions: MessageReader<Explosion>,
     mut props: ResMut<Props>,
     objects: Query<
-        (Entity, &Prop, &Transform, Option<&Health>, Option<&Children>, Option<&Sway>),
+        (Entity, &Prop, &Transform, Option<&Health>, Option<&Sway>),
         Without<TreeFall>,
     >,
-    parts: Query<(&Mesh3d, &MeshMaterial3d<StandardMaterial>)>,
+    breaker: Breaker,
     mut damage: MessageWriter<Damage>,
 ) {
     for explosion in explosions.read() {
         let center = explosion.position;
         let r = explosion.radius;
-        for (entity, prop, transform, health, children, sway) in &objects {
+        for (entity, prop, transform, health, sway) in &objects {
             let offset = (transform.translation - center).with_y(0.0);
             let d = offset.length();
             if d >= r * SWAY_REACH {
@@ -1136,9 +1136,7 @@ fn shockwave_props(
                 if let Some(state) = props.get_mut(prop.chunk, prop.index) {
                     state.status = PropStatus::Destroyed;
                 }
-                if let Some(children) = children {
-                    shatter(&mut commands, transform, children, &parts, away);
-                }
+                shatter(&mut commands, transform, &breaker, entity, away);
                 commands.entity(entity).despawn();
                 continue;
             }
@@ -1169,13 +1167,12 @@ fn break_props(
     mut props: ResMut<Props>,
     mut spawned: ResMut<SpawnedProps>,
     assets: Res<PropAssets>,
-    objects: Query<(&Prop, &Transform, Option<&PropBlastFrom>, Option<&Children>, Option<&Sway>)>,
-    parts: Query<(&Mesh3d, &MeshMaterial3d<StandardMaterial>)>,
-    mut debris: MessageWriter<SpawnDebris>,
+    objects: Query<(&Prop, &Transform, Option<&PropBlastFrom>, Option<&Sway>)>,
+    mut breaker: Breaker,
     bank: Res<crate::models::ModelBank>,
 ) {
     for death in died.read() {
-        let Ok((prop, transform, blast, children, sway)) = objects.get(death.entity) else {
+        let Ok((prop, transform, blast, sway)) = objects.get(death.entity) else {
             continue;
         };
         let Some(state) = props.get_mut(prop.chunk, prop.index) else {
@@ -1229,29 +1226,43 @@ fn break_props(
             }
             PropKind::Boulder | PropKind::Crystal => {
                 state.status = PropStatus::Destroyed;
-                let (count, color, size) = if prop.kind == PropKind::Boulder {
-                    (6 + prop.index % 3, STONE_COLORS[state.variant], 0.7)
-                } else {
-                    (4 + prop.index % 3, GEM_COLORS[state.variant], 0.4)
-                };
-                // Куски в цветах модели, если объект показан ею.
-                let colors = prop_model(prop.kind, state.variant).and_then(|id| bank.colors(id));
+                let boulder = prop.kind == PropKind::Boulder;
                 let scale = transform.scale.max_element();
+                // Куски своей модели со своих мест, разлёт от стороны удара.
+                let pieces = breaker.burst(
+                    death.entity,
+                    Burst {
+                        from: p - away * scale - Vec3::Y * 0.5 * scale,
+                        speed: 4.0,
+                        lift: 5.0,
+                        share: 1.0,
+                        burning: 0,
+                        charred: false,
+                    },
+                );
+                // Плюс мелочь из библиотеки: каменные глыбы и крошка у валуна, вытянутые блестящие
+                // осколки у кварца. Без нарезанной модели мелочи больше.
+                let (form, color, size) = if boulder {
+                    (FormKind::Chunk, STONE_COLORS[state.variant], Vec3::new(0.45, 0.35, 0.4))
+                } else {
+                    (FormKind::Shard, GEM_COLORS[state.variant], Vec3::new(0.18, 0.5, 0.18))
+                };
+                let count = if pieces > 0 { 4 } else { 7 } + prop.index % 3;
+                let colors = prop_model(prop.kind, state.variant).and_then(|id| bank.colors(id));
                 for i in 0..count {
                     let color = colors.as_ref().map_or(color, |c| c.any(i + prop.index));
                     let a = i as f32 / count as f32 * std::f32::consts::TAU + p.x;
                     let dir = (Quat::from_rotation_y(a) * Vec3::X + away).normalize_or(Vec3::X);
-                    debris.write(SpawnDebris {
+                    let crumb = boulder && i % 3 == 2;
+                    breaker.debris.write(SpawnDebris {
                         position: p + Vec3::Y * (0.5 + 0.2 * i as f32) * scale,
                         velocity: dir * (3.0 + i as f32 * 0.6) + Vec3::Y * (5.0 + (i % 3) as f32 * 2.0),
-                        size: Vec3::new(size, size * 0.7, size * 0.9) * scale * (0.7 + (i % 2) as f32 * 0.5),
+                        size: if crumb { size * 0.4 } else { size } * scale * (0.7 + (i % 2) as f32 * 0.5),
                         color,
                         burning: false,
-                        ..default()
+                        shape: DebrisShape::Form(if crumb { FormKind::Crumb } else { form }),
+                        rotation: None,
                     });
-                }
-                if let Some(children) = children {
-                    shatter(&mut commands, transform, children, &parts, away);
                 }
             }
             _ => {

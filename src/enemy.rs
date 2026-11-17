@@ -1013,15 +1013,17 @@ fn remove_far_enemies(
     }
 }
 
-/// Погибший враг взрывается и исчезает.
+/// Погибший враг взрывается, разлетается кусками корпуса и колёсами и исчезает.
 fn remove_dead_enemies(
     mut commands: Commands,
     mut died: MessageReader<Died>,
     enemies: Query<&Transform, (With<Enemy>, Without<Boss>)>,
     mut explosions: MessageWriter<Explosion>,
+    mut breaker: crate::fragments::Breaker,
 ) {
     for message in died.read() {
         if let Ok(transform) = enemies.get(message.entity) {
+            crate::fragments::wreck_vehicle(&mut breaker, message.entity, transform, 1.0);
             explosions.write(Explosion {
                 position: transform.translation,
                 radius: DEATH_BLAST.0,

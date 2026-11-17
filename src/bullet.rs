@@ -264,7 +264,8 @@ fn move_bullets(
                 size: Vec3::splat(0.12),
                 color: Color::srgb(0.42, 0.33, 0.24),
                 burning: false,
-                ..default()
+                shape: crate::debris::DebrisShape::Form(crate::debris_forms::FormKind::Clod),
+                rotation: None,
             });
         }
 

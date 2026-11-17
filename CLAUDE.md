@@ -78,7 +78,10 @@
 - Режим наведения авиаудара — ресурс `airstrike::Targeting`: пока `active()`, он владеет скоростью
   времени (`impact` не трогает её), камера и курсор стика идут по реальному времени, Esc не ставит паузу.
 - После гибели фокус камеры облетает места разрушений (`src/showcase.rs`), а не стоит на луноходе.
-- Куски моделей для обломков — `src/fragments.rs` (`ModelPieces`, `split_mesh`).
+- Куски моделей для обломков — `src/fragments.rs` (`ModelPieces`, `split_mesh`); модель режется, если она
+  в `CUT`. Разбросать куски того, что стоит в мире, — `fragments::Breaker` (`burst`, `parts`), гибель
+  машины — `fragments::wreck_vehicle`. Формы обломков без модели (глыба, осколок, доска, лист, ком,
+  крошка) — `DebrisShape::Form(FormKind)` из `src/debris_forms.rs`, растягиваются `size`, как куб.
 - Волны — `src/waves.rs`: угроза `Threat`, директор волн, все числа баланса в `waves::balance`.
   Врага ставит сообщение `SpawnEnemy { place }` из `src/enemy.rs`, десантную капсулу — `DropCapsule { angle }`
   из `src/capsule.rs`, начало волны — `WaveStarted { number }`.

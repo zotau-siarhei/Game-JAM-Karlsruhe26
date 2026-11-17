@@ -21,6 +21,7 @@ mod collapse;
 mod combat;
 mod comic;
 mod debris;
+mod debris_forms;
 mod debug_shot;
 mod difficulty;
 mod craters;
