@@ -49,7 +49,7 @@
   `MenuPage { Main, Difficulty, Settings, Records(Difficulty), Authors }` и выделенная строка;
   экран перерисовывается целиком при смене страницы (строк мало), подсветка строки — как у паузы.
 - Авторы — константа `AUTHORS: &[&str]` в `menu.rs`: имена по алфавиту фамилий (Nidzhat Guseynov,
-  Ivan Tsarev, Sergei Zotov), последней строкой — «Game Jam Karlsruhe 2026». Пункт и экран в игре — AUTHORS.
+  Ivan Tsarev, Sergei Zotov). Пункт и экран в игре — AUTHORS.
 
 ### Ввод
 Клавиатура и геймпад сводятся к виртуальным клавишам: в `virtual_for` для `Menu` добавляются

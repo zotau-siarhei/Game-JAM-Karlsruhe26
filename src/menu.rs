@@ -22,8 +22,8 @@ use crate::run::{self, GameState, RecordsTable, RunWorld, HINT_COLOR, TITLE_COLO
 use crate::settings::{Settings, VOLUME_STEP};
 use crate::sound::PlaySound;
 
-/// Авторы игры по алфавиту фамилий и последней строкой — джем: экран «Авторы».
-pub const AUTHORS: &[&str] = &["Nidzhat Guseynov", "Ivan Tsarev", "Sergei Zotov", "Game Jam Karlsruhe 2026"];
+/// Авторы игры по алфавиту фамилий: экран «Авторы».
+pub const AUTHORS: &[&str] = &["Nidzhat Guseynov", "Ivan Tsarev", "Sergei Zotov"];
 
 /// Цвет невыделенной строки.
 const ROW_COLOR: Color = Color::srgb(0.7, 0.72, 0.76);
@@ -31,6 +31,8 @@ const ROW_COLOR: Color = Color::srgb(0.7, 0.72, 0.76);
 const ROW_SIZE: f32 = 30.0;
 /// Ширина подписи в строке со значением, точек: значения встают в столбик.
 const LABEL_WIDTH: f32 = 230.0;
+/// Ширина значения в строке настроек, точек: в неё входит самое длинное, «< MEDIUM >».
+const VALUE_WIDTH: f32 = 200.0;
 
 /// Плагин главного меню.
 pub struct MenuPlugin;
@@ -396,10 +398,11 @@ fn spawn_row(parent: &mut ChildSpawnerCommands, row: usize, label: &str, value: 
                             ));
                             line.spawn((
                                 Node {
-                                    width: Val::Px(LABEL_WIDTH * 0.75),
+                                    width: Val::Px(VALUE_WIDTH),
                                     justify_content: JustifyContent::Center,
                                     ..default()
                                 },
+                                TextLayout::no_wrap(),
                                 row_text(value, row),
                             ));
                         }
@@ -617,12 +620,9 @@ fn draw_menu(
                 screen.spawn(run::screen_line("AUTHORS", 56.0, TITLE_COLOR));
                 spacer(screen, 4.0);
                 screen.spawn(run::screen_line("MADE BY", 20.0, HINT_COLOR));
-                let (event, team) = AUTHORS.split_last().expect("в списке авторов есть строка о джеме");
-                for name in team {
+                for name in AUTHORS {
                     screen.spawn(run::screen_line(*name, 32.0, Color::WHITE));
                 }
-                spacer(screen, 4.0);
-                screen.spawn(run::screen_line(*event, 24.0, TITLE_COLOR));
                 spacer(screen, 8.0);
                 spawn_row(screen, index_of(Item::Back), "BACK", None, None);
                 back_hint(screen, "ENTER, ESC - BACK", "{A}, {B} - BACK");
@@ -707,10 +707,8 @@ mod tests {
 
     #[test]
     fn авторы_по_алфавиту_фамилий() {
-        let (event, team) = AUTHORS.split_last().unwrap();
-        assert_eq!(team, ["Nidzhat Guseynov", "Ivan Tsarev", "Sergei Zotov"]);
-        assert_eq!(*event, "Game Jam Karlsruhe 2026");
-        let surnames: Vec<_> = team.iter().map(|name| name.rsplit(' ').next().unwrap()).collect();
+        assert_eq!(AUTHORS, ["Nidzhat Guseynov", "Ivan Tsarev", "Sergei Zotov"]);
+        let surnames: Vec<_> = AUTHORS.iter().map(|name| name.rsplit(' ').next().unwrap()).collect();
         assert!(surnames.is_sorted());
     }
 }

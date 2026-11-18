@@ -60,11 +60,11 @@ Enter. Клик мышью по пункту MUST NOT давать выстре�
 
 ### Requirement: Экран авторов
 Экран «Авторы» (в игре — AUTHORS) SHALL показывать участников команды по алфавиту фамилий —
-Nidzhat Guseynov, Ivan Tsarev, Sergei Zotov — и строку «Game Jam Karlsruhe 2026».
+Nidzhat Guseynov, Ivan Tsarev, Sergei Zotov.
 
 #### Scenario: Авторы
 - **WHEN** игрок выбирает «Авторы»
-- **THEN** видны три имени в порядке Nidzhat Guseynov, Ivan Tsarev, Sergei Zotov и строка о Game Jam Karlsruhe 2026
+- **THEN** видны три имени в порядке Nidzhat Guseynov, Ivan Tsarev, Sergei Zotov
 
 ### Requirement: Выход из игры
 Пункт «Выход» SHALL закрывать игру.
