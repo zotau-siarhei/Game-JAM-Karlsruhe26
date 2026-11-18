@@ -21,7 +21,7 @@ use crate::enemy::Enemy;
 use crate::explosion::Explosion;
 use crate::frame::GameSet;
 use crate::hq::{HqMemory, HqTone, VoiceCue};
-use crate::laser::Beam;
+use crate::laser::FireLaser;
 use crate::lava::CrustBreached;
 use crate::mortar::{FLIGHT_TIME, Shell};
 use crate::obstacles::Rammed;
@@ -685,18 +685,19 @@ fn sound_rockets(rockets: Query<&Transform, Added<Rocket>>, mut sounds: MessageW
     }
 }
 
-/// Импульс лазера — разряд у лунохода. Вызов авиаудара — подтверждение штаба, а когда самолёт
-/// появляется (через [`airstrike::DELAY`](crate::airstrike::DELAY) с), — гул его пролёта.
+/// Импульс лазера — разряд у начала луча: у своего лазера он на луноходе, вражеский затихает
+/// с расстоянием. Вызов авиаудара — подтверждение штаба, а когда самолёт появляется (через
+/// [`airstrike::DELAY`](crate::airstrike::DELAY) с), — гул его пролёта.
 fn sound_special_weapons(
     time: Res<Time>,
-    beams: Query<(), Added<Beam>>,
+    mut lasers: MessageReader<FireLaser>,
     strikes: Query<(), Added<Strike>>,
     mut memory: ResMut<AudioMemory>,
     mut sounds: MessageWriter<PlaySound>,
     mut cues: MessageWriter<VoiceCue>,
 ) {
-    for _ in &beams {
-        sounds.write(PlaySound::new("laser_fire"));
+    for shot in lasers.read() {
+        sounds.write(PlaySound::at("laser_fire", shot.origin));
     }
     for _ in &strikes {
         memory.flybys.push(crate::airstrike::DELAY);
