@@ -24,9 +24,11 @@ serde_json = "1"
 # Имя и производитель геймпада: их знает только Java-класс InputDevice.
 jni = "0.21"
 
-# Копия с фильтром ввода для геймпада: её готовит scripts/build-android.sh.
+# android-activity — копия с фильтром ввода для геймпада, её готовит scripts/build-android.sh.
+# bevy_audio — та же копия, что в обычной сборке (Cargo.toml игры).
 [patch.crates-io]
 android-activity = { path = "../target/android/patched/android-activity" }
+bevy_audio = { path = "../vendor/bevy_audio" }
 
 [profile.release]
 # Крейт игры компилируется параллельно: сборка быстрее, игра почти не медленнее.

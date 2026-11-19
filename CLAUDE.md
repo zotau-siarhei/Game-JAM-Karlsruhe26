@@ -206,7 +206,7 @@ cargo test                                  # тесты
 ## Зависимости
 
 - `bevy_hanabi` — GPU-частицы: взрывы, дым, искры.
-- `bevy_audio` — своя копия 0.20.1 в `vendor/bevy_audio` (`[patch.crates-io]`): вывод звука переоткрывается
+- `bevy_audio` — своя копия 0.20.1 в `vendor/bevy_audio` (`[patch.crates-io]`, и в `android/Cargo.toml`): вывод звука переоткрывается
   при пропаже или смене устройства (наушники отключились и вернулись), см. `vendor/bevy_audio/PATCH.md`.
 - `bevy_trauma_shake` — тряска камеры.
 - `noise` — шум для ландшафта.
