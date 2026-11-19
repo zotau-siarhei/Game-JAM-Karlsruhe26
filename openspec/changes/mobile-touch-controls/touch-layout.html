@@ -1,0 +1,430 @@
+<title>Space Guard — касания</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Раскладка: заголовок, вкладки состояний, телефон в альбомной ориентации (SVG в dp), легенда с номерами элементов. */
+:root {
+  --bg: #eef1f3; --panel: #ffffff; --fg: #17202a; --muted: #5a6875; --line: #cfd7de;
+  --accent: #d9622b; --chip: #e3e8ec;
+  --drive: #2bb3c9; --aim: #ef6a3a; --btn: #e8b33a; --strike: #a77cff; --hud: #dfe6ec;
+  --display: "Chakra Petch", "Segoe UI", system-ui, sans-serif;
+  --body: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #11161b; --panel: #192129; --fg: #e4eaef; --muted: #93a1ad; --line: #2c3842; --accent: #f08350; --chip: #222c35; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #11161b; --panel: #192129; --fg: #e4eaef; --muted: #93a1ad; --line: #2c3842; --accent: #f08350; --chip: #222c35; color-scheme: dark }
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font: 15px/1.55 var(--body); }
+.wrap { max-width: 1180px; margin: 0 auto; padding-block: 28px 56px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; gap: 22px; }
+header h1 { font: 700 clamp(26px, 4vw, 38px)/1.1 var(--display); margin: 0 0 6px; letter-spacing: .01em; text-wrap: balance; }
+header p { margin: 0; color: var(--muted); max-width: 70ch; }
+.eyebrow { font: 600 12px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--accent); margin-bottom: 8px; }
+.tabs { display: flex; flex-wrap: wrap; gap: 8px; }
+.tabs button { font: 600 14px var(--display); letter-spacing: .03em; padding: 9px 14px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--fg); cursor: pointer; }
+.tabs button[aria-selected="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+.tabs button:focus-visible, .stage:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 22px; align-items: start; }
+@media (max-width: 900px) { .main { grid-template-columns: minmax(0, 1fr); } }
+.device { background: #05080b; border-radius: 34px; padding: 14px; box-shadow: 0 1px 0 var(--line), 0 18px 40px -24px rgba(0,0,0,.6); }
+.device.tablet { border-radius: 26px; padding: 18px; max-width: 760px; }
+.stage { display: block; width: 100%; height: auto; border-radius: 22px; touch-action: none; user-select: none; -webkit-user-select: none; }
+.device.tablet .stage { border-radius: 10px; }
+.caption { display: flex; flex-wrap: wrap; gap: 6px 16px; justify-content: space-between; margin-top: 10px; color: var(--muted); font: 13px var(--mono); }
+.legend { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; display: grid; gap: 12px; min-width: 0; }
+.legend h2 { font: 700 18px var(--display); margin: 0; }
+.legend p.lead { margin: 0; color: var(--muted); font-size: 14px; }
+.legend ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.legend li { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 10px; align-items: start; }
+.num { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font: 600 12px var(--mono); color: #0b0f13; }
+.legend b { font-weight: 600; }
+.legend .size { font: 12px var(--mono); color: var(--muted); }
+.notes { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+.note { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; min-width: 0; }
+.note h3 { font: 700 15px var(--display); margin: 0 0 6px; letter-spacing: .02em; }
+.note p, .note ul { margin: 0; color: var(--muted); font-size: 14px; }
+.note ul { padding-left: 18px; }
+.note a { color: var(--accent); }
+.try { font: 13px var(--body); color: var(--muted); }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">openspec · mobile-touch-controls</div>
+    <h1>Сенсорное управление Space Guard</h1>
+    <p>Какие области экрана телефона и планшета занимает управление и что появляется поверх игры. Размеры в dp (логических точках) на телефоне 20:9 — 800 × 360 dp в альбомной ориентации. Кругами на схеме можно поводить мышью или пальцем.</p>
+  </header>
+
+  <div class="tabs" role="tablist" id="tabs"></div>
+
+  <div class="main">
+    <div>
+      <div class="device" id="device">
+        <svg class="stage" id="stage" tabindex="0" aria-label="Схема экрана" role="img"></svg>
+      </div>
+      <div class="caption"><span id="dims"></span><span class="try" id="try"></span></div>
+    </div>
+    <aside class="legend">
+      <h2 id="lg-title"></h2>
+      <p class="lead" id="lg-lead"></p>
+      <ol id="lg-list"></ol>
+    </aside>
+  </div>
+
+  <section class="notes">
+    <div class="note">
+      <h3>Почему так</h3>
+      <ul>
+        <li>Два больших пальца лежат в нижних углах: левый ведёт машину, правый целится и стреляет. Так устроены Brawl Stars, World of Tanks Blitz и Call of Duty Mobile.</li>
+        <li>Левый стик появляется там, где коснулся палец: не нужно попадать в нарисованный круг.</li>
+        <li>Огонь идёт, пока палец тянет стик прицела, без отдельной кнопки огня. Короткое касание стреляет по ближайшему врагу, как в Brawl Stars.</li>
+        <li>Кнопки не меньше 48 dp (рекомендация Android; у Apple 44 pt). Стики не растягиваются на планшете: размер пальца не меняется.</li>
+      </ul>
+    </div>
+    <div class="note">
+      <h3>Что уйдёт с привычных мест</h3>
+      <ul>
+        <li>Мини-карта: из правого нижнего угла в правый верхний, там же пауза.</li>
+        <li>Субтитры штаба: поднимаются над панелью оружия, в среднюю полосу.</li>
+        <li>Подсказки клавиш: вместо «Esc», «Пробел» и «ЛКМ» — касания.</li>
+      </ul>
+    </div>
+    <div class="note">
+      <h3>Источники</h3>
+      <ul>
+        <li><a href="https://gamedeveloper.com/design/virtual-dual-stick-controls-usability" target="_blank" rel="noopener">Game Developer: удобство виртуальных двух стиков</a></li>
+        <li><a href="https://gamedeveloper.com/design/usability-expert-offers-best-practices-for-ios-twin-stick-shooters" target="_blank" rel="noopener">Game Developer: twin-stick на iOS</a></li>
+        <li><a href="https://lootbar.gg/blog/en/best-brawl-stars-control-settings-and-layout-guide.html" target="_blank" rel="noopener">Раскладка Brawl Stars</a></li>
+        <li><a href="https://developer.android.com/games/sdk/game-controller/common-pitfalls" target="_blank" rel="noopener">Android: частые ошибки ввода</a></li>
+        <li><a href="https://www.yorku.ca/mack/ec2017.html" target="_blank" rel="noopener">York University, 2017: касание против наклона в шутере сверху</a></li>
+      </ul>
+    </div>
+  </section>
+</div>
+
+<script>
+const C = { drive: "#2bb3c9", aim: "#ef6a3a", btn: "#e8b33a", strike: "#a77cff", hud: "#dfe6ec", dim: "#8a97a3" };
+const WEAPONS = [["MG", "#d9d9d9"], ["M", "#f2a633"], ["R", "#f2d940"], ["H", "#8ce65a"], ["L", "#59d9ff"], ["A", "#bf80ff"]];
+const NS = "http://www.w3.org/2000/svg";
+
+// Состояния схемы: размер экрана в dp, элементы и легенда. Координаты — dp от левого верхнего угла.
+const PHONE = { w: 800, h: 360, inset: 24 };
+const TABLET = { w: 1180, h: 820, inset: 0 };
+
+function phoneHud(L, s, opts = {}) {
+  const i = s.inset;
+  // Полоса здоровья и тревога — как сейчас, в левом верхнем углу.
+  L.rect(i + 14, 14, 190, 14, C.hud, 0.9, 3); L.rect(i + 14, 14, 128, 14, "#5fd16f", 0.95, 3);
+  L.text(i + 14, 44, "ТРЕВОГА ▮▮▯▯▯", 10, C.hud, "start", 0.85);
+  if (!opts.noMap) { L.circle(s.w - i - 108, 74, 56, "#0f1a14", 0.85, C.hud); L.text(s.w - i - 108, 78, "мини-карта", 10, C.hud); L.num(s.w - i - 108, 140, 5); }
+}
+
+const STATES = [
+  { id: "run", label: "Забег", screen: PHONE,
+    title: "Забег", lead: "Обычный бой. Левый палец ведёт машину, правый целится и стреляет. Кнопки ремонта нет: здоровье возвращают аптечки и восстановление.",
+    draw(L, s) {
+      const i = s.inset;
+      L.zone(0, 96, 330, s.h - 96, C.drive, "область езды");
+      L.zone(560, 110, s.w - 560, s.h - 110, C.aim, "область прицела");
+      phoneHud(L, s);
+      L.button(s.w - i - 36, 36, 22, "II", C.hud); L.num(s.w - i - 36, 72, 4);
+      L.stick("drive", 140, 262, 60, C.drive); L.num(140, 336, 1);
+      L.stick("aim", 690, 262, 62, C.aim); L.num(616, 334, 2);
+      L.weapons(s, 1); L.num(s.w / 2, 296, 3);
+      L.band(250, 238, 300, 26, "ШТАБ: «Колонна с юга, держись!»"); L.num(236, 251, 6);
+      L.rover(400, 170);
+    },
+    legend: [
+      [1, C.drive, "Стик езды", "Плавающий: появляется там, где палец коснулся левой области, и едет за пальцем, если тот ушёл дальше края. Луноход поворачивает и едет туда, куда наклонён стик относительно экрана, как с левого стика геймпада. Палец снят — газ сброшен.", "радиус 60 dp · рукоять 26 dp · мёртвая зона 12 %"],
+      [2, C.aim, "Стик прицела и огонь", "По умолчанию стоит в правом нижнем углу, но включается касанием в любом месте правой области, кроме кнопок. Оттяжка задаёт направление прицела с помощью в прицеливании, и, пока палец держит стик, оружие стреляет. Короткое касание без оттяжки — очередь по ближайшему врагу.", "радиус 62 dp · касание короче 0,25 с"],
+      [3, C.btn, "Панель оружия", "Те же значки, что сейчас, но крупнее, и каждый нажимается. Пустой вид тусклый, нажатие на него не срабатывает. Пролистывание пальцем по панели меняет оружие по порядку.", "6 × 48 dp, шаг 6 dp"],
+      [4, C.hud, "Пауза", "Правый верхний угол, вне досягаемости случайного касания. Как Esc.", "44 dp"],
+      [5, C.hud, "Мини-карта", "Переезжает в правый верхний угол: правый нижний занят стиком прицела.", "радиус 56 dp"],
+      [6, C.hud, "Субтитры штаба", "Поднимаются в среднюю полосу над панелью оружия, между стиками.", ""]
+    ] },
+  { id: "mortar", label: "Мортира", screen: PHONE,
+    title: "Мортира и дальность", lead: "У мортиры и авиаудара дальность важна так же, как направление: её задаёт длина оттяжки стика прицела.",
+    draw(L, s) {
+      L.zone(560, 110, s.w - 560, s.h - 110, C.aim, "");
+      phoneHud(L, s);
+      L.weapons(s, 2);
+      L.rover(330, 190);
+      // Дуга полёта и отметка падения.
+      L.path(`M330 190 Q 430 60 520 150`, C.aim, 2.5, "6 6");
+      L.circle(520, 150, 16, "none", 1, C.aim); L.circle(520, 150, 4, C.aim, 1); L.num(520, 120, 2);
+      L.stick("aim", 690, 262, 62, C.aim, { range: true, knob: [-40, -32] }); L.num(616, 334, 1);
+      L.text(690, 188, "40 м", 10, C.hud); L.text(690, 214, "20 м", 10, C.hud);
+    },
+    legend: [
+      [1, C.aim, "Оттяжка — дальность", "Кольца на стике показывают дальность: у края 40 м (предел прицела), у центра около 5 м. Направление — как у других видов оружия.", "линейно от 12 % до 100 % хода"],
+      [2, C.aim, "Отметка падения", "На земле видны точка падения и дуга полёта снаряда. Пока палец держит стик, мортира стреляет со своей скорострельностью.", ""]
+    ] },
+  { id: "strike", label: "Авиаудар", screen: PHONE,
+    title: "Наведение авиаудара", lead: "Касание стика прицела с выбранным авиаударом открывает наведение: время замедляется, камера поднимается. Управление на экране меняется.",
+    draw(L, s) {
+      const i = s.inset;
+      L.zone(0, 64, 560, s.h - 64, C.strike, "палец ведёт отметку со сдвигом");
+      L.rect(0, 0, s.w, s.h, "#1a1030", 0.25, 0);
+      // Серия бомб.
+      for (let k = 0; k < 5; k++) L.circle(240 + k * 26, 150 - k * 14, 9, "none", 1, C.strike);
+      L.path("M228 157 L 360 86", C.strike, 2, "4 4"); L.num(300, 72, 1);
+      L.finger(330, 230); L.path("M330 230 L 296 120", C.hud, 1, "3 4");
+      L.button(600, 176, 26, "⟲", C.strike); L.button(600, 246, 26, "⟳", C.strike); L.num(564, 211, 2);
+      L.button(700, 262, 46, "УДАР", C.aim, 13); L.num(700, 330, 3);
+      L.pill(s.w - i - 120, 18, 104, 40, "ОТМЕНА", C.hud); L.num(s.w - i - 132, 38, 4);
+      L.rect(s.w / 2 - 110, 18, 220, 6, C.dim, 0.5, 3); L.rect(s.w / 2 - 110, 18, 140, 6, C.strike, 0.95, 3); L.num(s.w / 2 + 128, 21, 5);
+    },
+    legend: [
+      [1, C.strike, "Отметка ведётся пальцем", "Палец в любой свободной точке двигает отметку на столько же, на сколько сдвинулся сам: отметка не прячется под пальцем. Двумя пальцами — поворот серии.", "до 80 м от лунохода"],
+      [2, C.strike, "Поворот серии", "Шаг 15°, как колесо мыши и бамперы.", "52 dp"],
+      [3, C.aim, "Удар", "Вызывает самолёт в текущей точке. Стоит на месте стика прицела: палец уже там.", "92 dp"],
+      [4, C.hud, "Отмена", "Закрывает наведение без траты заряда. На месте паузы.", "104 × 40 dp"],
+      [5, C.strike, "Остаток времени", "Через 6 с реального времени удар вызывается сам, как сейчас.", ""]
+    ] },
+  { id: "menu", label: "Меню и пауза", screen: PHONE,
+    title: "Меню, пауза, конец забега", lead: "Все экраны вне боя работают касанием: пункт выбирается и срабатывает одним касанием.",
+    draw(L, s) {
+      L.rect(0, 0, s.w, s.h, "#0b1016", 0.55, 0);
+      L.text(s.w / 2, 70, "ПАУЗА", 22, C.hud);
+      const rows = ["ПРОДОЛЖИТЬ", "ЗАНОВО", "В МЕНЮ"];
+      rows.forEach((r, k) => { L.pill(s.w / 2 - 130, 100 + k * 62, 260, 50, r, k ? C.hud : C.btn); });
+      L.num(s.w / 2 + 150, 125, 1);
+      L.pill(70, 278, 230, 46, "◀  ГРОМКОСТЬ 70 %  ▶", C.hud); L.num(60, 270, 2);
+      L.text(s.w - 160, 300, "свайп ← → по таблице рекордов", 11, C.hud); L.num(s.w - 300, 296, 3);
+    },
+    legend: [
+      [1, C.btn, "Пункты — касанием", "Касание выбирает и сразу выполняет пункт. Строки не ниже 48 dp, между ними промежуток. Пауза, конец забега, главное меню, сложность.", "строка ≥ 48 dp"],
+      [2, C.hud, "Настройки", "У значения стрелки ◀ ▶, касание по ним меняет значение. В настройках новый раздел «Касания»: размер элементов (S/M/L) и прозрачность.", ""],
+      [3, C.hud, "Рекорды", "Таблица сложности листается свайпом влево и вправо или стрелками.", ""]
+    ] },
+  { id: "name", label: "Имя рекорда", screen: PHONE,
+    title: "Ввод имени рекорда", lead: "Системную клавиатуру из игры на Bevy не вызвать, поэтому для имени своя экранная клавиатура.",
+    draw(L, s) {
+      L.rect(0, 0, s.w, s.h, "#0b1016", 0.6, 0);
+      L.text(s.w / 2, 40, "НОВЫЙ РЕКОРД · 12:48", 16, C.btn);
+      L.pill(s.w / 2 - 120, 54, 240, 40, "LUNA_", C.hud);
+      const keys = "QWERTYUIOP ASDFGHJKL ZXCVBNM".split(" ");
+      keys.forEach((row, r) => [...row].forEach((ch, k) => {
+        const w = 52, x = s.w / 2 - row.length * (w + 6) / 2 + k * (w + 6);
+        L.key(x, 110 + r * 56, w, 48, ch);
+      }));
+      L.key(s.w / 2 + 230, 222, 90, 48, "⌫"); L.key(s.w / 2 - 320, 222, 90, 48, "0–9");
+      L.pill(s.w / 2 - 80, 292, 160, 48, "ГОТОВО", C.btn);
+      L.num(s.w / 2 + 140, 74, 1); L.num(s.w / 2 + 100, 316, 2);
+    },
+    legend: [
+      [1, C.hud, "Поле имени", "Те же правила, что с клавиатуры: буквы и цифры, длина как сейчас. Физическая клавиатура и геймпад работают как прежде.", ""],
+      [2, C.btn, "Клавиши", "Латиница, переключение на цифры, стирание, «Готово» — как Enter.", "клавиша 52 × 48 dp"]
+    ] },
+  { id: "tablet", label: "Планшет", screen: TABLET,
+    title: "Планшет", lead: "Та же раскладка. Области — доли экрана, а стики и кнопки — в dp: на большом экране они не раздуваются и остаются под пальцами в нижних углах.",
+    draw(L, s) {
+      L.zone(0, 200, 480, s.h - 200, C.drive, "область езды");
+      L.zone(800, 220, s.w - 800, s.h - 220, C.aim, "область прицела");
+      L.rect(16, 16, 260, 18, C.hud, 0.9, 3); L.rect(16, 16, 170, 18, "#5fd16f", 0.95, 3);
+      L.circle(s.w - 140, 92, 70, "#0f1a14", 0.85, C.hud); L.text(s.w - 140, 96, "мини-карта", 11, C.hud);
+      L.button(s.w - 40, 40, 22, "II", C.hud);
+      L.stick("drive", 170, 650, 60, C.drive); L.num(170, 724, 1);
+      L.stick("aim", 1040, 650, 62, C.aim); L.num(966, 722, 2);
+      L.weapons(s, 1);
+      L.rover(590, 380);
+    },
+    legend: [
+      [1, C.drive, "Стик езды", "Тот же размер, что на телефоне. Область — левые 40 % экрана ниже верхней полосы интерфейса.", "радиус 60 dp"],
+      [2, C.aim, "Стик прицела", "По умолчанию на прежнем расстоянии от правого нижнего угла, а не в долях экрана.", "радиус 62 dp"]
+    ] }
+];
+
+// Рисование в SVG.
+function makeLayer(svg) {
+  const el = (name, attrs, parent = svg) => { const e = document.createElementNS(NS, name); for (const k in attrs) e.setAttribute(k, attrs[k]); parent.appendChild(e); return e; };
+  const L = {
+    el,
+    rect(x, y, w, h, fill, op = 1, r = 0) { return el("rect", { x, y, width: w, height: h, rx: r, fill, "fill-opacity": op }); },
+    circle(x, y, r, fill, op = 1, stroke) { return el("circle", { cx: x, cy: y, r, fill, "fill-opacity": op, stroke: stroke || "none", "stroke-opacity": 0.6, "stroke-width": 1.5 }); },
+    text(x, y, t, size, fill, anchor = "middle", op = 1) { const e = el("text", { x, y, "font-size": size, fill, "text-anchor": anchor, "fill-opacity": op, "font-family": "IBM Plex Mono, monospace" }); e.textContent = t; return e; },
+    path(d, stroke, w, dash) { return el("path", { d, stroke, "stroke-width": w, fill: "none", "stroke-dasharray": dash || "" }); },
+    zone(x, y, w, h, color, label) {
+      el("rect", { x, y, width: w, height: h, fill: color, "fill-opacity": 0.12, stroke: color, "stroke-opacity": 0.7, "stroke-dasharray": "7 6", "stroke-width": 1.5, rx: 6 });
+      if (label) L.text(x + 10, y + 18, label, 11, color, "start");
+    },
+    button(x, y, r, t, color, size) {
+      const g = el("g", {});
+      el("circle", { cx: x, cy: y, r, fill: "#0b0f13", "fill-opacity": 0.45, stroke: color, "stroke-width": 2 }, g);
+      const e = el("text", { x, y: y + (size || 14) * 0.36, "font-size": size || 16, fill: color, "text-anchor": "middle", "font-family": "Chakra Petch, sans-serif", "font-weight": 700 }, g); e.textContent = t;
+      return g;
+    },
+    pill(x, y, w, h, t, color) {
+      el("rect", { x, y, width: w, height: h, rx: h / 2, fill: "#0b0f13", "fill-opacity": 0.55, stroke: color, "stroke-width": 2 });
+      const e = el("text", { x: x + w / 2, y: y + h / 2 + 5, "font-size": 14, fill: color, "text-anchor": "middle", "font-family": "Chakra Petch, sans-serif", "font-weight": 700 }); e.textContent = t;
+    },
+    key(x, y, w, h, t) {
+      el("rect", { x, y, width: w, height: h, rx: 8, fill: "#1b2530", "fill-opacity": 0.9, stroke: C.hud, "stroke-opacity": 0.3 });
+      const e = el("text", { x: x + w / 2, y: y + h / 2 + 6, "font-size": 16, fill: C.hud, "text-anchor": "middle", "font-family": "Chakra Petch, sans-serif", "font-weight": 600 }); e.textContent = t;
+    },
+    band(x, y, w, h, t) {
+      el("rect", { x, y, width: w, height: h, rx: 4, fill: "#000", "fill-opacity": 0.45 });
+      L.text(x + w / 2, y + h / 2 + 4, t, 11, C.hud);
+    },
+    num(x, y, n) {
+      const color = { 1: C.drive }[n];
+      el("circle", { cx: x, cy: y, r: 10, fill: "#f4f6f8", stroke: "#0b0f13", "stroke-width": 1.5 });
+      const e = el("text", { x, y: y + 4, "font-size": 11, "font-weight": 600, fill: "#0b0f13", "text-anchor": "middle", "font-family": "IBM Plex Mono, monospace" }); e.textContent = n;
+    },
+    rover(x, y) {
+      const g = el("g", { transform: `translate(${x} ${y})` });
+      el("rect", { x: -13, y: -9, width: 26, height: 18, rx: 4, fill: "#c9d2da" }, g);
+      el("rect", { x: -16, y: -12, width: 6, height: 24, rx: 2, fill: "#5b6670" }, g);
+      el("rect", { x: 10, y: -12, width: 6, height: 24, rx: 2, fill: "#5b6670" }, g);
+      L.turret = el("line", { x1: 0, y1: 0, x2: 0, y2: -22, stroke: "#eef2f5", "stroke-width": 4, "stroke-linecap": "round" }, g);
+      L.roverPos = [x, y]; L.roverG = g;
+      L.aimLine = el("line", { x1: x, y1: y, x2: x, y2: y, stroke: C.aim, "stroke-width": 2, "stroke-dasharray": "5 5", opacity: 0 });
+    },
+    finger(x, y) { el("ellipse", { cx: x, cy: y, rx: 16, ry: 20, fill: "#f0c8a8", "fill-opacity": 0.55, stroke: "#fff", "stroke-opacity": 0.4 }); },
+    weapons(s, selected) {
+      const w = 48, gap = 6, total = 6 * w + 5 * gap, x0 = s.w / 2 - total / 2, y = s.h - 12 - w;
+      WEAPONS.forEach(([t, col], k) => {
+        const sel = k + 1 === selected, empty = k === 3;
+        el("rect", { x: x0 + k * (w + gap), y, width: w, height: w, rx: 8, fill: "#0b0f13", "fill-opacity": 0.55, stroke: col, "stroke-width": sel ? 3 : 1.5, "stroke-opacity": empty ? 0.3 : 0.95 });
+        const e = el("text", { x: x0 + k * (w + gap) + w / 2, y: y + w / 2 + 6, "font-size": 16, "font-weight": 700, fill: col, "fill-opacity": empty ? 0.3 : 1, "text-anchor": "middle", "font-family": "Chakra Petch, sans-serif" }); e.textContent = t;
+      });
+    },
+    stick(kind, x, y, r, color, opts = {}) {
+      const g = el("g", { "data-stick": kind });
+      el("circle", { cx: x, cy: y, r, fill: "#0b0f13", "fill-opacity": 0.35, stroke: color, "stroke-width": 2, "stroke-opacity": 0.8 }, g);
+      if (opts.range) [0.33, 0.66].forEach(f => el("circle", { cx: x, cy: y, r: r * f, fill: "none", stroke: color, "stroke-opacity": 0.45, "stroke-dasharray": "3 4" }, g));
+      el("circle", { cx: x, cy: y, r: r * 0.12, fill: "none", stroke: color, "stroke-opacity": 0.5 }, g);
+      const [kx, ky] = opts.knob || [0, 0];
+      const knob = el("circle", { cx: x + kx, cy: y + ky, r: 26, fill: color, "fill-opacity": 0.75 }, g);
+      L.sticks = L.sticks || {}; L.sticks[kind] = { g, base: g.firstChild, knob, home: [x, y], r, color };
+    }
+  };
+  return L;
+}
+
+// Живые стики: касание в области двигает стик; левый плавающий, правый с местом по умолчанию.
+let current = STATES[0], L = null, active = {};
+const svg = document.getElementById("stage");
+
+function render(state) {
+  current = state; active = {};
+  svg.innerHTML = "";
+  const s = state.screen;
+  svg.setAttribute("viewBox", `0 0 ${s.w} ${s.h}`);
+  L = makeLayer(svg);
+  // Фон: поверхность планеты.
+  const defs = L.el("defs", {});
+  const grad = L.el("radialGradient", { id: "ground", cx: "50%", cy: "45%", r: "75%" }, defs);
+  L.el("stop", { offset: "0%", "stop-color": "#4a4134" }, grad); L.el("stop", { offset: "100%", "stop-color": "#1f1b16" }, grad);
+  L.rect(0, 0, s.w, s.h, "url(#ground)", 1, 0);
+  [[0.2, 0.3, 40], [0.62, 0.22, 26], [0.75, 0.62, 50], [0.33, 0.7, 30], [0.5, 0.48, 18]].forEach(([fx, fy, r]) =>
+    L.circle(fx * s.w, fy * s.h, r, "#15110d", 0.45));
+  if (s.inset) { L.rect(0, 0, s.inset, s.h, "#000", 0.35, 0); L.rect(s.w - s.inset, 0, s.inset, s.h, "#000", 0.35, 0); }
+  state.draw(L, s);
+  document.getElementById("device").classList.toggle("tablet", s === TABLET);
+  document.getElementById("dims").textContent = s === PHONE
+    ? "телефон 20:9 · 800 × 360 dp · затемнены вырезы экрана по 24 dp"
+    : "планшет · 1180 × 820 dp";
+  document.getElementById("try").textContent = L.sticks ? "Потяни стики мышью или пальцем" : "";
+  document.getElementById("lg-title").textContent = state.title;
+  document.getElementById("lg-lead").textContent = state.lead;
+  const list = document.getElementById("lg-list"); list.innerHTML = "";
+  state.legend.forEach(([n, color, name, text, size]) => {
+    const li = document.createElement("li");
+    li.innerHTML = `<span class="num" style="background:${color}">${n}</span><div><b></b> <span class="t"></span>${size ? `<div class="size"></div>` : ""}</div>`;
+    li.querySelector("b").textContent = name + ".";
+    li.querySelector(".t").textContent = text;
+    if (size) li.querySelector(".size").textContent = size;
+    list.appendChild(li);
+  });
+  document.querySelectorAll("#tabs button").forEach(b => b.setAttribute("aria-selected", b.dataset.id === state.id));
+  try { localStorage.setItem("touch-layout-tab", state.id); } catch (e) {}
+}
+
+function toLocal(ev) {
+  const p = svg.createSVGPoint(); p.x = ev.clientX; p.y = ev.clientY;
+  return p.matrixTransform(svg.getScreenCTM().inverse());
+}
+
+function zoneOf(pt) {
+  if (!L || !L.sticks) return null;
+  const s = current.screen;
+  if (L.sticks.drive && pt.x < s.w * 0.42 && pt.y > s.h * 0.25) return "drive";
+  if (L.sticks.aim && pt.x > s.w * 0.68 && pt.y > s.h * 0.28) return "aim";
+  return null;
+}
+
+function setKnob(stick, dx, dy) {
+  const len = Math.hypot(dx, dy), k = len > stick.r ? stick.r / len : 1;
+  stick.knob.setAttribute("cx", +stick.base.getAttribute("cx") + dx * k);
+  stick.knob.setAttribute("cy", +stick.base.getAttribute("cy") + dy * k);
+  return [dx * k / stick.r, dy * k / stick.r];
+}
+
+function moveBase(stick, x, y) {
+  stick.g.querySelectorAll("circle").forEach(c => { if (c !== stick.knob) { c.setAttribute("cx", x); c.setAttribute("cy", y); } });
+}
+
+svg.addEventListener("pointerdown", ev => {
+  const pt = toLocal(ev), kind = zoneOf(pt);
+  if (!kind || Object.values(active).includes(kind)) return;
+  svg.setPointerCapture(ev.pointerId);
+  active[ev.pointerId] = kind;
+  const stick = L.sticks[kind];
+  // Левый стик встаёт под палец, правый тоже, если палец не на месте по умолчанию.
+  moveBase(stick, pt.x, pt.y); setKnob(stick, 0, 0);
+  stick.knob.setAttribute("fill-opacity", 0.95);
+});
+svg.addEventListener("pointermove", ev => {
+  const kind = active[ev.pointerId]; if (!kind) return;
+  const stick = L.sticks[kind], pt = toLocal(ev);
+  let bx = +stick.base.getAttribute("cx"), by = +stick.base.getAttribute("cy");
+  let dx = pt.x - bx, dy = pt.y - by;
+  const len = Math.hypot(dx, dy);
+  if (kind === "drive" && len > stick.r) { // плавающий: основание едет за пальцем
+    bx = pt.x - dx / len * stick.r; by = pt.y - dy / len * stick.r; moveBase(stick, bx, by); dx = pt.x - bx; dy = pt.y - by;
+  }
+  const [nx, ny] = setKnob(stick, dx, dy);
+  if (L.roverG && Math.hypot(nx, ny) > 0.12) {
+    const [rx, ry] = L.roverPos;
+    if (kind === "drive") {
+      const nxp = Math.max(60, Math.min(current.screen.w - 60, rx + nx * 3)), nyp = Math.max(90, Math.min(current.screen.h - 90, ry + ny * 3));
+      L.roverPos = [nxp, nyp];
+      L.roverG.setAttribute("transform", `translate(${nxp} ${nyp}) rotate(${Math.atan2(nx, -ny) * 180 / Math.PI})`);
+      L.aimLine.setAttribute("x1", nxp); L.aimLine.setAttribute("y1", nyp);
+    } else {
+      const ang = Math.atan2(ny, nx);
+      L.aimLine.setAttribute("x1", rx); L.aimLine.setAttribute("y1", ry);
+      L.aimLine.setAttribute("x2", rx + Math.cos(ang) * 140); L.aimLine.setAttribute("y2", ry + Math.sin(ang) * 140);
+      L.aimLine.setAttribute("opacity", 1);
+    }
+  }
+});
+function release(ev) {
+  const kind = active[ev.pointerId]; if (!kind) return;
+  delete active[ev.pointerId];
+  const stick = L.sticks[kind];
+  moveBase(stick, stick.home[0], stick.home[1]); setKnob(stick, 0, 0);
+  stick.knob.setAttribute("fill-opacity", 0.75);
+  if (kind === "aim" && L.aimLine) L.aimLine.setAttribute("opacity", 0);
+}
+svg.addEventListener("pointerup", release);
+svg.addEventListener("pointercancel", release);
+
+const tabs = document.getElementById("tabs");
+STATES.forEach(st => {
+  const b = document.createElement("button");
+  b.textContent = st.label; b.dataset.id = st.id; b.setAttribute("role", "tab");
+  b.addEventListener("click", () => render(st));
+  tabs.appendChild(b);
+});
+let start = STATES[0];
+try { const saved = localStorage.getItem("touch-layout-tab"); start = STATES.find(s => s.id === saved) || start; } catch (e) {}
+render(start);
+</script>
