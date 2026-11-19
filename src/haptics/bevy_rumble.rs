@@ -2,7 +2,7 @@
 //! На Linux для неё нужна запись в `/dev/input/event*` геймпада: обычно её даёт правило udev
 //! `uaccess` активному пользователю.
 
-#![cfg_attr(target_os = "macos", allow(dead_code))]
+#![cfg_attr(any(target_os = "macos", target_os = "ios"), allow(dead_code))]
 
 use std::time::Duration;
 

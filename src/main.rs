@@ -9,6 +9,8 @@ mod airstrike;
 mod alarm;
 #[cfg(target_os = "android")]
 mod android;
+#[cfg(target_os = "ios")]
+mod ios;
 mod anim_lod;
 mod arsenal;
 mod audio_events;
@@ -151,6 +153,13 @@ fn main() {
             // В браузере игра рисует в холст `#space-guard` и занимает всю страницу.
             canvas: cfg!(target_arch = "wasm32").then(|| "#space-guard".into()),
             fit_canvas_to_parent: true,
+            // На iOS winit делает вид UIKit размером с запрошенное окно (1280×720 точек), а не с экран:
+            // кадр выходит больше экрана и обрезается. Полный экран без рамок берёт размер экрана.
+            mode: if cfg!(target_os = "ios") {
+                bevy::window::WindowMode::BorderlessFullscreen(bevy::window::MonitorSelection::Primary)
+            } else {
+                bevy::window::WindowMode::Windowed
+            },
             ..default()
         }),
         ..default()
@@ -204,7 +213,7 @@ fn main() {
         .insert_resource(bench)
         .add_plugins(plugins)
         // Частицы: плагину нужен рендер, поэтому он стоит здесь, а не среди плагинов игры.
-        .add_plugins(bevy_hanabi::HanabiPlugin)
+        .add_plugins(particles)
         // Замер ставит отметки и в рендер-потоке, поэтому тоже здесь.
         .add_plugins(perf::PerfPlugin)
         .add_plugins(shock::ShockPlugin)
@@ -220,10 +229,22 @@ fn main() {
     std::process::exit(0);
 }
 
+/// Частицы `bevy_hanabi`. В симуляторе iOS у GPU нет непрямой отрисовки (`INDIRECT_EXECUTION`),
+/// без неё плагин падает при старте: там частиц нет, эффекты остаются ассетами без рисования.
+fn particles(app: &mut App) {
+    if cfg!(all(target_os = "ios", target_abi = "sim")) {
+        app.init_asset::<bevy_hanabi::EffectAsset>();
+    } else {
+        app.add_plugins(bevy_hanabi::HanabiPlugin);
+    }
+}
+
 /// Все плагины игры. Отдельной функцией, чтобы тест собирал тот же кадр, что и игра.
 fn game_plugins(app: &mut App) {
     #[cfg(target_os = "android")]
     app.add_plugins(android::AndroidPlugin);
+    #[cfg(target_os = "ios")]
+    app.add_plugins(ios::IosPlugin);
     // Настройки игрока и сложность: из них берут начальные значения качество и меню.
     app.add_plugins((settings::SettingsPlugin, difficulty::DifficultyPlugin, menu::MenuPlugin));
     // Порядок кадра и игровой генератор случайных чисел.

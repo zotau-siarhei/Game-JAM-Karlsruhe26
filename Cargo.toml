@@ -39,6 +39,15 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 objc2-game-controller = { version = "0.3", default-features = false, features = ["std", "GCController", "GCDevice", "GCDeviceHaptics", "GCDeviceLight", "GCColor", "GCExtendedGamepad", "GCControllerButtonInput", "GCControllerDirectionPad", "GCControllerAxisInput", "GCControllerElement", "GCPhysicalInputProfile", "objc2-core-haptics"] }
 objc2-core-haptics = { version = "0.3", default-features = false, features = ["std", "CHHapticEngine", "CHHapticPattern", "CHHapticEvent", "CHHapticParameter", "CHHapticPatternPlayer", "CHHapticDeviceCapability"] }
 
+# iOS (`scripts/build-ios.sh`): геймпад и вибрация — тот же GameController, что на macOS;
+# безопасная область экрана — у вида окна UIKit (`src/ios.rs`).
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSString", "NSError", "NSSet", "NSValue", "NSObject"] }
+objc2-game-controller = { version = "0.3", default-features = false, features = ["std", "GCController", "GCDevice", "GCDeviceHaptics", "GCDeviceLight", "GCColor", "GCExtendedGamepad", "GCControllerButtonInput", "GCControllerDirectionPad", "GCControllerAxisInput", "GCControllerElement", "GCPhysicalInputProfile", "objc2-core-haptics"] }
+objc2-core-haptics = { version = "0.3", default-features = false, features = ["std", "CHHapticEngine", "CHHapticPattern", "CHHapticEvent", "CHHapticParameter", "CHHapticPatternPlayer", "CHHapticDeviceCapability"] }
+raw-window-handle = "0.6"
+
 # Быстрые инкрементальные сборки: свой код почти без оптимизаций, зависимости с полными.
 [profile.dev]
 # Код игры оптимизирован полностью: иначе отладочная сборка тормозит.

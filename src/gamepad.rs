@@ -17,7 +17,7 @@ use bevy::window::{CursorOptions, PrimaryWindow};
 
 #[cfg(target_os = "android")]
 mod android;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 mod macos;
 
 use crate::camera::GameCamera;
@@ -41,9 +41,9 @@ pub struct GamepadPlugin;
 
 impl Plugin for GamepadPlugin {
     fn build(&self, app: &mut App) {
-        // Ввод на macOS — через GameController, на Android — из очереди ввода системы,
+        // Ввод на macOS и iOS — через GameController, на Android — из очереди ввода системы,
         // на остальных платформах его даёт gilrs в Bevy.
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
         macos::build(app);
         #[cfg(target_os = "android")]
         android::build(app);

@@ -3,6 +3,7 @@
 //! В браузере нет файловой системы и `std::time::SystemTime`: списки звуков и моделей
 //! вшиваются в сборку, а файлы ассетов загрузчик Bevy берёт по HTTP рядом со страницей.
 //! На Android ассеты лежат внутри APK, обычным чтением файла их не достать: списки тоже вшиты.
+//! На iOS ассеты лежат в папке приложения рядом с исполняемым файлом и читаются как в нативе.
 
 /// Наносекунды настенных часов для сидов. В браузере — из `Date.now()`.
 pub fn clock_nanos() -> u64 {
@@ -59,7 +60,7 @@ pub fn asset_exists(dir: &str, file: &str) -> bool {
     }
 }
 
-/// Телефон или планшет: Android или мобильный браузер (`window.spaceGuardMobile` страницы).
+/// Телефон или планшет: Android, iOS или мобильный браузер (`window.spaceGuardMobile` страницы).
 pub fn is_mobile() -> bool {
     #[cfg(target_arch = "wasm32")]
     {
@@ -68,19 +69,19 @@ pub fn is_mobile() -> bool {
             .and_then(|value| value.as_bool())
             .unwrap_or(false)
     }
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_os = "ios"))]
     {
         true
     }
     // На компьютере облегчение для телефона включает `SPACE_GUARD_MOBILE=1`: так его видно на снимках.
-    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
     {
         std::env::var("SPACE_GUARD_MOBILE").is_ok_and(|v| v == "1")
     }
 }
 
 /// Ступень качества, которую предлагает страница браузерной версии (`window.spaceGuardQuality`:
-/// на телефоне — `low`, вручную — `?quality=`). Android — телефон, ему тоже `low`.
+/// на телефоне — `low`, вручную — `?quality=`). Android и iOS — телефон, им тоже `low`.
 /// Остальной натив подсказок не получает.
 pub fn quality_hint() -> Option<String> {
     #[cfg(target_arch = "wasm32")]
@@ -96,7 +97,11 @@ pub fn quality_hint() -> Option<String> {
     {
         Some(crate::android::system_property(c"debug.spaceguard.quality").unwrap_or_else(|| "low".to_owned()))
     }
-    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    #[cfg(target_os = "ios")]
+    {
+        Some("low".to_owned())
+    }
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
     {
         None
     }
@@ -120,11 +125,16 @@ pub fn canvas_scale() -> f32 {
 }
 
 /// Отступы от вырезов экрана в dp: слева, сверху, справа, снизу. Страница браузера кладёт их в
-/// `window.spaceGuardSafeArea` (`env(safe-area-inset-*)`), на Android — вырез камеры из `WindowInsets`.
+/// `window.spaceGuardSafeArea` (`env(safe-area-inset-*)`), на Android — вырез камеры из `WindowInsets`,
+/// на iOS — `safeAreaInsets` вида окна.
 pub fn safe_area() -> bevy::math::Vec4 {
     #[cfg(target_os = "android")]
     {
         crate::android::cutout_insets()
+    }
+    #[cfg(target_os = "ios")]
+    {
+        crate::ios::safe_area()
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -141,20 +151,24 @@ pub fn safe_area() -> bevy::math::Vec4 {
         };
         read().unwrap_or(Vec4::ZERO)
     }
-    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
     {
         bevy::math::Vec4::ZERO
     }
 }
 
-/// Личный каталог приложения, если его выдаёт система (Android): там лежат рекорды и настройки.
-/// На остальных платформах `None`, путь строится по переменным окружения.
+/// Личный каталог приложения, если его выдаёт система (Android, песочница iOS): там лежат рекорды
+/// и настройки. На остальных платформах `None`, путь строится по переменным окружения.
 pub fn app_data_dir() -> Option<std::path::PathBuf> {
     #[cfg(target_os = "android")]
     {
         bevy::android::ANDROID_APP.get()?.internal_data_path()
     }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(target_os = "ios")]
+    {
+        crate::ios::data_dir()
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         None
     }

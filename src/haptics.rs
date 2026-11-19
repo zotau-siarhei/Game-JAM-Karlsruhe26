@@ -17,11 +17,11 @@
 use bevy::prelude::*;
 
 // Модули других платформ собираются и в тестах на любой системе: ошибка видна сразу.
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(any(not(any(target_os = "macos", target_os = "ios")), test))]
 mod bevy_rumble;
 #[cfg(any(target_os = "linux", test))]
 mod linux_light;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 mod macos;
 
 use crate::arsenal::Inventory;
@@ -77,9 +77,9 @@ impl Plugin for HapticsPlugin {
                     .in_set(GameSet::Presentation),
             );
         // Бэкенды по платформам: вибрация и свет.
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
         macos::build(app);
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
         app.add_systems(Update, bevy_rumble::play.after(GameSet::Presentation));
         #[cfg(target_os = "linux")]
         linux_light::build(app);

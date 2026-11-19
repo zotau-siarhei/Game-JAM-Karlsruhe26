@@ -5158,6 +5158,7 @@ dependencies = [
  "objc2-core-haptics",
  "objc2-foundation 0.3.2",
  "objc2-game-controller",
+ "raw-window-handle",
  "serde",
  "serde_json",
 ]
