@@ -244,7 +244,18 @@ fn aim_with_stick(
     let tilt = input.aim.length();
     let previous = stick.locked;
 
-    if input.cursor || targeting.open {
+    if let (Some(point), false) = (input.point_world, targeting.open) {
+        // Палец указал точку попадания: прицел сразу там, без помощи и сглаживания.
+        let offset = (point - me).clamp_length_max(MAX_AIM_RANGE);
+        stick.locked = None;
+        if offset.length() > 0.1 {
+            stick.heading = offset.to_angle();
+            stick.shown_heading = stick.heading;
+        }
+        stick.range = offset.length();
+        stick.shown_range = stick.range;
+        stick.manual_range = stick.range;
+    } else if input.cursor || targeting.open {
         // Курсор: точка едет по земле, без притяжения к врагу и без сглаживания. В наведении
         // авиаудара стик сразу ведёт курсор, вдвое быстрее и до дальности наведения.
         let (speed, range) = if targeting.open {

@@ -9,9 +9,11 @@
 //! `PadInput`.
 //!
 //! Каждый палец закреплён за тем, на чём начал, до отпускания: кнопкой интерфейса с [`TapAction`],
-//! стиком езды (левая область), стиком прицела (правая область) или отметкой авиаудара. Кнопки
-//! важнее областей. Касание вне всего этого — «ничьё»: короткое касание даёт [`TouchTap`] (экраны
-//! вне забега ищут под ним строку), горизонтальный свайп — [`TouchSwipe`].
+//! стиком езды (левая область), стиком прицела (правая область), точкой попадания или отметкой
+//! авиаудара. Кнопки важнее областей. У мортиры и ракет стика прицела нет: палец вне стика езды
+//! указывает, куда бить, и держит огонь, пока лежит на экране. Касание вне всего этого — «ничьё»:
+//! короткое касание даёт [`TouchTap`] (экраны вне забега ищут под ним строку), горизонтальный
+//! свайп — [`TouchSwipe`].
 //!
 //! Размеры — в dp: на Android логическая точка окна — dp, в браузере на телефоне холст рисует
 //! в `platform::canvas_scale` раз меньше точек, чем у страницы.
@@ -31,6 +33,8 @@ use crate::gamepad::{InputDevice, PadInput, deadzone, screen_axes, to_world};
 use crate::rover::Rover;
 use crate::run::GameState;
 use crate::settings::Settings;
+use crate::terrain::Terrain;
+use crate::weapons::CurrentWeapon;
 
 /// Числа раскладки в dp. Начальные значения со схемы, подбираются на телефоне.
 pub mod layout {
@@ -215,6 +219,8 @@ enum Control {
     Aim,
     /// Отметка авиаудара в режиме наведения.
     Strike,
+    /// Точка попадания мортиры и ракет: палец указывает, куда бить.
+    Point,
     /// Ни кнопка, ни стик: короткое касание — `TouchTap`, свайп — `TouchSwipe`.
     Free,
     /// Палец, оборвавший вступление: ничего не делает до отпускания.
@@ -244,6 +250,8 @@ pub struct TouchControls {
     tap_fire: f32,
     /// Огонь оттяжкой стика прицела держит левую кнопку.
     aim_fire: bool,
+    /// Последняя точка попадания, указанная пальцем (x, z): держится, пока идёт огонь касания.
+    point: Option<Vec2>,
     /// Угол между двумя пальцами в наведении авиаудара, не отданный шагами поворота.
     twist: Option<f32>,
     /// Стики сейчас на экране: центр и рукоять (логические точки), для экранных элементов.
@@ -336,14 +344,25 @@ impl Layout {
     }
 }
 
+/// Оружие, которое бьёт в указанную пальцем точку, а не по стику прицела.
+pub fn points_at(weapon: CurrentWeapon) -> bool {
+    matches!(
+        weapon,
+        CurrentWeapon::Mortar | CurrentWeapon::Rockets | CurrentWeapon::HomingRockets
+    )
+}
+
 /// Чему достаётся новый палец: кнопка под ним, иначе стик своей области, в наведении авиаудара —
-/// отметка. Вне забега стиков нет.
+/// отметка. У оружия с точкой попадания (`pointing`) всё, кроме стика езды, — точка; второй палец
+/// в области езды при уже взятом стике (`driving`) — тоже. Вне забега стиков нет.
 fn hit(
     point: Vec2,
     layout: &Layout,
     button: Option<TapAction>,
     playing: bool,
     targeting: bool,
+    pointing: bool,
+    driving: bool,
 ) -> Control {
     if let Some(action) = button {
         return Control::Button(action);
@@ -354,8 +373,10 @@ fn hit(
     if targeting {
         return Control::Strike;
     }
-    if layout.in_drive_zone(point) {
+    if layout.in_drive_zone(point) && !(pointing && driving) {
         Control::Drive
+    } else if pointing {
+        Control::Point
     } else if layout.in_aim_zone(point) {
         Control::Aim
     } else {
@@ -506,11 +527,13 @@ fn read_touches(
         Option<&ComputedStackIndex>,
     )>,
     mut controls: ResMut<TouchControls>,
-    (mut tap, mut swipe, mut last, intro): (
+    (mut tap, mut swipe, mut last, intro, weapon, terrain): (
         ResMut<TouchTap>,
         ResMut<TouchSwipe>,
         ResMut<LastTouch>,
         Option<Res<crate::intro::Intro>>,
+        Res<CurrentWeapon>,
+        Res<Terrain>,
     ),
     mut device: ResMut<InputDevice>,
     mut input: ResMut<PadInput>,
@@ -528,6 +551,7 @@ fn read_touches(
         .as_ref()
         .is_some_and(|s| *s.get() == GameState::Playing);
     let controls = &mut *controls;
+    let pointing = points_at(*weapon);
 
     if touches.any_just_pressed() {
         last.0 = Some(now);
@@ -545,10 +569,22 @@ fn read_touches(
         let point = touch.position();
         let button = button_at(point, window.scale_factor(), &buttons);
         // Касание, которое обрывает вступление, больше ничего не нажимает.
+        let driving = controls
+            .fingers
+            .values()
+            .any(|finger| finger.control == Control::Drive);
         let control = if intro.as_ref().is_some_and(|intro| intro.active()) {
             Control::Spent
         } else {
-            hit(point, &layout, button, playing, targeting.open)
+            hit(
+                point,
+                &layout,
+                button,
+                playing,
+                targeting.open,
+                pointing,
+                driving,
+            )
         };
         let base = match control {
             Control::Drive => layout.stick_base(point, layout.drive_radius()),
@@ -597,6 +633,8 @@ fn read_touches(
                 input.snap = true;
                 controls.tap_fire = TAP_FIRE_SECONDS;
             }
+            // Короткое касание точки: огонь держится ещё немного, если оружие перезаряжалось.
+            Control::Point if short && playing => controls.tap_fire = TAP_FIRE_SECONDS,
             Control::Free if short => tap.0 = Some(point),
             Control::Free if released => {
                 let shift = point - finger.start;
@@ -615,6 +653,7 @@ fn read_touches(
         .map(|(_, transform)| screen_axes(transform))
         .unwrap_or((Vec2::X, Vec2::NEG_Y));
     let mut aim_fire = false;
+    let mut point_fire = false;
     let mut strike_fingers: Vec<(Vec2, Vec2)> = Vec::new();
     controls.drive_stick = None;
     controls.aim_stick = None;
@@ -629,7 +668,7 @@ fn read_touches(
             finger.moved = true;
         }
         // Наведение авиаудара открылось, пока палец держал стик прицела: дальше палец ведёт отметку.
-        if targeting.open && finger.control == Control::Aim {
+        if targeting.open && matches!(finger.control, Control::Aim | Control::Point) {
             finger.control = Control::Strike;
         }
         match finger.control {
@@ -658,6 +697,18 @@ fn read_touches(
                     finger.base + (point - finger.base).clamp_length_max(radius),
                 ));
             }
+            Control::Point if playing => {
+                point_fire = true;
+                if let Some((camera, transform)) = camera.iter().next() {
+                    let transform = GlobalTransform::from(*transform);
+                    if let Ok(ray) = camera.viewport_to_world(&transform, point)
+                        && let Some(hit) =
+                            crate::aim::raycast_terrain(&terrain, ray.origin, *ray.direction)
+                    {
+                        controls.point = Some(Vec2::new(hit.x, hit.z));
+                    }
+                }
+            }
             Control::Strike if targeting.open => {
                 strike_fingers.push((touch.previous_position(), point))
             }
@@ -667,7 +718,14 @@ fn read_touches(
 
     // Огонь: оттяжка стика прицела или короткое касание держат левую кнопку мыши.
     controls.tap_fire = (controls.tap_fire - real.delta_secs()).max(0.0);
-    let fire = playing && !targeting.open && (aim_fire || controls.tap_fire > 0.0);
+    // Точка попадания: пока палец на экране и пока держится огонь короткого касания.
+    if !point_fire && controls.tap_fire <= 0.0 {
+        controls.point = None;
+    }
+    if !targeting.open {
+        input.point_world = controls.point;
+    }
+    let fire = playing && !targeting.open && (aim_fire || point_fire || controls.tap_fire > 0.0);
     let was_firing = controls.aim_fire;
     if fire && !was_firing {
         mouse.press(MouseButton::Left);
@@ -894,6 +952,7 @@ fn show_overlay(
     settings: Res<Settings>,
     ui_scale: Res<UiScale>,
     controls: Res<TouchControls>,
+    weapon: Res<CurrentWeapon>,
     window: Query<&Window, With<PrimaryWindow>>,
     mut overlay: Query<&mut Visibility, (With<TouchOverlay>, Without<StrikeButtons>)>,
     mut strike_group: Query<&mut Visibility, (With<StrikeButtons>, Without<TouchOverlay>)>,
@@ -981,8 +1040,10 @@ fn show_overlay(
         if *border != edge {
             *border = edge;
         }
-        // В наведении авиаудара стиков нет.
-        visibility.set_if_neq(if targeting.open {
+        // В наведении авиаудара стиков нет; у мортиры и ракет нет стика прицела: бьют пальцем.
+        let aim_part = matches!(part, StickPart::AimBase | StickPart::AimKnob);
+        let pointing = aim_part && points_at(*weapon) && controls.aim_stick.is_none();
+        visibility.set_if_neq(if targeting.open || pointing {
             Visibility::Hidden
         } else {
             Visibility::Inherited
@@ -1056,35 +1117,125 @@ mod tests {
         let layout = phone();
         let pause = Some(TapAction::Key(KeyCode::Escape));
         assert_eq!(
-            hit(Vec2::new(100.0, 300.0), &layout, pause, true, false),
+            hit(
+                Vec2::new(100.0, 300.0),
+                &layout,
+                pause,
+                true,
+                false,
+                false,
+                false
+            ),
             Control::Button(pause.unwrap())
         );
         assert_eq!(
-            hit(Vec2::new(100.0, 300.0), &layout, None, true, false),
+            hit(
+                Vec2::new(100.0, 300.0),
+                &layout,
+                None,
+                true,
+                false,
+                false,
+                false
+            ),
             Control::Drive
         );
         assert_eq!(
-            hit(Vec2::new(700.0, 300.0), &layout, None, true, false),
+            hit(
+                Vec2::new(700.0, 300.0),
+                &layout,
+                None,
+                true,
+                false,
+                false,
+                false
+            ),
             Control::Aim
         );
         assert_eq!(
-            hit(Vec2::new(400.0, 300.0), &layout, None, true, false),
+            hit(
+                Vec2::new(400.0, 300.0),
+                &layout,
+                None,
+                true,
+                false,
+                false,
+                false
+            ),
             Control::Free
         );
         // Верхняя полоса — интерфейс.
         assert_eq!(
-            hit(Vec2::new(100.0, 40.0), &layout, None, true, false),
+            hit(
+                Vec2::new(100.0, 40.0),
+                &layout,
+                None,
+                true,
+                false,
+                false,
+                false
+            ),
             Control::Free
         );
         // Вне забега стиков нет, в наведении авиаудара палец ведёт отметку.
         assert_eq!(
-            hit(Vec2::new(100.0, 300.0), &layout, None, false, false),
+            hit(
+                Vec2::new(100.0, 300.0),
+                &layout,
+                None,
+                false,
+                false,
+                false,
+                false
+            ),
             Control::Free
         );
         assert_eq!(
-            hit(Vec2::new(100.0, 300.0), &layout, None, true, true),
+            hit(
+                Vec2::new(100.0, 300.0),
+                &layout,
+                None,
+                true,
+                true,
+                false,
+                false
+            ),
             Control::Strike
         );
+    }
+
+    #[test]
+    fn у_мортиры_и_ракет_палец_указывает_точку() {
+        let layout = phone();
+        // Правая область, середина и верх — точка попадания.
+        for at in [(700.0, 300.0), (400.0, 300.0), (600.0, 40.0)] {
+            assert_eq!(
+                hit(Vec2::from(at), &layout, None, true, false, true, false),
+                Control::Point
+            );
+        }
+        // Первый палец слева — стик езды, второй слева при взятом стике — точка.
+        let left = Vec2::new(100.0, 300.0);
+        assert_eq!(
+            hit(left, &layout, None, true, false, true, false),
+            Control::Drive
+        );
+        assert_eq!(
+            hit(left, &layout, None, true, false, true, true),
+            Control::Point
+        );
+        // Кнопки и наведение авиаудара важнее.
+        let pause = Some(TapAction::Key(KeyCode::Escape));
+        assert_eq!(
+            hit(left, &layout, pause, true, false, true, true),
+            Control::Button(pause.unwrap())
+        );
+        assert_eq!(
+            hit(left, &layout, None, true, true, true, true),
+            Control::Strike
+        );
+        assert!(points_at(CurrentWeapon::Mortar) && points_at(CurrentWeapon::HomingRockets));
+        assert!(!points_at(CurrentWeapon::MachineGun) && !points_at(CurrentWeapon::Laser));
     }
 
     #[test]
