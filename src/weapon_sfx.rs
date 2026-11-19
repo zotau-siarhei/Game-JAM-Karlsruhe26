@@ -1,7 +1,9 @@
 //! Мемные реплики оружия: каждый N-й выстрел мортиры и ракет игрока — повод для штаба.
 //!
 //! Реплики идут поводами [`VoiceCue`] через отбор штаба (`src/hq.rs`). У мем-реплик приоритет 0:
-//! они не перебивают речь, мем звучит не чаще раза в 10 с, один и тот же — раз в 30 с.
+//! они не перебивают речь, мем звучит не чаще раза в 10 с, один и тот же — раз в 30 с. Мем, который
+//! штаб не пропустил, не теряется: повод повторяется на каждом следующем выстреле, пока реплика
+//! не прозвучит, и только потом счёт выстрелов начинается заново.
 //! Обычный выстрел звучит обычным звуком из `src/audio_events.rs`.
 //!
 //! Перезарядки в игре нет: у пулемёта запас бесконечный. Поэтому после долгой очереди
@@ -15,6 +17,7 @@ use crate::bullet::FireBullet;
 use crate::combat::Team;
 use crate::frame::GameSet;
 use crate::hq::VoiceCue;
+use crate::voice::PlayVoice;
 use crate::mortar::Shell;
 use crate::rockets::Rocket;
 use crate::run::WorldRebuilt;
@@ -52,6 +55,9 @@ impl Plugin for WeaponSfxPlugin {
 struct ShotCounts {
     mortar: u32,
     rockets: u32,
+    /// Мем заслужен, но ещё не прозвучал: повод повторяется на каждом выстреле.
+    mortar_due: bool,
+    rockets_due: bool,
     /// Пуль в текущей очереди пулемёта и секунд с последней.
     burst: u32,
     since_bullet: f32,
@@ -75,20 +81,42 @@ fn meme_due(count: &mut u32, every: u32) -> bool {
     }
 }
 
-/// Новые снаряды и ракеты игрока: на каждый N-й — мем-повод.
+/// Выстрел к мему: считает выстрелы, пока мем не заслужен, и отвечает, слать ли повод сейчас.
+fn meme_shot(count: &mut u32, due: &mut bool, every: u32) -> bool {
+    if !*due {
+        *due = meme_due(count, every);
+    }
+    *due
+}
+
+/// Новые снаряды и ракеты игрока: на каждый N-й — мем-повод, и дальше на каждом, пока не прозвучит.
 fn meme_shots(
     shells: Query<&Shell, Added<Shell>>,
     rockets: Query<&Rocket, Added<Rocket>>,
+    mut played: MessageReader<PlayVoice>,
     mut counts: ResMut<ShotCounts>,
     mut cues: MessageWriter<VoiceCue>,
 ) {
+    for PlayVoice(id) in played.read() {
+        if id.starts_with("mortar_fire_meme") {
+            counts.mortar_due = false;
+        }
+        if id.starts_with("rockets_fire_meme") {
+            counts.rockets_due = false;
+        }
+    }
+    let counts = &mut *counts;
     for shell in &shells {
-        if shell.team() == Team::Player && meme_due(&mut counts.mortar, MORTAR_MEME_EVERY) {
+        if shell.team() == Team::Player
+            && meme_shot(&mut counts.mortar, &mut counts.mortar_due, MORTAR_MEME_EVERY)
+        {
             cues.write(VoiceCue::new("mortar_fire_meme"));
         }
     }
     for rocket in &rockets {
-        if rocket.team() == Team::Player && meme_due(&mut counts.rockets, ROCKET_MEME_EVERY) {
+        if rocket.team() == Team::Player
+            && meme_shot(&mut counts.rockets, &mut counts.rockets_due, ROCKET_MEME_EVERY)
+        {
             cues.write(VoiceCue::new("rockets_fire_meme"));
         }
     }
@@ -129,6 +157,17 @@ fn reload_after_burst(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn незвучавший_мем_повторяется_до_реплики() {
+        let (mut count, mut due) = (0, false);
+        let shots: Vec<bool> = (0..10).map(|_| meme_shot(&mut count, &mut due, 8)).collect();
+        // С 8-го выстрела повод идёт на каждом, пока штаб не сказал реплику.
+        assert_eq!(shots.iter().filter(|s| **s).count(), 3);
+        assert!(!shots[6] && shots[7] && shots[9]);
+        due = false;
+        assert!(!meme_shot(&mut count, &mut due, 8));
+    }
 
     #[test]
     fn meme_comes_on_every_nth_shot() {

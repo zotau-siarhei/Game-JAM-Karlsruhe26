@@ -59,7 +59,7 @@ const ENGINE_PITCH: (f32, f32) = (0.7, 0.5);
 const DEFAULT_LIMIT: usize = 4;
 
 /// Сколько звуков мира звучит одновременно всего, по всем группам. Каждый — поток mp3,
-/// без общего предела бой даёт 30–40 потоков. Звуки интерфейса в предел не входят.
+/// без общего предела бой даёт 30–40 потоков. Звуки интерфейса и мемы в предел не входят.
 const TOTAL_LIMIT: usize = 20;
 
 /// Дольше этого экземпляр звука не живёт, с: самый длинный звук — 12 с, на замедлении
@@ -293,6 +293,12 @@ fn is_world_sound(id: &str) -> bool {
     !id.starts_with("ui_")
 }
 
+/// Звук вне общего предела: интерфейс и мемы. Мемы редкие и звучат по одному, а нужны как раз
+/// в разгар боя, когда предел занят взрывами.
+fn outside_total(id: &str) -> bool {
+    !is_world_sound(id) || id.starts_with("meme_")
+}
+
 fn load_sounds(
     mut sounds: ResMut<Sounds>,
     asset_server: Res<AssetServer>,
@@ -316,7 +322,7 @@ fn volume_at(distance: f32) -> Option<f32> {
 /// Найдётся ли место новому звуку группы `group`: в ней звучит `in_group`, всего в мире —
 /// `in_world` звуков.
 fn has_room(group: &str, in_group: usize, in_world: usize) -> bool {
-    in_group < limit_for(group) && (!is_world_sound(group) || in_world < TOTAL_LIMIT)
+    in_group < limit_for(group) && (outside_total(group) || in_world < TOTAL_LIMIT)
 }
 
 /// Предел одновременных экземпляров для группы.
@@ -350,7 +356,7 @@ fn play_sounds(
     let mut in_world = 0;
     for instance in &instances {
         *in_group.entry(instance.group.clone()).or_default() += 1;
-        in_world += usize::from(instance.world);
+        in_world += usize::from(!outside_total(&instance.group));
     }
 
     for request in requests.read() {
@@ -392,7 +398,7 @@ fn play_sounds(
         };
         let world = is_world_sound(&request.id);
         *in_group.entry(request.id.clone()).or_default() += 1;
-        in_world += usize::from(world);
+        in_world += usize::from(!outside_total(&request.id));
         let (low, high) = pitch_spread(&request.id);
         let pitch = if low < high { dice.range(low, high) } else { low };
         // Замедление времени растягивает звук мира.
@@ -553,6 +559,9 @@ mod tests {
         assert!(!has_room("explosion", limit_for("explosion"), 0));
         // Интерфейс звучит и при полном мире.
         assert!(has_room("ui_click", 0, TOTAL_LIMIT));
+        // Мемы звучат и при занятом пределе, но по одному.
+        assert!(has_room("meme_airhorn", 0, TOTAL_LIMIT));
+        assert!(!has_room("meme_airhorn", 1, 0));
     }
 
     #[test]
