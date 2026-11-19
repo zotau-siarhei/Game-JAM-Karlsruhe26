@@ -163,7 +163,7 @@ pub fn update_aim_point(
     rover: Single<&Transform, With<Rover>>,
     targeting: Res<crate::airstrike::Targeting>,
 ) {
-    if device.gamepad() {
+    if device.stick() {
         return;
     }
     let Some(cursor) = window.cursor_position() else {
@@ -237,7 +237,7 @@ fn update_marker(
 ) {
     let (mut transform, mesh, mut material, mut visibility) = marker.into_inner();
     let mortar = *state.get() == GameState::Playing
-        && (*weapon == crate::weapons::CurrentWeapon::Mortar || device.gamepad());
+        && (*weapon == crate::weapons::CurrentWeapon::Mortar || device.stick());
     visibility.set_if_neq(if mortar {
         Visibility::Inherited
     } else {

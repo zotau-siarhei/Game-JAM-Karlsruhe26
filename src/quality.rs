@@ -190,7 +190,12 @@ fn show_label(
             *visibility = wanted;
         }
         let key = crate::gamepad::hint_text(*device, *style, "Q", "{SELECT}");
-        let line = format!("QUALITY: {} ({key})", quality.name().to_uppercase());
+        // При касаниях клавиши нет: ступень меняют в настройках.
+        let line = if key.is_empty() {
+            format!("QUALITY: {}", quality.name().to_uppercase())
+        } else {
+            format!("QUALITY: {} ({key})", quality.name().to_uppercase())
+        };
         if text.0 != line {
             text.0 = line;
         }

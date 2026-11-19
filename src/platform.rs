@@ -80,6 +80,51 @@ pub fn quality_hint() -> Option<String> {
     }
 }
 
+/// Во сколько раз холст рисует меньше точек, чем у страницы: в браузере на телефоне страница
+/// уменьшает холст (`window.spaceGuardCanvasScale`), натив — 1. Размеры в dp делятся на него.
+pub fn canvas_scale() -> f32 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        js_sys::Reflect::get(&js_sys::global(), &"spaceGuardCanvasScale".into())
+            .ok()
+            .and_then(|value| value.as_f64())
+            .filter(|scale| *scale >= 1.0)
+            .map_or(1.0, |scale| scale as f32)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        1.0
+    }
+}
+
+/// Отступы от вырезов экрана в dp: слева, сверху, справа, снизу. Страница браузера кладёт их в
+/// `window.spaceGuardSafeArea` (`env(safe-area-inset-*)`), на Android — вырез камеры из `WindowInsets`.
+pub fn safe_area() -> bevy::math::Vec4 {
+    #[cfg(target_os = "android")]
+    {
+        crate::android::cutout_insets()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        use bevy::math::Vec4;
+        let read = || -> Option<Vec4> {
+            let area = js_sys::Reflect::get(&js_sys::global(), &"spaceGuardSafeArea".into()).ok()?;
+            let side = |name: &str| {
+                js_sys::Reflect::get(&area, &name.into())
+                    .ok()
+                    .and_then(|value| value.as_f64())
+                    .unwrap_or(0.0) as f32
+            };
+            Some(Vec4::new(side("left"), side("top"), side("right"), side("bottom")))
+        };
+        read().unwrap_or(Vec4::ZERO)
+    }
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    {
+        bevy::math::Vec4::ZERO
+    }
+}
+
 /// Личный каталог приложения, если его выдаёт система (Android): там лежат рекорды и настройки.
 /// На остальных платформах `None`, путь строится по переменным окружения.
 pub fn app_data_dir() -> Option<std::path::PathBuf> {

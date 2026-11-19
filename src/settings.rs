@@ -54,6 +54,46 @@ pub struct Settings {
     pub vibration: bool,
     /// Сложность следующего забега.
     pub difficulty: Difficulty,
+    /// Размер сенсорных стиков и кнопок.
+    pub touch_size: TouchSize,
+    /// Непрозрачность сенсорных стиков и кнопок, %.
+    pub touch_opacity: u8,
+}
+
+/// Размер сенсорных элементов управления.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TouchSize {
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
+impl TouchSize {
+    /// Множитель размеров раскладки.
+    pub fn factor(self) -> f32 {
+        match self {
+            TouchSize::Small => 0.85,
+            TouchSize::Medium => 1.0,
+            TouchSize::Large => 1.2,
+        }
+    }
+
+    /// Следующий размер по кругу (`step` = ±1).
+    pub fn step(self, step: i32) -> Self {
+        const ALL: [TouchSize; 3] = [TouchSize::Small, TouchSize::Medium, TouchSize::Large];
+        let index = ALL.iter().position(|s| *s == self).unwrap_or(1) as i32;
+        ALL[(index + step).rem_euclid(ALL.len() as i32) as usize]
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            TouchSize::Small => "SMALL",
+            TouchSize::Medium => "MEDIUM",
+            TouchSize::Large => "LARGE",
+        }
+    }
 }
 
 impl Default for Settings {
@@ -67,6 +107,8 @@ impl Default for Settings {
             subtitles: true,
             vibration: true,
             difficulty: Difficulty::default(),
+            touch_size: TouchSize::default(),
+            touch_opacity: 70,
         }
     }
 }
@@ -88,6 +130,7 @@ impl Settings {
         for volume in [&mut settings.master, &mut settings.music, &mut settings.effects, &mut settings.voice] {
             *volume = (*volume).min(100);
         }
+        settings.touch_opacity = settings.touch_opacity.clamp(10, 100);
         Ok(settings)
     }
 
@@ -199,6 +242,8 @@ mod tests {
             subtitles: false,
             vibration: false,
             difficulty: Difficulty::Easy,
+            touch_size: TouchSize::Large,
+            touch_opacity: 40,
         };
         settings.save(&path).unwrap();
         assert_eq!(Settings::load(Some(&path)), settings);

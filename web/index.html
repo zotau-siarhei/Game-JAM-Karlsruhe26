@@ -43,6 +43,38 @@
       background: #000;
       overscroll-behavior: none;
       touch-action: none;
+      /* Касания игры: без выделения и выноски долгого нажатия. */
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-touch-callout: none;
+    }
+
+    /* Телефон в книжной ориентации: игра идёт только в альбомной. */
+    #rotate {
+      position: fixed;
+      inset: 0;
+      z-index: 30;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background: #000;
+      color: var(--title);
+      font-family: var(--mono);
+      font-size: 20px;
+      letter-spacing: 0.08em;
+      text-align: center;
+    }
+    @media (orientation: portrait) and (pointer: coarse) {
+      #rotate { display: flex; }
+    }
+    /* Пробник вырезов экрана: игра читает отступы из window.spaceGuardSafeArea. */
+    #safe-area {
+      position: fixed;
+      visibility: hidden;
+      pointer-events: none;
+      padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+        env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
     }
 
     /* Кнопка полного экрана: поверх игры в правом верхнем углу, вне вырезов экрана. */
@@ -319,6 +351,8 @@
 </head>
 <body>
   <div id="viewport"><canvas id="space-guard" tabindex="0"></canvas></div>
+  <div id="rotate">ROTATE YOUR PHONE</div>
+  <div id="safe-area"></div>
 
   <button id="fullscreen" type="button" aria-label="Full screen" title="Full screen" hidden>
     <svg class="enter" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -493,9 +527,24 @@
       const asked = new URLSearchParams(location.search).get("quality");
       window.spaceGuardQuality = asked || (mobile ? "low" : "");
       window.spaceGuardMobile = mobile;
+      // Во сколько раз холст меньше страницы: сенсорные кнопки игры считают размеры в точках страницы.
+      window.spaceGuardCanvasScale = 1;
       if (mobile && window.devicePixelRatio > 1.5) {
-        document.getElementById("viewport").style.setProperty("--scale", String(window.devicePixelRatio / 1.5));
+        window.spaceGuardCanvasScale = window.devicePixelRatio / 1.5;
+        document.getElementById("viewport").style.setProperty("--scale", String(window.spaceGuardCanvasScale));
       }
+      // Отступы от вырезов экрана — для сенсорных кнопок игры.
+      const readSafeArea = () => {
+        const style = getComputedStyle(document.getElementById("safe-area"));
+        window.spaceGuardSafeArea = {
+          top: parseFloat(style.paddingTop) || 0,
+          right: parseFloat(style.paddingRight) || 0,
+          bottom: parseFloat(style.paddingBottom) || 0,
+          left: parseFloat(style.paddingLeft) || 0,
+        };
+      };
+      readSafeArea();
+      window.addEventListener("resize", readSafeArea);
 
       // --- Учёт загрузки ---
       // Игра грузит ассеты через fetch. Обёртка считает байты каждого ответа по мере прихода;

@@ -118,3 +118,63 @@ fn pause_audio_in_background(
         }
     }
 }
+
+/// Отступы от выреза камеры в dp: слева, сверху, справа, снизу. С target SDK 35+ окно рисуется и
+/// под вырезом (edge-to-edge принудительно), поэтому сенсорные кнопки его обходят сами.
+/// Спрашивает систему не чаще раза в секунду: телефон переворачивают, и вырез переходит на другой бок.
+pub fn cutout_insets() -> Vec4 {
+    use std::sync::Mutex;
+    static CACHE: Mutex<Option<(bevy::platform::time::Instant, Vec4)>> = Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let now = bevy::platform::time::Instant::now();
+    if let Some((at, insets)) = *cache
+        && now.duration_since(at).as_secs_f32() < 1.0
+    {
+        return insets;
+    }
+    let insets = read_cutout().unwrap_or(Vec4::ZERO);
+    *cache = Some((now, insets));
+    insets
+}
+
+/// `Activity.getWindow().getDecorView().getRootWindowInsets().getDisplayCutout()`, в dp.
+fn read_cutout() -> Option<Vec4> {
+    use jni::JavaVM;
+    use jni::objects::JObject;
+    let app = bevy::android::ANDROID_APP.get()?;
+    // SAFETY: указатели на JavaVM и активность выдаёт система, они действуют, пока жив процесс.
+    let vm = unsafe { JavaVM::from_raw(app.vm_as_ptr().cast()) }.ok()?;
+    let mut env = vm.attach_current_thread_permanently().ok()?;
+    let activity = unsafe { JObject::from_raw(app.activity_as_ptr().cast()) };
+    let found = (|| -> jni::errors::Result<Option<Vec4>> {
+        let window = env.call_method(&activity, "getWindow", "()Landroid/view/Window;", &[])?.l()?;
+        let decor = env.call_method(&window, "getDecorView", "()Landroid/view/View;", &[])?.l()?;
+        let insets = env
+            .call_method(&decor, "getRootWindowInsets", "()Landroid/view/WindowInsets;", &[])?
+            .l()?;
+        if insets.is_null() {
+            return Ok(None);
+        }
+        let cutout = env.call_method(&insets, "getDisplayCutout", "()Landroid/view/DisplayCutout;", &[])?.l()?;
+        if cutout.is_null() {
+            return Ok(Some(Vec4::ZERO));
+        }
+        let resources = env.call_method(&activity, "getResources", "()Landroid/content/res/Resources;", &[])?.l()?;
+        let metrics = env
+            .call_method(&resources, "getDisplayMetrics", "()Landroid/util/DisplayMetrics;", &[])?
+            .l()?;
+        let density = env.get_field(&metrics, "density", "F")?.f()?.max(0.5);
+        let mut side = |name: &str| env.call_method(&cutout, name, "()I", &[]).and_then(|v| v.i());
+        let px = Vec4::new(
+            side("getSafeInsetLeft")? as f32,
+            side("getSafeInsetTop")? as f32,
+            side("getSafeInsetRight")? as f32,
+            side("getSafeInsetBottom")? as f32,
+        );
+        Ok(Some(px / density))
+    })();
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
+    }
+    found.ok().flatten()
+}

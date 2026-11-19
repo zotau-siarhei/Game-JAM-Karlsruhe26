@@ -31,7 +31,8 @@ impl Plugin for HudPlugin {
         app.add_systems(Startup, spawn_hud)
             .add_systems(
                 Update,
-                (update_health_bar, update_time, update_weapon, hide_run_ui_in_menu).in_set(GameSet::Presentation),
+                (update_health_bar, update_time, update_weapon, place_weapon_for_touch, hide_run_ui_in_menu)
+                    .in_set(GameSet::Presentation),
             );
     }
 }
@@ -160,6 +161,28 @@ fn hide_run_ui_in_menu(state: Res<State<GameState>>, mut parts: Query<&mut Visib
     for mut visibility in &mut parts {
         if *visibility != wanted {
             *visibility = wanted;
+        }
+    }
+}
+
+/// При касаниях в правом верхнем углу пауза и мини-карта: название оружия — под мини-картой.
+fn place_weapon_for_touch(
+    device: Res<crate::gamepad::InputDevice>,
+    ui_scale: Res<UiScale>,
+    mut label: Query<&mut Node, With<WeaponText>>,
+) {
+    if !device.is_changed() && !ui_scale.is_changed() {
+        return;
+    }
+    let touch = *device == crate::gamepad::InputDevice::Touch;
+    for mut node in &mut label {
+        if touch {
+            let pause = crate::touch::dp_to_ui(crate::touch::layout::PAUSE_SIZE + crate::touch::layout::MARGIN, &ui_scale);
+            node.top = Val::Px(MARGIN + crate::minimap::DIAMETER + 8.0);
+            node.right = Val::Px(MARGIN + pause);
+        } else {
+            node.top = Val::Px(MARGIN);
+            node.right = Val::Px(MARGIN);
         }
     }
 }

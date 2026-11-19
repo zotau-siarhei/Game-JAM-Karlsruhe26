@@ -37,6 +37,8 @@ mod tuning {
     pub const HEADING_SMOOTH: f32 = 20.0;
     /// Скорость подхода показанной дальности к нужной, 1/с.
     pub const RANGE_SMOOTH: f32 = 12.0;
+    /// Дальность мортиры при наименьшей оттяжке сенсорного стика, м.
+    pub const TOUCH_MIN_RANGE: f32 = 5.0;
     /// Ближе этого помощь врага не ловит, м.
     pub const MIN_ASSIST_RANGE: f32 = 3.0;
     // Зона захвата, удержание пойманного врага и замедление курсора над врагом — по сложности
@@ -137,7 +139,7 @@ fn weapon_range(weapon: CurrentWeapon, manual_range: f32) -> f32 {
 }
 
 /// Разность углов `to − from` по кратчайшей дуге.
-fn angle_diff(to: f32, from: f32) -> f32 {
+pub fn angle_diff(to: f32, from: f32) -> f32 {
     use std::f32::consts::{PI, TAU};
     (to - from + PI).rem_euclid(TAU) - PI
 }
@@ -178,6 +180,17 @@ fn pick_target(
     chosen.map(|(entity, offset, _)| (entity, offset))
 }
 
+/// Ближайший видимый враг в пределах прицела: короткое касание стика прицела.
+fn nearest_visible(enemies: &[(Entity, Vec2)], mut visible: impl FnMut(Vec2) -> bool) -> Option<(Entity, Vec2)> {
+    let mut near: Vec<(Entity, Vec2)> = enemies
+        .iter()
+        .copied()
+        .filter(|(_, offset)| (MIN_ASSIST_RANGE..=MAX_AIM_RANGE).contains(&offset.length()))
+        .collect();
+    near.sort_by(|a, b| a.1.length_squared().total_cmp(&b.1.length_squared()));
+    near.into_iter().find(|(_, offset)| visible(*offset))
+}
+
 /// Шаг курсора за кадр: скорость по кривой от наклона, над врагом медленнее.
 fn cursor_step(stick_world: Vec2, dt: f32, near_enemy: bool, assist: AimAssist) -> Vec2 {
     let tilt = stick_world.length().min(1.0);
@@ -206,7 +219,7 @@ fn aim_with_stick(
     enemies: Query<(Entity, &Transform, &Health), With<Enemy>>,
     obstacles: Query<(Entity, &Obstacle)>,
 ) {
-    if !device.gamepad() {
+    if !device.stick() {
         return;
     }
     // В наведении авиаудара время замедлено, а курсор идёт по реальному.
@@ -244,7 +257,8 @@ fn aim_with_stick(
         let near_enemy = alive
             .iter()
             .any(|(_, enemy)| enemy.distance(offset) <= CURSOR_FRICTION_RADIUS);
-        let moved = (offset + cursor_step(input.aim_world, dt * speed, near_enemy, assist)).clamp_length_max(range);
+        let moved = (offset + cursor_step(input.aim_world, dt * speed, near_enemy, assist) + input.cursor_shift)
+            .clamp_length_max(range);
         let length = moved.length();
         if length > 0.1 {
             stick.heading = moved.to_angle();
@@ -253,6 +267,32 @@ fn aim_with_stick(
         stick.range = length;
         stick.shown_range = length;
         stick.manual_range = length;
+    } else if input.snap {
+        // Короткое касание: сразу на ближайшего видимого врага, без сглаживания курса.
+        let eye = rover.translation + Vec3::Y * EYE_HEIGHT;
+        let visible = |offset: Vec2| {
+            let at = me + offset;
+            let target = Vec3::new(at.x, terrain.height_at(at.x, at.y) + TARGET_HEIGHT, at.y);
+            steering::has_los(&terrain, obstacles.iter(), eye, target)
+        };
+        if let Some((entity, offset)) = nearest_visible(&alive, visible) {
+            stick.locked = Some(entity);
+            stick.heading = offset.to_angle();
+            stick.shown_heading = stick.heading;
+            stick.range = offset.length();
+            stick.shown_range = stick.range;
+            if matches!(*weapon, CurrentWeapon::Mortar | CurrentWeapon::Airstrike) {
+                stick.manual_range = stick.range;
+            }
+        }
+    } else if let (Some(fraction), CurrentWeapon::Mortar | CurrentWeapon::Airstrike, true) =
+        (input.aim_range, *weapon, tilt > 0.0)
+    {
+        // Сенсорный стик у мортиры: курс по оттяжке, дальность — по её длине.
+        stick.locked = None;
+        stick.heading = input.aim_world.normalize_or(Vec2::NEG_Y).to_angle();
+        stick.range = TOUCH_MIN_RANGE + (MAX_AIM_RANGE - TOUCH_MIN_RANGE) * fraction;
+        stick.manual_range = stick.range;
     } else if accept_heading(tilt, stick.last_tilt, dt) {
         let dir = input.aim_world.normalize_or(Vec2::NEG_Y);
         let eye = rover.translation + Vec3::Y * EYE_HEIGHT;
@@ -325,6 +365,16 @@ mod tests {
 
     fn entity(n: u32) -> Entity {
         Entity::from_raw_u32(n).unwrap()
+    }
+
+    #[test]
+    fn касание_берёт_ближайшего_видимого() {
+        let near_hidden = (entity(1), Vec2::new(8.0, 0.0));
+        let far = (entity(2), Vec2::new(-20.0, 0.0));
+        let too_close = (entity(3), Vec2::new(1.0, 0.0));
+        let found = nearest_visible(&[far, near_hidden, too_close], |offset| offset.x < 0.0);
+        assert_eq!(found.map(|(e, _)| e), Some(entity(2)));
+        assert!(nearest_visible(&[], |_| true).is_none());
     }
 
     #[test]

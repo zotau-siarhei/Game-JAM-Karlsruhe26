@@ -422,7 +422,8 @@ fn show_targeting_ui(
     let hint = DeviceHint::new(
         "CLICK - STRIKE     WHEEL - TURN     RIGHT CLICK / ESC - CANCEL",
         "{FIRE} - STRIKE     {BUMPERS} - TURN     {B} - CANCEL",
-    );
+    )
+    .with_touch("DRAG - MOVE     TWO FINGERS OR < > - TURN");
     commands
         .spawn((
             TargetingUi,

@@ -15,6 +15,7 @@
 
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
+use bevy::ui::UiGlobalTransform;
 use bevy::window::WindowFocused;
 
 use crate::camera::Focus;
@@ -200,23 +201,108 @@ impl NameEntry {
 
 /// Буква или цифра клавиши. Берётся из кода клавиши, поэтому не зависит от раскладки.
 fn key_char(key: KeyCode) -> Option<char> {
-    const LETTERS: [KeyCode; 26] = [
-        KeyCode::KeyA, KeyCode::KeyB, KeyCode::KeyC, KeyCode::KeyD, KeyCode::KeyE, KeyCode::KeyF,
-        KeyCode::KeyG, KeyCode::KeyH, KeyCode::KeyI, KeyCode::KeyJ, KeyCode::KeyK, KeyCode::KeyL,
-        KeyCode::KeyM, KeyCode::KeyN, KeyCode::KeyO, KeyCode::KeyP, KeyCode::KeyQ, KeyCode::KeyR,
-        KeyCode::KeyS, KeyCode::KeyT, KeyCode::KeyU, KeyCode::KeyV, KeyCode::KeyW, KeyCode::KeyX,
-        KeyCode::KeyY, KeyCode::KeyZ,
-    ];
-    const DIGITS: [KeyCode; 10] = [
-        KeyCode::Digit0, KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4,
-        KeyCode::Digit5, KeyCode::Digit6, KeyCode::Digit7, KeyCode::Digit8, KeyCode::Digit9,
-    ];
     let at = |keys: &[KeyCode], first: u8| {
         keys.iter()
             .position(|candidate| *candidate == key)
             .map(|index| (first + index as u8) as char)
     };
     at(&LETTERS, b'A').or_else(|| at(&DIGITS, b'0'))
+}
+
+/// Клавиша буквы или цифры: обратное к [`key_char`], для экранной клавиатуры.
+fn char_key(letter: char) -> Option<KeyCode> {
+    match letter {
+        'A'..='Z' => LETTERS.get((letter as u8 - b'A') as usize).copied(),
+        '0'..='9' => DIGITS.get((letter as u8 - b'0') as usize).copied(),
+        _ => None,
+    }
+}
+
+/// Клавиши букв и цифр по порядку.
+const LETTERS: [KeyCode; 26] = [
+        KeyCode::KeyA, KeyCode::KeyB, KeyCode::KeyC, KeyCode::KeyD, KeyCode::KeyE, KeyCode::KeyF,
+        KeyCode::KeyG, KeyCode::KeyH, KeyCode::KeyI, KeyCode::KeyJ, KeyCode::KeyK, KeyCode::KeyL,
+        KeyCode::KeyM, KeyCode::KeyN, KeyCode::KeyO, KeyCode::KeyP, KeyCode::KeyQ, KeyCode::KeyR,
+        KeyCode::KeyS, KeyCode::KeyT, KeyCode::KeyU, KeyCode::KeyV, KeyCode::KeyW, KeyCode::KeyX,
+        KeyCode::KeyY, KeyCode::KeyZ,
+    ];
+const DIGITS: [KeyCode; 10] = [
+        KeyCode::Digit0, KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4,
+        KeyCode::Digit5, KeyCode::Digit6, KeyCode::Digit7, KeyCode::Digit8, KeyCode::Digit9,
+    ];
+
+/// Ряды экранной клавиатуры для имени рекорда.
+const KEYBOARD_ROWS: [&str; 4] = ["1234567890", "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"];
+/// Клавиша экранной клавиатуры: ширина и высота, dp.
+const KEY_SIZE_DP: (f32, f32) = (52.0, 40.0);
+
+/// Кнопка экрана, которую нажимают пальцем: клавиша или пункт.
+fn touch_key(
+    action: crate::touch::TapAction,
+    text: &str,
+    width_dp: f32,
+    ui_scale: &UiScale,
+    color: Color,
+) -> impl Bundle {
+    let px = |dp: f32| Val::Px(crate::touch::dp_to_ui(dp, ui_scale));
+    (
+        action,
+        Node {
+            width: px(width_dp),
+            height: px(KEY_SIZE_DP.1),
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            border: UiRect::all(Val::Px(1.0)),
+            border_radius: BorderRadius::all(px(8.0)),
+            ..default()
+        },
+        BackgroundColor(Color::srgba(0.1, 0.14, 0.19, 0.9)),
+        BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.3)),
+        children![(
+            Text::new(text),
+            TextFont {
+                font_size: FontSize::Px(crate::touch::dp_to_ui(17.0, ui_scale)),
+                ..default()
+            },
+            TextColor(color),
+        )],
+    )
+}
+
+/// Экранная клавиатура имени рекорда: ряды букв и цифр, стереть, сохранить.
+fn spawn_keyboard(screen: &mut ChildSpawnerCommands, ui_scale: &UiScale) {
+    use crate::touch::TapAction;
+    let gap = Val::Px(crate::touch::dp_to_ui(6.0, ui_scale));
+    screen
+        .spawn(Node {
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Center,
+            row_gap: gap,
+            margin: UiRect::top(gap),
+            ..default()
+        })
+        .with_children(|keyboard| {
+            for (index, row) in KEYBOARD_ROWS.iter().enumerate() {
+                keyboard
+                    .spawn(Node {
+                        column_gap: gap,
+                        ..default()
+                    })
+                    .with_children(|line| {
+                        for letter in row.chars() {
+                            if let Some(key) = char_key(letter) {
+                                let text = letter.to_string();
+                                line.spawn(touch_key(TapAction::Key(key), &text, KEY_SIZE_DP.0, ui_scale, Color::WHITE));
+                            }
+                        }
+                        // Последний ряд: стереть и сохранить.
+                        if index == KEYBOARD_ROWS.len() - 1 {
+                            line.spawn(touch_key(TapAction::Key(KeyCode::Backspace), "DEL", 70.0, ui_scale, Color::WHITE));
+                            line.spawn(touch_key(TapAction::Key(KeyCode::Enter), "SAVE", 90.0, ui_scale, TITLE_COLOR));
+                        }
+                    });
+            }
+        });
 }
 
 /// Таблицы рекордов всех уровней сложности в памяти и пути к их файлам.
@@ -480,6 +566,18 @@ pub(crate) fn hint_line(keys: impl Into<String>, pad: impl Into<String>, size: f
     (screen_line(hint.keys.clone(), size, color), hint)
 }
 
+/// Строка-подсказка со своим текстом и для касаний.
+pub(crate) fn hint_line_touch(
+    keys: impl Into<String>,
+    pad: impl Into<String>,
+    touch: impl Into<String>,
+    size: f32,
+    color: Color,
+) -> impl Bundle {
+    let hint = DeviceHint::new(keys, pad).with_touch(touch);
+    (screen_line(hint.keys.clone(), size, color), hint)
+}
+
 /// Строка текста на экране.
 pub(crate) fn screen_line(text: impl Into<String>, size: f32, color: Color) -> impl Bundle {
     (
@@ -611,11 +709,15 @@ fn draw_game_over(
     result: Res<RunResult>,
     records: Res<RecordsTable>,
     difficulty: Res<RunDifficulty>,
+    device: Res<InputDevice>,
+    ui_scale: Res<UiScale>,
     old: Query<Entity, With<GameOverScreen>>,
 ) {
-    if !result.is_changed() {
+    // Устройство сменилось — перерисовать: у касаний своя клавиатура и кнопки.
+    if !result.is_changed() && !(device.is_changed() && !old.is_empty()) {
         return;
     }
+    let touch = *device == InputDevice::Touch;
     let run_table = records.table(difficulty.0);
     // Первый показ проявляется, перерисовка при вводе имени — сразу.
     let appear = if old.is_empty() { Appear::over(GAME_OVER_APPEAR) } else { Appear::shown() };
@@ -643,12 +745,16 @@ fn draw_game_over(
                             cells.spawn(screen_line(cell.unwrap_or('_').to_string(), 64.0, color));
                         }
                     });
-                screen.spawn(hint_line(
+                screen.spawn(hint_line_touch(
                     "LETTERS, DIGITS, BACKSPACE     ENTER - SAVE",
                     format!("{{A}} - SAVE AS {}", run_table.last_name),
+                    format!("TYPE A NAME OR SAVE AS {}", run_table.last_name),
                     20.0,
                     HINT_COLOR,
                 ));
+                if touch {
+                    spawn_keyboard(screen, &ui_scale);
+                }
                 return;
             }
 
@@ -664,7 +770,22 @@ fn draw_game_over(
                         table.spawn(screen_line(table_row(place, record), 22.0, color));
                     }
                 });
-            screen.spawn(hint_line("ENTER - RESTART     ESC - MENU", "{A} - RESTART     {B} - MENU", 22.0, HINT_COLOR));
+            if touch {
+                let gap = Val::Px(crate::touch::dp_to_ui(16.0, &ui_scale));
+                screen
+                    .spawn(Node {
+                        column_gap: gap,
+                        margin: UiRect::top(gap),
+                        ..default()
+                    })
+                    .with_children(|buttons| {
+                        use crate::touch::TapAction;
+                        buttons.spawn(touch_key(TapAction::Key(KeyCode::Enter), "RESTART", 130.0, &ui_scale, TITLE_COLOR));
+                        buttons.spawn(touch_key(TapAction::Key(KeyCode::Escape), "MENU", 130.0, &ui_scale, Color::WHITE));
+                    });
+            } else {
+                screen.spawn(hint_line("ENTER - RESTART     ESC - MENU", "{A} - RESTART     {B} - MENU", 22.0, HINT_COLOR));
+            }
         });
 }
 
@@ -700,7 +821,7 @@ fn game_over_input(
         }
         // Esc с недописанным именем сохраняет результат под прежним именем: рекорд не теряется.
         // С геймпада букв не набрать: «да» сохраняет под прежним именем.
-        let keep_last = escape || (enter && device.gamepad());
+        let keep_last = escape || (enter && device.stick());
         let last = &records.table(difficulty.0).last_name;
         let name = entry.name().or_else(|| keep_last.then(|| last.clone()));
         if let (true, Some(name)) = (enter || escape, name) {
@@ -779,18 +900,39 @@ fn show_pause(mut commands: Commands) {
             screen.spawn(screen_line("PAUSED", 56.0, TITLE_COLOR));
             screen.spawn(screen_line("", 10.0, Color::NONE));
             for (index, (label, _, pad)) in PAUSE_ITEMS.iter().enumerate() {
-                screen.spawn((PauseItem(index), hint_line(*label, *pad, 30.0, HINT_COLOR)));
+                let touch = label.split(" - ").next().unwrap_or(label);
+                screen.spawn((PauseItem(index), hint_line_touch(*label, *pad, touch, 30.0, HINT_COLOR)));
             }
             screen.spawn(screen_line("", 10.0, Color::NONE));
-            screen.spawn(hint_line("UP, DOWN AND ENTER TO CHOOSE", "D-PAD AND {A} TO CHOOSE", 18.0, HINT_COLOR));
+            screen.spawn(hint_line_touch(
+                "UP, DOWN AND ENTER TO CHOOSE",
+                "D-PAD AND {A} TO CHOOSE",
+                "TAP TO CHOOSE",
+                18.0,
+                HINT_COLOR,
+            ));
         });
 }
 
 /// Пауза: стрелки и Enter выбирают пункт, клавиша-подсказка срабатывает сразу.
-fn pause_input(keys: Res<ButtonInput<KeyCode>>, mut choice: ResMut<PauseChoice>, mut world: RunWorld) {
+fn pause_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    tap: Res<crate::touch::TouchTap>,
+    items: Query<(&PauseItem, &ComputedNode, &UiGlobalTransform)>,
+    window: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    mut choice: ResMut<PauseChoice>,
+    mut world: RunWorld,
+) {
     if world.transition.busy() {
         return;
     }
+    // Касание пункта выполняет его сразу.
+    let by_tap = tap
+        .0
+        .and_then(|point| {
+            let scale = window.single().map_or(1.0, |w| w.scale_factor());
+            crate::touch::nearest_row(point, scale, items.iter().map(|(item, node, t)| (item.0, node, t)))
+        });
     if keys.any_just_pressed([KeyCode::ArrowUp, KeyCode::KeyW]) {
         choice.0 = moved_choice(choice.0, -1);
     }
@@ -801,7 +943,7 @@ fn pause_input(keys: Res<ButtonInput<KeyCode>>, mut choice: ResMut<PauseChoice>,
     let by_enter = keys
         .any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter])
         .then_some(choice.0);
-    match by_hint.or(by_enter) {
+    match by_tap.or(by_hint).or(by_enter) {
         Some(0) => world.resume(),
         Some(1) => world.start_run(),
         Some(2) => world.open_menu(),
@@ -875,6 +1017,9 @@ mod tests {
         assert_eq!(key_char(KeyCode::Digit0), Some('0'));
         assert_eq!(key_char(KeyCode::Digit9), Some('9'));
         assert_eq!(key_char(KeyCode::Space), None);
+        for letter in ['A', 'Q', 'Z', '0', '7', '9'] {
+            assert_eq!(char_key(letter).and_then(key_char), Some(letter));
+        }
     }
 
     #[test]

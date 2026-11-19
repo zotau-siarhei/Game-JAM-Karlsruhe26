@@ -87,6 +87,7 @@ mod sound_list;
 mod steering;
 mod stick_aim;
 mod terrain;
+mod touch;
 mod tracks;
 mod trains;
 mod tunnel_view;
@@ -155,7 +156,7 @@ fn main() {
         .add_plugins(perf::PerfPlugin)
         .add_plugins(shock::ShockPlugin)
         .add_plugins((fonts::FontsPlugin, fade::FadePlugin, loading::LoadingPlugin))
-        .add_plugins((gamepad::GamepadPlugin, stick_aim::StickAimPlugin, haptics::HapticsPlugin))
+        .add_plugins((gamepad::GamepadPlugin, stick_aim::StickAimPlugin, haptics::HapticsPlugin, touch::TouchPlugin))
         .add_plugins(game_plugins)
         .add_systems(Startup, spawn_light)
         .run();

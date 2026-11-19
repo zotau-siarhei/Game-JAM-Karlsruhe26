@@ -6,6 +6,7 @@
 //! в Bevy теми же сообщениями, что шлёт gilrs: для остальной игры это обычный `Gamepad`.
 //! Отключение система Android в очередь ввода не сообщает, поэтому геймпад остаётся до выхода.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use bevy::android::ANDROID_APP;
@@ -105,7 +106,10 @@ fn button_index(key: Keycode) -> Option<usize> {
     })
 }
 
-/// Забирает события геймпада. Все его кнопки считаются обработанными: иначе система сделала бы
+/// Нажата системная «назад» (кнопка или жест): игра делает из неё Esc, а не закрывается.
+static BACK: AtomicBool = AtomicBool::new(false);
+
+/// Забирает события геймпада и системную «назад». Все его кнопки считаются обработанными: иначе система сделала бы
 /// из кнопки B «назад» и закрыла игру.
 fn filter(event: &InputEvent<'_>) -> bool {
     match event {
@@ -126,6 +130,12 @@ fn filter(event: &InputEvent<'_>) -> bool {
             state.analog[DPAD_DOWN] = hat_y.max(0.0);
             state.analog[DPAD_LEFT] = (-hat_x).max(0.0);
             state.analog[DPAD_RIGHT] = hat_x.max(0.0);
+            true
+        }
+        InputEvent::KeyEvent(key) if key.key_code() == Keycode::Back => {
+            if key.action() == KeyAction::Down {
+                BACK.store(true, Ordering::Relaxed);
+            }
             true
         }
         InputEvent::KeyEvent(key) => {
@@ -240,7 +250,21 @@ fn poll(
     sent.axes = now_axes;
 }
 
+/// «Назад» — Esc на один кадр: пауза в забеге, назад в меню. Нажимается после ввода Bevy,
+/// иначе он сбросил бы нажатие.
+fn back_to_escape(mut held: Local<bool>, mut keys: ResMut<ButtonInput<KeyCode>>) {
+    if std::mem::take(&mut *held) {
+        keys.release(KeyCode::Escape);
+    }
+    if BACK.swap(false, Ordering::Relaxed) {
+        info!("Android: «назад» — Esc");
+        keys.press(KeyCode::Escape);
+        *held = true;
+    }
+}
+
 pub(super) fn build(app: &mut App) {
     set_input_filter(filter);
-    app.add_systems(PreUpdate, poll.before(bevy::input::InputSystems));
+    app.add_systems(PreUpdate, poll.before(bevy::input::InputSystems))
+        .add_systems(PreUpdate, back_to_escape.after(bevy::input::InputSystems));
 }

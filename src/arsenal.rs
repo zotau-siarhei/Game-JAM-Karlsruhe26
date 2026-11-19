@@ -301,6 +301,11 @@ const PIP_OFF: Color = Color::srgba(1.0, 1.0, 1.0, 0.18);
 #[derive(Component)]
 struct Panel;
 
+/// Сторона ячейки панели, точки интерфейса.
+const CELL_SIZE: f32 = 64.0;
+/// Сторона ячейки при касаниях не меньше, dp.
+const TOUCH_CELL_DP: f32 = 48.0;
+
 fn spawn_panel(mut commands: Commands) {
     commands
         .spawn((
@@ -320,6 +325,8 @@ fn spawn_panel(mut commands: Commands) {
                 let s = spec(weapon);
                 let key = slot(weapon) + 1;
                 row.spawn((
+                    // Касание ячейки — как клавиша оружия.
+                    crate::touch::TapAction::Key(s.key),
                     Cell {
                         weapon,
                         shown: false,
@@ -327,8 +334,8 @@ fn spawn_panel(mut commands: Commands) {
                         denied: 0.0,
                     },
                     Node {
-                        width: Val::Px(64.0),
-                        height: Val::Px(64.0),
+                        width: Val::Px(CELL_SIZE),
+                        height: Val::Px(CELL_SIZE),
                         flex_direction: FlexDirection::Column,
                         align_items: AlignItems::Center,
                         justify_content: JustifyContent::SpaceBetween,
@@ -403,6 +410,8 @@ fn update_panel(
     inventory: Res<Inventory>,
     levels: Res<WeaponLevels>,
     weapon: Res<CurrentWeapon>,
+    device: Res<crate::gamepad::InputDevice>,
+    ui_scale: Res<UiScale>,
     mut denied: MessageReader<WeaponDenied>,
     mut upgraded: MessageReader<WeaponUpgraded>,
     mut panel: Query<&mut Visibility, With<Panel>>,
@@ -434,6 +443,16 @@ fn update_panel(
         let display = if owned { Display::Flex } else { Display::None };
         if node.display != display {
             node.display = display;
+        }
+        // Под палец ячейка не меньше 48 dp.
+        let side = if *device == crate::gamepad::InputDevice::Touch {
+            Val::Px(CELL_SIZE.max(crate::touch::dp_to_ui(TOUCH_CELL_DP, &ui_scale)))
+        } else {
+            Val::Px(CELL_SIZE)
+        };
+        if node.width != side {
+            node.width = side;
+            node.height = side;
         }
         if owned && !cell.shown {
             cell.flash = NEW_CELL_SECONDS;

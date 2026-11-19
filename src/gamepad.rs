@@ -51,7 +51,7 @@ impl Plugin for GamepadPlugin {
             .init_resource::<PadStyle>()
             .init_resource::<PadInput>()
             .init_resource::<Held>()
-            .add_systems(PreUpdate, read_pad.after(InputSystems))
+            .add_systems(PreUpdate, read_pad.in_set(PadRead).after(InputSystems))
             .add_systems(
                 Update,
                 (
@@ -62,17 +62,28 @@ impl Plugin for GamepadPlugin {
     }
 }
 
+/// Набор чтения геймпада в `PreUpdate`: после него сенсорный ввод дописывает [`PadInput`].
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PadRead;
+
 /// Чем игрок пользовался последним.
 #[derive(Resource, Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputDevice {
     #[default]
     KeyboardMouse,
     Gamepad,
+    /// Сенсорный экран: `touch.rs`.
+    Touch,
 }
 
 impl InputDevice {
     pub fn gamepad(self) -> bool {
         self == InputDevice::Gamepad
+    }
+
+    /// Езда и прицел стиками: геймпад или сенсорные стики.
+    pub fn stick(self) -> bool {
+        matches!(self, InputDevice::Gamepad | InputDevice::Touch)
     }
 }
 
@@ -99,6 +110,12 @@ pub struct PadInput {
     pub weapon_step: i32,
     /// Зажат L2: правый стик двигает прицел как курсор.
     pub cursor: bool,
+    /// Дальность мортиры и авиаудара долей от 0 до 1: её задаёт оттяжка сенсорного стика прицела.
+    pub aim_range: Option<f32>,
+    /// Короткое касание стика прицела: прицел сразу на ближайшего видимого врага.
+    pub snap: bool,
+    /// Сдвиг курсора по земле за кадр (x, z), м: палец ведёт отметку авиаудара.
+    pub cursor_shift: Vec2,
 }
 
 /// Что нажимает кнопка геймпада.
@@ -172,7 +189,7 @@ pub fn deadzone(stick: Vec2, deadzone: f32) -> Vec2 {
 }
 
 /// Оси экрана на плоскости мира (x, z): куда на земле смотрят «вправо» и «вверх» экрана.
-fn screen_axes(camera: &Transform) -> (Vec2, Vec2) {
+pub fn screen_axes(camera: &Transform) -> (Vec2, Vec2) {
     let flat = |v: Vec3| Vec2::new(v.x, v.z).normalize_or_zero();
     let right = flat(*camera.right());
     let up = flat(*camera.up());
@@ -183,7 +200,7 @@ fn screen_axes(camera: &Transform) -> (Vec2, Vec2) {
 }
 
 /// Наклон стика в осях экрана — на плоскость мира (x, z).
-fn to_world(stick: Vec2, (right, up): (Vec2, Vec2)) -> Vec2 {
+pub fn to_world(stick: Vec2, (right, up): (Vec2, Vec2)) -> Vec2 {
     right * stick.x + up * stick.y
 }
 
@@ -200,6 +217,7 @@ fn read_pad(
     mut input: ResMut<PadInput>,
     mut device: ResMut<InputDevice>,
     mut style: ResMut<PadStyle>,
+    last_touch: Option<Res<crate::touch::LastTouch>>,
 ) {
     for key in std::mem::take(&mut held.taps) {
         keys.release(key);
@@ -225,7 +243,12 @@ fn read_pad(
     if pad_used && !device.gamepad() {
         info!("Управление: геймпад");
         *device = InputDevice::Gamepad;
-    } else if desk_used && !pad_used && device.gamepad() {
+    } else if desk_used
+        && !pad_used
+        && *device != InputDevice::KeyboardMouse
+        // Браузер присылает мышиные события, сделанные из касания: их не считаем.
+        && !last_touch.is_some_and(|last| last.recent(time.elapsed_secs_f64()))
+    {
         info!("Управление: клавиатура и мышь");
         *device = InputDevice::KeyboardMouse;
     }
@@ -325,6 +348,7 @@ fn read_pad(
         aim_world: to_world(aim, axes),
         weapon_step,
         cursor: pad.pressed(GamepadButton::LeftTrigger2),
+        ..default()
     };
 }
 
@@ -343,7 +367,7 @@ fn log_connections(mut events: MessageReader<GamepadConnectionEvent>) {
 /// С геймпадом курсор мыши не виден: он только мешал бы.
 fn show_cursor(device: Res<InputDevice>, mut cursor: Single<&mut CursorOptions, With<PrimaryWindow>>) {
     if device.is_changed() {
-        cursor.visible = !device.gamepad();
+        cursor.visible = *device == InputDevice::KeyboardMouse;
     }
 }
 
@@ -354,6 +378,8 @@ fn show_cursor(device: Res<InputDevice>, mut cursor: Single<&mut CursorOptions, 
 pub struct DeviceHint {
     pub keys: String,
     pub pad: String,
+    /// Подсказка для касаний. Без неё берётся подсказка геймпада с касаниями вместо кнопок.
+    pub touch: Option<String>,
 }
 
 impl DeviceHint {
@@ -361,12 +387,41 @@ impl DeviceHint {
         Self {
             keys: keys.into(),
             pad: pad.into(),
+            touch: None,
+        }
+    }
+
+    /// Своя подсказка для касаний.
+    pub fn with_touch(mut self, touch: impl Into<String>) -> Self {
+        self.touch = Some(touch.into());
+        self
+    }
+
+    /// Текст для устройства.
+    pub fn text(&self, device: InputDevice, style: PadStyle) -> String {
+        match (&self.touch, device) {
+            (Some(touch), InputDevice::Touch) => touch.clone(),
+            _ => hint_text(device, style, &self.keys, &self.pad),
         }
     }
 }
 
 /// Текст подсказки для устройства.
 pub fn hint_text(device: InputDevice, style: PadStyle, keys: &str, pad: &str) -> String {
+    if device == InputDevice::Touch {
+        let labels = [
+            ("{A}", "TAP"),
+            ("{B}", "BACK"),
+            ("{FIRE}", "AIM STICK"),
+            ("{BUMPERS}", "< >"),
+            ("{START}", "II"),
+            ("{SELECT}", ""),
+            ("{CURSOR}", ""),
+        ];
+        return labels
+            .iter()
+            .fold(pad.to_string(), |text, (label, name)| text.replace(label, name));
+    }
     if !device.gamepad() {
         return keys.to_string();
     }
@@ -405,7 +460,7 @@ fn update_hints(
         if !all && !hint.is_changed() {
             continue;
         }
-        let wanted = hint_text(*device, *style, &hint.keys, &hint.pad);
+        let wanted = hint.text(*device, *style);
         if text.0 != wanted {
             text.0 = wanted;
         }

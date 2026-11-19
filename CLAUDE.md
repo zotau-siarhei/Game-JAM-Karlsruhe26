@@ -64,6 +64,15 @@
   GameController (`src/gamepad/macos.rs`): gilrs там кнопок DualShock 4 не получает; на Android —
   фильтр очереди ввода (`src/gamepad/android.rs`, патч android-activity при сборке:
   `android/patch_android_activity.py`); на Linux и Windows — gilrs самого Bevy.
+- Касания — `src/touch.rs` (схема экрана: https://claude.ai/artifact/GctBfPbonNnJSF1BT2s9kg): устройство
+  `InputDevice::Touch`, `device.stick()` — геймпад или касания. Левый большой палец — плавающий стик езды,
+  правый — стик прицела (оттяжка за мёртвую зону стреляет, у мортиры длина оттяжки — дальность), короткое
+  касание справа — выстрел по ближайшему видимому врагу. Касание пишет в `PadInput` и нажимает виртуальные
+  клавиши, как геймпад; узел интерфейса с компонентом `touch::TapAction` (`Key`, `Mouse`, `Step`) — кнопка
+  для пальца. Вне забега короткое касание — ресурс `TouchTap`, свайп — `TouchSwipe`; строку меню под
+  пальцем ищет `touch::nearest_row`. Размеры — в dp (`touch::layout`, `touch::dp_to_ui`), отступы выреза —
+  `platform::safe_area`. На компьютере — `cargo run -- --touch`: левая кнопка мыши изображает палец.
+  Android «назад» — Esc (фильтр очереди ввода).
 - Вибрация и световая панель — `src/haptics.rs`: событие толкает микшер `ResMut<Rumble>`
   (`kick(сильный, слабый)`), отправку в геймпад делает бэкенд. На macOS это CoreHaptics через
   GameController (`src/haptics/macos.rs`), и только обычный `CHHapticPatternPlayer`: продвинутый
@@ -171,8 +180,13 @@ cargo test                                  # тесты
   таргеты Rust (список — в начале скрипта). Особенности платформы — `src/android.rs` (выборка тени для
   Adreno, звук в фоне) и `src/platform.rs`: ассеты лежат в APK, поэтому новый JSON-список надо вшить в
   `platform::read_list`. Конвейеры на Android собираются синхронно: фоновая сборка при пустом кэше шейдеров
-  вешала GPU Adreno 810. Сенсорного управления нет: играть можно с геймпада или клавиатуры, вибрации нет.
+  вешала GPU Adreno 810. Управление — касания (`src/touch.rs`), геймпад или клавиатура; вибрации нет.
   Иконка — ресурсы `android/res`; слои пересобирает `scripts/android-icon.py` из `android/icon/source.png` (нужен Pillow).
+  Эмулятор (Android Studio, AVD `Medium_Phone_API_36.0`, arm64): `~/Library/Android/sdk/emulator/emulator -avd
+  Medium_Phone_API_36.0 -gpu host -feature Vulkan -no-snapshot-save` — без `-gpu host` рисует программно и
+  медленно. Сборка `--abi=arm64-v8a`, затем `adb install -r`; касания — `adb shell input tap|swipe|motionevent`,
+  снимок — `adb exec-out screencap -p`. С target SDK 36 окно идёт под вырез камеры, а «назад» система закрывала
+  бы сама: в манифесте `enableOnBackInvokedCallback="false"`.
 - Браузерная версия выкладывается на GitHub Pages: https://zotau-siarhei.github.io/Game-JAM-Karlsruhe26/
   Workflow `.github/workflows/web.yml` раз в 4 часа собирает main (`--release`), если после последней
   выкладки были коммиты. Сборка не чаще раза в 4 часа при любом запуске, ручной (Actions → web → Run

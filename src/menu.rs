@@ -13,9 +13,12 @@ use bevy::app::AppExit;
 use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
+use bevy::ui::UiGlobalTransform;
 
 use crate::difficulty::{Difficulty, RunDifficulty};
 use crate::fade::Appear;
+use crate::gamepad::InputDevice;
+use crate::touch::{TouchSwipe, TouchTap, nearest_row, node_contains};
 use crate::frame::GameSet;
 use crate::quality::Quality;
 use crate::run::{self, GameState, RecordsTable, RunWorld, HINT_COLOR, TITLE_COLOR};
@@ -84,6 +87,8 @@ enum Setting {
     Voice,
     Subtitles,
     Vibration,
+    TouchSize,
+    TouchOpacity,
 }
 
 /// Выбираемая строка меню.
@@ -111,8 +116,9 @@ fn main_items() -> Vec<Item> {
     items
 }
 
-/// Строки страницы по порядку выделения. `pad` — подключён геймпад: без него строки вибрации нет.
-fn items(page: MenuPage, pad: bool) -> Vec<Item> {
+/// Строки страницы по порядку выделения. `pad` — подключён геймпад: без него строки вибрации нет;
+/// `touch` — игрок пользуется касаниями: тогда есть строки сенсорных элементов.
+fn items(page: MenuPage, pad: bool, touch: bool) -> Vec<Item> {
     match page {
         MenuPage::Main => main_items(),
         MenuPage::Difficulty => {
@@ -129,10 +135,16 @@ fn items(page: MenuPage, pad: bool) -> Vec<Item> {
                 Setting::Voice,
                 Setting::Subtitles,
                 Setting::Vibration,
+                Setting::TouchSize,
+                Setting::TouchOpacity,
             ]
             .map(Item::Setting)
             .to_vec();
-            items.retain(|item| pad || *item != Item::Setting(Setting::Vibration));
+            items.retain(|item| match item {
+                Item::Setting(Setting::Vibration) => pad,
+                Item::Setting(Setting::TouchSize | Setting::TouchOpacity) => touch,
+                _ => true,
+            });
             items.push(Item::Back);
             items
         }
@@ -165,7 +177,18 @@ fn change_setting(settings: &mut Settings, setting: Setting, step: i32, wrap: bo
         Setting::Voice => settings.voice = stepped_volume(settings.voice, step, wrap),
         Setting::Subtitles => settings.subtitles = !settings.subtitles,
         Setting::Vibration => settings.vibration = !settings.vibration,
+        Setting::TouchSize => settings.touch_size = settings.touch_size.step(step),
+        Setting::TouchOpacity => settings.touch_opacity = stepped_opacity(settings.touch_opacity, step, wrap),
     }
+}
+
+/// Непрозрачность сенсорных элементов после шага: 10–100 %, `wrap` — со 100 % на 10 %.
+fn stepped_opacity(opacity: u8, step: i32, wrap: bool) -> u8 {
+    let next = i32::from(opacity) + step * 10;
+    if wrap && next > 100 {
+        return 10;
+    }
+    next.clamp(10, 100) as u8
 }
 
 /// Главное меню после возврата с подэкрана: выделен пункт этого подэкрана.
@@ -199,6 +222,10 @@ struct RowText(usize);
 #[derive(Component)]
 struct RowMarker(usize);
 
+/// Значение строки настроек: касание левой половины уменьшает, правой — увеличивает.
+#[derive(Component)]
+struct RowValue(usize);
+
 /// Вход в меню: главная страница, выделено «Играть».
 fn open_main(mut menu: ResMut<Menu>) {
     *menu = Menu::default();
@@ -211,7 +238,14 @@ fn menu_input(
     motion: Res<AccumulatedMouseMotion>,
     bench: Option<Res<crate::perf::Bench>>,
     real: Res<Time<Real>>,
-    rows: Query<(&MenuRow, &Hovered)>,
+    rows: Query<(&MenuRow, &Hovered, &ComputedNode, &UiGlobalTransform)>,
+    (tap, swipe, device, values, window): (
+        Res<TouchTap>,
+        Res<TouchSwipe>,
+        Res<InputDevice>,
+        Query<(&RowValue, &ComputedNode, &UiGlobalTransform)>,
+        Query<&Window, With<bevy::window::PrimaryWindow>>,
+    ),
     gamepads: Query<(), With<Gamepad>>,
     mut last_pad: Local<Option<bool>>,
     mut menu: ResMut<Menu>,
@@ -228,10 +262,11 @@ fn menu_input(
     // Геймпад подключили или отключили: строка вибрации появилась или исчезла, выделение
     // остаётся на той же строке, а с исчезнувшей встаёт на соседнюю выше.
     let pad = !gamepads.is_empty();
+    let touch = *device == InputDevice::Touch;
     let was_pad = last_pad.replace(pad).unwrap_or(pad);
-    let list = items(menu.page, pad);
+    let list = items(menu.page, pad, touch);
     if was_pad != pad {
-        let old = items(menu.page, was_pad);
+        let old = items(menu.page, was_pad, touch);
         let item = old.get(menu.selected).copied();
         let selected = item
             .and_then(|item| list.iter().position(|i| *i == item))
@@ -246,7 +281,21 @@ fn menu_input(
 
     // Наведение мыши выделяет строку, но только когда мышь двигалась: иначе строка под стоящим
     // курсором отбирала бы выделение у клавиатуры.
-    let hovered = rows.iter().find(|(_, hovered)| hovered.get()).map(|(row, _)| row.0);
+    let hovered = rows.iter().find(|(_, hovered, ..)| hovered.get()).map(|(row, ..)| row.0);
+    let scale = window.single().map_or(1.0, |w| w.scale_factor());
+    // Касание строки выбирает её; касание значения настройки — левой или правой половины — меняет его.
+    let tapped = tap
+        .0
+        .and_then(|point| nearest_row(point, scale, rows.iter().map(|(row, _, node, transform)| (row.0, node, transform))));
+    let tapped_value = tap.0.and_then(|point| {
+        values
+            .iter()
+            .find(|(_, node, transform)| node_contains(node, transform, point, scale))
+            .map(|(value, _, transform)| (value.0, if point.x * scale < transform.translation.x { -1 } else { 1 }))
+    });
+    if let Some(row) = tapped.or(tapped_value.map(|(row, _)| row)) {
+        next.selected = row;
+    }
     if motion.delta != Vec2::ZERO
         && let Some(row) = hovered
     {
@@ -264,8 +313,14 @@ fn menu_input(
     let selected = list.get(next.selected.min(list.len().saturating_sub(1))).copied();
 
     // Влево-вправо: значение настройки или таблица рекордов.
-    let side = i32::from(keys.any_just_pressed([KeyCode::ArrowRight, KeyCode::KeyD]))
+    let mut side = i32::from(keys.any_just_pressed([KeyCode::ArrowRight, KeyCode::KeyD]))
         - i32::from(keys.any_just_pressed([KeyCode::ArrowLeft, KeyCode::KeyA]));
+    if let Some((_, step)) = tapped_value {
+        side = step;
+    } else if swipe.0 != 0 && matches!(menu.page, MenuPage::Records(_)) {
+        // Свайп влево — следующая таблица, как перелистывание.
+        side = -swipe.0;
+    }
     if side != 0 {
         match (menu.page, selected) {
             (MenuPage::Records(shown), _) => {
@@ -287,7 +342,8 @@ fn menu_input(
     if by_mouse {
         next.selected = hovered.unwrap_or(next.selected);
     }
-    let chosen = keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter, KeyCode::Space]) || by_mouse;
+    let by_tap = tapped.is_some() && tapped_value.is_none();
+    let chosen = keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter, KeyCode::Space]) || by_mouse || by_tap;
     let bench_start = bench.is_some_and(|b| b.on) && real.elapsed_secs() > 1.0 && menu.page == MenuPage::Main;
     let activated = if bench_start {
         Some(Item::Play)
@@ -397,6 +453,7 @@ fn spawn_row(parent: &mut ChildSpawnerCommands, row: usize, label: &str, value: 
                                 row_text(label, row),
                             ));
                             line.spawn((
+                                RowValue(row),
                                 Node {
                                     width: Val::Px(VALUE_WIDTH),
                                     justify_content: JustifyContent::Center,
@@ -468,6 +525,8 @@ fn setting_value(settings: &Settings, setting: Setting) -> String {
         Setting::Voice => percent(settings.voice),
         Setting::Subtitles => on_off(settings.subtitles),
         Setting::Vibration => on_off(settings.vibration),
+        Setting::TouchSize => settings.touch_size.name().to_string(),
+        Setting::TouchOpacity => percent(settings.touch_opacity),
     }
 }
 
@@ -486,6 +545,8 @@ fn setting_label(setting: Setting) -> &'static str {
         Setting::Voice => "HQ VOICE",
         Setting::Subtitles => "SUBTITLES",
         Setting::Vibration => "VIBRATION",
+        Setting::TouchSize => "CONTROLS",
+        Setting::TouchOpacity => "OPACITY",
     }
 }
 
@@ -496,11 +557,13 @@ fn draw_menu(
     settings: Res<Settings>,
     records: Res<RecordsTable>,
     gamepads: Query<(), With<Gamepad>>,
+    device: Res<InputDevice>,
     old: Query<Entity, With<MenuScreen>>,
-    mut shown: Local<Option<(MenuPage, Settings, bool)>>,
+    mut shown: Local<Option<(MenuPage, Settings, bool, bool)>>,
 ) {
     let pad = !gamepads.is_empty();
-    let wanted = Some((menu.page, settings.clone(), pad));
+    let touch = *device == InputDevice::Touch;
+    let wanted = Some((menu.page, settings.clone(), pad, touch));
     if !old.is_empty() && *shown == wanted && !records.is_changed() {
         return;
     }
@@ -511,7 +574,7 @@ fn draw_menu(
     }
     *shown = wanted;
 
-    let list = items(menu.page, pad);
+    let list = items(menu.page, pad, touch);
     let index_of = |item: Item| list.iter().position(|i| *i == item).unwrap_or(0);
     commands
         .spawn((MenuScreen, run::screen_root(0.45), appear))
@@ -538,21 +601,24 @@ fn draw_menu(
                     }
                 }
                 spacer(screen, 4.0);
-                screen.spawn(run::hint_line(
+                screen.spawn(run::hint_line_touch(
                     "WASD - DRIVE     MOUSE - AIM     LEFT BUTTON - FIRE",
                     "LEFT STICK - DRIVE     RIGHT STICK - AIM     HOLD {CURSOR} - FREE AIM     {FIRE} - FIRE",
+                    "LEFT THUMB - DRIVE     RIGHT THUMB - AIM AND FIRE     QUICK TAP - SHOOT NEAREST",
                     18.0,
                     HINT_COLOR,
                 ));
-                screen.spawn(run::hint_line(
+                screen.spawn(run::hint_line_touch(
                     "1-6, WHEEL - WEAPON     HOLD SPACE - REPAIR     ESC - PAUSE",
                     "{BUMPERS} - WEAPON     HOLD {A} - REPAIR     {START} - PAUSE",
+                    "TAP A WEAPON ICON - SWITCH     II - PAUSE",
                     18.0,
                     HINT_COLOR,
                 ));
-                screen.spawn(run::hint_line(
+                screen.spawn(run::hint_line_touch(
                     "UP, DOWN - SELECT     ENTER - CHOOSE",
                     "D-PAD - SELECT     {A} - CHOOSE",
+                    "TAP A LINE - CHOOSE",
                     18.0,
                     HINT_COLOR,
                 ));
@@ -570,7 +636,12 @@ fn draw_menu(
                 }
                 spacer(screen, 4.0);
                 spawn_row(screen, index_of(Item::Back), "BACK", None, None);
-                back_hint(screen, "UP, DOWN - SELECT     ENTER - CHOOSE     ESC - BACK", "D-PAD - SELECT     {A} - CHOOSE     {B} - BACK");
+                back_hint(
+                    screen,
+                    "UP, DOWN - SELECT     ENTER - CHOOSE     ESC - BACK",
+                    "D-PAD - SELECT     {A} - CHOOSE     {B} - BACK",
+                    "TAP A LINE - CHOOSE",
+                );
             }
             MenuPage::Settings => {
                 screen.spawn(run::screen_line("SETTINGS", 56.0, TITLE_COLOR));
@@ -587,6 +658,7 @@ fn draw_menu(
                     screen,
                     "UP, DOWN - SELECT     LEFT, RIGHT - CHANGE     ESC - BACK",
                     "D-PAD - SELECT     LEFT, RIGHT - CHANGE     {B} - BACK",
+                    "TAP < OR > - CHANGE",
                 );
             }
             MenuPage::Records(shown) => {
@@ -614,6 +686,7 @@ fn draw_menu(
                     screen,
                     "LEFT, RIGHT - DIFFICULTY     ESC - BACK",
                     "LEFT, RIGHT - DIFFICULTY     {B} - BACK",
+                    "SWIPE OR TAP THE TITLE - DIFFICULTY",
                 );
             }
             MenuPage::Authors => {
@@ -625,15 +698,15 @@ fn draw_menu(
                 }
                 spacer(screen, 8.0);
                 spawn_row(screen, index_of(Item::Back), "BACK", None, None);
-                back_hint(screen, "ENTER, ESC - BACK", "{A}, {B} - BACK");
+                back_hint(screen, "ENTER, ESC - BACK", "{A}, {B} - BACK", "TAP BACK");
             }
         });
 }
 
 /// Подсказка внизу подэкрана.
-fn back_hint(screen: &mut ChildSpawnerCommands, keys: &str, pad: &str) {
+fn back_hint(screen: &mut ChildSpawnerCommands, keys: &str, pad: &str, touch: &str) {
     spacer(screen, 4.0);
-    screen.spawn(run::hint_line(keys, pad, 18.0, HINT_COLOR));
+    screen.spawn(run::hint_line_touch(keys, pad, touch, 18.0, HINT_COLOR));
 }
 
 /// Выделенная строка белая со стрелками, остальные серые.
@@ -663,14 +736,14 @@ mod tests {
 
     #[test]
     fn дважды_вниз_и_enter_открывают_настройки() {
-        let list = items(MenuPage::Main, false);
+        let list = items(MenuPage::Main, false, false);
         let selected = moved(moved(0, 1, list.len()), 1, list.len());
         assert_eq!(list[selected], Item::OpenSettings);
     }
 
     #[test]
     fn список_пунктов_замкнут_в_кольцо() {
-        let count = items(MenuPage::Main, false).len();
+        let count = items(MenuPage::Main, false, false).len();
         assert_eq!(count, 6);
         assert_eq!(moved(0, -1, count), count - 1);
         assert_eq!(moved(count - 1, 1, count), 0);
@@ -693,9 +766,9 @@ mod tests {
     #[test]
     fn без_геймпада_строки_вибрации_нет() {
         let vibration = Item::Setting(Setting::Vibration);
-        assert!(items(MenuPage::Settings, true).contains(&vibration));
-        assert!(!items(MenuPage::Settings, false).contains(&vibration));
-        assert_eq!(items(MenuPage::Settings, false).last(), Some(&Item::Back));
+        assert!(items(MenuPage::Settings, true, false).contains(&vibration));
+        assert!(!items(MenuPage::Settings, false, false).contains(&vibration));
+        assert_eq!(items(MenuPage::Settings, false, false).last(), Some(&Item::Back));
     }
 
     #[test]

@@ -47,7 +47,7 @@ impl Plugin for HqPlugin {
             .add_systems(Startup, spawn_subtitle)
             .add_systems(
                 Update,
-                (select_voice, update_subtitle).in_set(crate::frame::GameSet::Presentation),
+                (select_voice, update_subtitle, place_subtitle_for_touch).in_set(crate::frame::GameSet::Presentation),
             );
     }
 }
@@ -230,6 +230,20 @@ fn select_voice(
 /// Метка узла субтитра.
 #[derive(Component)]
 struct Subtitle;
+
+/// При касаниях субтитры поднимаются над панелью оружия и сужаются в полосу между стиками.
+fn place_subtitle_for_touch(device: Res<crate::gamepad::InputDevice>, mut subtitle: Query<&mut Node, With<Subtitle>>) {
+    if !device.is_changed() {
+        return;
+    }
+    let touch = *device == crate::gamepad::InputDevice::Touch;
+    for mut node in &mut subtitle {
+        let (bottom, side) = if touch { (170.0, 28.0) } else { (110.0, 15.0) };
+        node.bottom = Val::Px(bottom);
+        node.left = Val::Percent(side);
+        node.right = Val::Percent(side);
+    }
+}
 
 /// Метка текста внутри субтитра.
 #[derive(Component)]

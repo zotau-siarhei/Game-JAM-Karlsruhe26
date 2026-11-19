@@ -59,7 +59,9 @@ impl Plugin for IntroPlugin {
             .add_systems(
                 Update,
                 (
-                    run_intro,
+                    // Во время загрузки звук молчит: реплики, отправленные тогда, пропали бы, а
+                    // интро сочло бы их неозвученными и закончилось до меню.
+                    run_intro.run_if(not(in_state(GameState::Loading))),
                     send_tutorials.run_if(in_state(GameState::Playing)),
                     remember_tutorials,
                     speak_tutorials.run_if(in_state(GameState::Playing)),
@@ -152,19 +154,24 @@ fn belongs_to(id: &str, base: &str) -> bool {
         .is_some_and(|rest| rest.is_empty() || rest.starts_with('_'))
 }
 
-/// Обрывает интро по любой клавише или кнопке мыши. Нажатие гасится: меню его не видит и забег
-/// не начинает. Esc не гасится — он по-прежнему закрывает игру.
-fn skip_intro(
+/// Обрывает интро по любой клавише, кнопке мыши или касанию. Нажатие гасится: меню его не видит
+/// и забег не начинает (касание гасит `touch::read_touches`). Esc не гасится — он по-прежнему
+/// закрывает игру.
+pub(crate) fn skip_intro(
     mut commands: Commands,
     mut intro: ResMut<Intro>,
     mut keys: ResMut<ButtonInput<KeyCode>>,
     mut mouse: ResMut<ButtonInput<MouseButton>>,
+    touches: Res<Touches>,
     playing: Query<(Entity, &VoicePlayback)>,
 ) {
     if intro.finished {
         return;
     }
-    if keys.get_just_pressed().next().is_none() && mouse.get_just_pressed().next().is_none() {
+    if keys.get_just_pressed().next().is_none()
+        && mouse.get_just_pressed().next().is_none()
+        && !touches.any_just_pressed()
+    {
         return;
     }
     intro.finished = true;

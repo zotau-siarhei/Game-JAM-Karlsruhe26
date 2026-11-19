@@ -31,6 +31,8 @@ use crate::trains::Car;
 
 /// Радиус мини-карты на экране, пиксели.
 const RADIUS: f32 = 100.0;
+/// Поперечник мини-карты, точки интерфейса.
+pub const DIAMETER: f32 = RADIUS * 2.0;
 
 /// Расстояние от лунохода до края мини-карты, м: охват 160 м.
 const RANGE: f32 = 80.0;
@@ -142,6 +144,34 @@ struct MinimapTexture {
 #[derive(Resource, Default)]
 struct DangerMarks(Vec<(Vec2, f32)>);
 
+/// Корень мини-карты.
+#[derive(Component)]
+struct MinimapRoot;
+
+/// При касаниях правый нижний угол занят стиком прицела: мини-карта — в правом верхнем, левее паузы.
+fn place_for_touch(
+    device: Res<crate::gamepad::InputDevice>,
+    ui_scale: Res<UiScale>,
+    mut root: Query<&mut Node, With<MinimapRoot>>,
+) {
+    if !device.is_changed() && !ui_scale.is_changed() {
+        return;
+    }
+    let touch = *device == crate::gamepad::InputDevice::Touch;
+    for mut node in &mut root {
+        if touch {
+            let pause = crate::touch::dp_to_ui(crate::touch::layout::PAUSE_SIZE + crate::touch::layout::MARGIN, &ui_scale);
+            node.top = Val::Px(MARGIN);
+            node.bottom = Val::Auto;
+            node.right = Val::Px(MARGIN + pause);
+        } else {
+            node.top = Val::Auto;
+            node.bottom = Val::Px(MARGIN);
+            node.right = Val::Px(MARGIN);
+        }
+    }
+}
+
 /// Подключает мини-карту.
 pub struct MinimapPlugin;
 
@@ -151,8 +181,10 @@ impl Plugin for MinimapPlugin {
             .add_systems(Startup, spawn_minimap)
             .add_systems(
                 Update,
-                (collect_dangers, update_markers, draw_terrain)
-                    .chain()
+                (
+                    (collect_dangers, update_markers, draw_terrain).chain(),
+                    place_for_touch,
+                )
                     .in_set(GameSet::Presentation),
             );
     }
@@ -189,6 +221,7 @@ fn spawn_minimap(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         .spawn((
             // В меню мини-карту прячет `hud`.
             RunUi,
+            MinimapRoot,
             Node {
                 position_type: PositionType::Absolute,
                 right: Val::Px(MARGIN),
