@@ -63,9 +63,8 @@ cargo build --manifest-path android/Cargo.toml --release "${targets[@]}"
 
 out=$CARGO_TARGET_DIR/apk
 rm -rf "$out"
-mkdir -p "$out/res/mipmap-xxxhdpi"
-cp web/icon-192.png "$out/res/mipmap-xxxhdpi/ic_launcher.png"
-"$tools/aapt2" compile --dir "$out/res" -o "$out/res.zip"
+mkdir -p "$out"
+"$tools/aapt2" compile --dir android/res -o "$out/res.zip"
 
 # Уже сжатые форматы хранятся как есть: чтение из APK быстрее, размер почти тот же.
 "$tools/aapt2" link -o "$out/unsigned.apk" -I "$platform" \

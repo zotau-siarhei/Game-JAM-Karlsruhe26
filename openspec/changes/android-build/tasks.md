@@ -2,6 +2,7 @@
 
 - [x] 1.1 Пакет `android/`, манифест и точка входа `#[bevy_main]`
 - [x] 1.2 Скрипт `scripts/build-android.sh`: библиотека, APK, выравнивание, подпись
+- [x] 1.3 Адаптивная иконка приложения: `android/res`, слои из `scripts/android-icon.py`
 
 ## 2. Платформа
 
