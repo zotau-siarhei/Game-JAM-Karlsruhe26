@@ -61,8 +61,9 @@
   R2 — левая кнопка мыши, крест — пробел), поэтому новой команде с клавиатуры достаточно добавить
   строку в `virtual_for`; аналоговое — ресурс `PadInput`, устройство — `InputDevice`, подсказка
   экрана для обоих устройств — компонент `DeviceHint`. На macOS ввод геймпада идёт через
-  GameController (`src/gamepad/macos.rs`): gilrs там кнопок DualShock 4 не получает; на Linux и
-  Windows — gilrs самого Bevy.
+  GameController (`src/gamepad/macos.rs`): gilrs там кнопок DualShock 4 не получает; на Android —
+  фильтр очереди ввода (`src/gamepad/android.rs`, патч android-activity при сборке:
+  `android/patch_android_activity.py`); на Linux и Windows — gilrs самого Bevy.
 - Вибрация и световая панель — `src/haptics.rs`: событие толкает микшер `ResMut<Rumble>`
   (`kick(сильный, слабый)`), отправку в геймпад делает бэкенд. На macOS это CoreHaptics через
   GameController (`src/haptics/macos.rs`), и только обычный `CHHapticPatternPlayer`: продвинутый
@@ -169,7 +170,8 @@ cargo test                                  # тесты
   `NativeActivity`, поэтому новую зависимость добавляй и в `android/Cargo.toml`. Нужны Android SDK, NDK и
   таргеты Rust (список — в начале скрипта). Особенности платформы — `src/android.rs` (выборка тени для
   Adreno, звук в фоне) и `src/platform.rs`: ассеты лежат в APK, поэтому новый JSON-список надо вшить в
-  `platform::read_list`. Сенсорного управления нет, gilrs на Android не работает: играть можно только с клавиатуры.
+  `platform::read_list`. Конвейеры на Android собираются синхронно: фоновая сборка при пустом кэше шейдеров
+  вешала GPU Adreno 810. Сенсорного управления нет: играть можно с геймпада или клавиатуры, вибрации нет.
   Иконка — ресурсы `android/res`; слои пересобирает `scripts/android-icon.py` из `android/icon/source.png` (нужен Pillow).
 - Браузерная версия выкладывается на GitHub Pages: https://zotau-siarhei.github.io/Game-JAM-Karlsruhe26/
   Workflow `.github/workflows/web.yml` раз в 4 часа собирает main (`--release`), если после последней

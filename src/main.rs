@@ -120,28 +120,35 @@ fn main() {
     let bench = perf::Bench::from_args(std::env::args());
     // Проверка волн без гибели: `cargo run -- --immortal`; в замере луноход тоже бессмертен.
     let immortal = combat::Immortal(combat::Immortal::from_args(std::env::args()).0 || bench.on);
+    let plugins = DefaultPlugins.set(WindowPlugin {
+        primary_window: Some(Window {
+            title: "Space Guard".into(),
+            // В замере кадры не ждут развёртки экрана: видно, сколько игра может.
+            present_mode: if bench.on { bevy::window::PresentMode::AutoNoVsync } else { bevy::window::PresentMode::default() },
+            // В браузере игра рисует в холст `#space-guard` и занимает всю страницу.
+            canvas: cfg!(target_arch = "wasm32").then(|| "#space-guard".into()),
+            fit_canvas_to_parent: true,
+            ..default()
+        }),
+        ..default()
+    }).set(AssetPlugin {
+        // В браузере каждый ненайденный файл `.meta` — лишний запрос с ошибкой 404,
+        // а файлов `.meta` у игры нет.
+        meta_check: bevy::asset::AssetMetaCheck::Never,
+        ..default()
+    });
+    // Предобработка мешей только на процессоре, см. `android.rs`. Конвейеры собираются синхронно:
+    // фоновая сборка при пустом кэше шейдеров драйвера вешала GPU Adreno 810 (потеря устройства).
+    #[cfg(target_os = "android")]
+    let plugins = plugins
+        .set(bevy::pbr::PbrPlugin { use_gpu_instance_buffer_builder: false, ..default() })
+        .set(bevy::render::RenderPlugin { synchronous_pipeline_compilation: true, ..default() });
     App::new()
         .insert_resource(ClearColor(SKY_COLOR))
         .insert_resource(RunSeed::from_clock())
         .insert_resource(immortal)
         .insert_resource(bench)
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "Space Guard".into(),
-                // В замере кадры не ждут развёртки экрана: видно, сколько игра может.
-                present_mode: if bench.on { bevy::window::PresentMode::AutoNoVsync } else { bevy::window::PresentMode::default() },
-                // В браузере игра рисует в холст `#space-guard` и занимает всю страницу.
-                canvas: cfg!(target_arch = "wasm32").then(|| "#space-guard".into()),
-                fit_canvas_to_parent: true,
-                ..default()
-            }),
-            ..default()
-        }).set(AssetPlugin {
-            // В браузере каждый ненайденный файл `.meta` — лишний запрос с ошибкой 404,
-            // а файлов `.meta` у игры нет.
-            meta_check: bevy::asset::AssetMetaCheck::Never,
-            ..default()
-        }))
+        .add_plugins(plugins)
         // Частицы: плагину нужен рендер, поэтому он стоит здесь, а не среди плагинов игры.
         .add_plugins(bevy_hanabi::HanabiPlugin)
         // Замер ставит отметки и в рендер-потоке, поэтому тоже здесь.

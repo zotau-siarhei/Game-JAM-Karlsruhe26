@@ -12,7 +12,10 @@
 - Выборка тени точечного источника заменяется на 1.0, как в браузерной версии: на ней падает
   компилятор шейдеров Adreno.
 - У приложения своя адаптивная иконка с луноходом и монохромным слоем для тематических иконок.
-- Сенсорное управление и геймпад на Android в это изменение не входят.
+- Конвейеры рендера на Android собираются синхронно, предобработка мешей идёт на процессоре:
+  при пустом кэше шейдеров фоновая сборка вешала GPU Adreno 810.
+- Геймпад на Android читается из очереди ввода системы: gilrs там не работает.
+- Сенсорное управление в это изменение не входит.
 
 ## Capabilities
 
@@ -23,6 +26,7 @@
 
 ## Impact
 
-- Новые файлы: `android/Cargo.toml`, `android/AndroidManifest.xml`, `scripts/build-android.sh`, `src/android.rs`.
-- Правки: `src/main.rs`, `src/platform.rs`, `src/records.rs`, `.gitignore`.
+- Новые файлы: `android/Cargo.toml`, `android/AndroidManifest.xml`, `scripts/build-android.sh`,
+  `android/patch_android_activity.py`, `src/android.rs`, `src/gamepad/android.rs`.
+- Правки: `src/main.rs`, `src/platform.rs`, `src/records.rs`, `src/aim.rs`, `src/gamepad.rs`, `.gitignore`.
 - Для сборки нужны Android SDK, NDK и Rust-таргеты Android.

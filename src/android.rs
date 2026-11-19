@@ -1,4 +1,4 @@
-//! Особенности нативной сборки под Android: шейдер теней для Adreno и звук в фоне.
+//! Особенности нативной сборки под Android: обход ошибок драйвера Adreno и звук в фоне.
 //!
 //! Сборка и упаковка APK — `scripts/build-android.sh`, крейт библиотеки — `android/Cargo.toml`.
 
@@ -6,6 +6,8 @@ use std::borrow::Cow;
 
 use bevy::audio::{AudioSinkPlayback, SpatialAudioSink};
 use bevy::prelude::*;
+use bevy::render::batching::gpu_preprocessing::{GpuPreprocessingMode, GpuPreprocessingSupport};
+use bevy::render::{RenderApp, RenderStartup, init_gpu_resource};
 use bevy::shader::{Shader, Source};
 use bevy::window::AppLifecycle;
 
@@ -22,7 +24,21 @@ impl Plugin for AndroidPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Last, drop_point_shadow_sampling)
             .add_systems(Update, pause_audio_in_background.in_set(GameSet::Presentation));
+        if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
+            render_app.add_systems(
+                RenderStartup,
+                disable_gpu_preprocessing.after(init_gpu_resource::<GpuPreprocessingSupport>),
+            );
+        }
     }
+}
+
+/// Выключает предобработку и отсечение мешей на видеокарте, как Bevy делает сам на Adreno до 730:
+/// с этой настройкой игра проверена на Adreno 810. Вторая половина настройки —
+/// `use_gpu_instance_buffer_builder` в `main.rs`.
+fn disable_gpu_preprocessing(mut support: ResMut<GpuPreprocessingSupport>) {
+    support.max_supported_mode = GpuPreprocessingMode::None;
+    info!("Android: предобработка мешей на GPU выключена");
 }
 
 /// Заменяет выборку тени точечного источника на 1.0, как страница браузерной версии: компилятор

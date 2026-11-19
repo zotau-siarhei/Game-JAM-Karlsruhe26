@@ -21,6 +21,12 @@ bevy_trauma_shake = "0.9"
 noise = "0.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Имя и производитель геймпада: их знает только Java-класс InputDevice.
+jni = "0.21"
+
+# Копия с фильтром ввода для геймпада: её готовит scripts/build-android.sh.
+[patch.crates-io]
+android-activity = { path = "../target/android/patched/android-activity" }
 
 [profile.release]
 # Крейт игры компилируется параллельно: сборка быстрее, игра почти не медленнее.

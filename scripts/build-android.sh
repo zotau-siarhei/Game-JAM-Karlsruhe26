@@ -44,6 +44,23 @@ llvm=$(ls -d "$ndk"/toolchains/llvm/prebuilt/*/bin | head -1)
 export CARGO_TARGET_DIR=$root/target/android
 cp Cargo.lock android/Cargo.lock
 
+# Копия android-activity с фильтром ввода (геймпад). Пересоздаётся только при смене патча:
+# иначе cargo каждый раз пересобирал бы всё, что от неё зависит.
+activity_version=$(awk '/^name = "android-activity"$/ { getline; gsub(/version = |"/, ""); print }' Cargo.lock)
+patched=$CARGO_TARGET_DIR/patched/android-activity
+stamp="$activity_version $(cksum < android/patch_android_activity.py)"
+if [[ "$(cat "$patched/.space-guard-patch" 2>/dev/null)" != "$stamp" ]]; then
+    registry=${CARGO_HOME:-$HOME/.cargo}/registry/src
+    if ! ls -d "$registry"/*/"android-activity-$activity_version" >/dev/null 2>&1; then
+        cargo fetch
+    fi
+    rm -rf "$patched"
+    mkdir -p "$(dirname "$patched")"
+    cp -R "$(ls -d "$registry"/*/"android-activity-$activity_version" | head -1)" "$patched"
+    python3 -I android/patch_android_activity.py "$patched"
+    echo "$stamp" > "$patched/.space-guard-patch"
+fi
+
 targets=()
 for abi in "${abis[@]}"; do
     case "$abi" in
