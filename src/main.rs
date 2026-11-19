@@ -7,6 +7,8 @@
 mod aim;
 mod airstrike;
 mod alarm;
+#[cfg(target_os = "android")]
+mod android;
 mod anim_lod;
 mod arsenal;
 mod audio_events;
@@ -111,6 +113,8 @@ const SUN_COLOR: Color = Color::srgb(1.0, 0.94, 0.82);
 /// и стенки кратеров различались по яркости.
 const SUN_POSITION: Vec3 = Vec3::new(6.0, 8.0, 3.0);
 
+// На Android игра — библиотека (`android/Cargo.toml`), макрос даёт ей точку входа `android_main`.
+#[bevy_main]
 fn main() {
     // Замер скорости: `cargo run -- --bench=180` (см. `perf.rs`).
     let bench = perf::Bench::from_args(std::env::args());
@@ -152,6 +156,8 @@ fn main() {
 
 /// Все плагины игры. Отдельной функцией, чтобы тест собирал тот же кадр, что и игра.
 fn game_plugins(app: &mut App) {
+    #[cfg(target_os = "android")]
+    app.add_plugins(android::AndroidPlugin);
     // Настройки игрока и сложность: из них берут начальные значения качество и меню.
     app.add_plugins((settings::SettingsPlugin, difficulty::DifficultyPlugin, menu::MenuPlugin));
     // Порядок кадра и игровой генератор случайных чисел.

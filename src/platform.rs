@@ -1,7 +1,8 @@
-//! Различия нативной и браузерной (WASM) сборки: часы, списки ассетов и наличие файлов.
+//! Различия нативной, браузерной (WASM) и Android-сборки: часы, списки ассетов, наличие файлов.
 //!
 //! В браузере нет файловой системы и `std::time::SystemTime`: списки звуков и моделей
 //! вшиваются в сборку, а файлы ассетов загрузчик Bevy берёт по HTTP рядом со страницей.
+//! На Android ассеты лежат внутри APK, обычным чтением файла их не достать: списки тоже вшиты.
 
 /// Наносекунды настенных часов для сидов. В браузере — из `Date.now()`.
 pub fn clock_nanos() -> u64 {
@@ -21,37 +22,37 @@ pub fn clock_nanos() -> u64 {
 /// Текст списка `assets/<dir>/<file>`.
 ///
 /// Натив читает файл с диска, чтобы правка списка подхватывалась без пересборки.
-/// В браузере списки вшиты в сборку.
+/// В браузере и на Android списки вшиты в сборку.
 pub fn read_list(dir: &str, file: &str) -> Result<String, String> {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     {
         let path = asset_path(dir, file);
         std::fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(any(target_arch = "wasm32", target_os = "android"))]
     {
         let text = match (dir, file) {
             ("voice", "lines.json") => include_str!("../assets/voice/lines.json"),
             ("sfx", "sounds.json") => include_str!("../assets/sfx/sounds.json"),
             ("music", "tracks.json") => include_str!("../assets/music/tracks.json"),
             ("models", "models.json") => include_str!("../assets/models/models.json"),
-            _ => return Err(format!("{dir}/{file}: список не вшит в браузерную сборку")),
+            _ => return Err(format!("{dir}/{file}: список не вшит в сборку")),
         };
         Ok(text.to_owned())
     }
 }
 
-/// Есть ли файл `assets/<dir>/<file>`. В браузере проверить нельзя: считается, что есть,
-/// а отсутствующий файл загрузчик отметит как неудачный.
+/// Есть ли файл `assets/<dir>/<file>`. В браузере и на Android проверить нельзя: считается,
+/// что есть, а отсутствующий файл загрузчик отметит как неудачный.
 pub fn asset_exists(dir: &str, file: &str) -> bool {
     if file.is_empty() {
         return false;
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     {
         asset_path(dir, file).is_file()
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(any(target_arch = "wasm32", target_os = "android"))]
     {
         let _ = dir;
         true
@@ -59,7 +60,8 @@ pub fn asset_exists(dir: &str, file: &str) -> bool {
 }
 
 /// Ступень качества, которую предлагает страница браузерной версии (`window.spaceGuardQuality`:
-/// на телефоне — `low`, вручную — `?quality=`). Натив подсказок не получает.
+/// на телефоне — `low`, вручную — `?quality=`). Android — телефон, ему тоже `low`.
+/// Остальной натив подсказок не получает.
 pub fn quality_hint() -> Option<String> {
     #[cfg(target_arch = "wasm32")]
     {
@@ -68,7 +70,24 @@ pub fn quality_hint() -> Option<String> {
             .as_string()
             .filter(|name| !name.is_empty())
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(target_os = "android")]
+    {
+        Some("low".to_owned())
+    }
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    {
+        None
+    }
+}
+
+/// Личный каталог приложения, если его выдаёт система (Android): там лежат рекорды и настройки.
+/// На остальных платформах `None`, путь строится по переменным окружения.
+pub fn app_data_dir() -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "android")]
+    {
+        bevy::android::ANDROID_APP.get()?.internal_data_path()
+    }
+    #[cfg(not(target_os = "android"))]
     {
         None
     }
@@ -103,7 +122,7 @@ pub fn entered() -> bool {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn asset_path(dir: &str, file: &str) -> std::path::PathBuf {
     bevy::asset::io::file::FileAssetReader::get_base_path()
         .join("assets")

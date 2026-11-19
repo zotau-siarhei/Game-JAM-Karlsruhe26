@@ -178,6 +178,9 @@ pub fn records_path_for(difficulty: Difficulty) -> Option<PathBuf> {
 /// Путь к файлу рекордов нормальной сложности на этой системе. `None` — рекорды живут только
 /// в памяти. Рядом лежат таблицы других уровней и файл настроек.
 pub fn records_path() -> Option<PathBuf> {
+    if let Some(directory) = crate::platform::app_data_dir() {
+        return Some(directory.join(FILE_NAME));
+    }
     records_path_from(
         std::env::var("HOME").ok().as_deref(),
         std::env::var("XDG_DATA_HOME").ok().as_deref(),

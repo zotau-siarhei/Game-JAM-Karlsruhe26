@@ -1,4 +1,5 @@
 /target
+/android/Cargo.lock
 .idea/
 .DS_Store
 assets/voice/raw/

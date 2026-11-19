@@ -164,6 +164,12 @@ cargo test                                  # тесты
   экрана для страниц нет: игра ставится на экран «Домой» по `web/manifest.webmanifest`.
   На телефоне страница рисует не плотнее 1,5 пикселя на точку и просит низкое качество
   (`platform::quality_hint`); ступень можно задать и в адресе: `?quality=low|medium|high`.
+- Сборка под Android: `scripts/build-android.sh` (`--abi=x86_64|all`, `--install`, `--run`) собирает
+  `target/android/space-guard.apk` без Gradle. Пакет `android/` компилирует `src/main.rs` библиотекой для
+  `NativeActivity`, поэтому новую зависимость добавляй и в `android/Cargo.toml`. Нужны Android SDK, NDK и
+  таргеты Rust (список — в начале скрипта). Особенности платформы — `src/android.rs` (выборка тени для
+  Adreno, звук в фоне) и `src/platform.rs`: ассеты лежат в APK, поэтому новый JSON-список надо вшить в
+  `platform::read_list`. Сенсорного управления нет, gilrs на Android не работает: играть можно только с клавиатуры.
 - Браузерная версия выкладывается на GitHub Pages: https://zotau-siarhei.github.io/Game-JAM-Karlsruhe26/
   Workflow `.github/workflows/web.yml` раз в 4 часа собирает main (`--release`), если после последней
   выкладки были коммиты. Сборка не чаще раза в 4 часа при любом запуске, ручной (Actions → web → Run

@@ -144,9 +144,10 @@ pub fn clamp_within(terrain: &Terrain, rover: Vec3, target: Vec3, range: f32) ->
 /// Оставляет системный курсор видимым и, где система это умеет, внутри окна.
 ///
 /// macOS не поддерживает удержание курсора в окне без его захвата, там курсор только видимый.
+/// На Android удерживать нечего.
 fn confine_cursor(mut cursor: Single<&mut CursorOptions, With<PrimaryWindow>>) {
     cursor.visible = true;
-    if !cfg!(target_os = "macos") {
+    if !cfg!(any(target_os = "macos", target_os = "android")) {
         cursor.grab_mode = CursorGrabMode::Confined;
     }
 }

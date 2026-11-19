@@ -1,0 +1,28 @@
+# Игра как библиотека для Android: код тот же (`src/main.rs`), но отдельный пакет, поэтому обычная
+# сборка не меняется и не становится медленнее. Собирает `scripts/build-android.sh`.
+# Зависимости держать в согласии с корневым Cargo.toml; их версии скрипт берёт из корневого Cargo.lock.
+[package]
+name = "space_guard_android"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+
+[lib]
+name = "space_guard"
+path = "../src/main.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+# NativeActivity не требует Java-кода, поэтому APK собирается без Gradle.
+bevy = { version = "0.20.1", features = ["mp3", "android-native-activity"] }
+bevy_hanabi = "0.20"
+bevy_trauma_shake = "0.9"
+noise = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+# Крейт игры компилируется параллельно: сборка быстрее, игра почти не медленнее.
+codegen-units = 16
+strip = true

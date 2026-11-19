@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Версии и уровни SDK подставляет scripts/build-android.sh. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="io.github.zotausiarhei.spaceguard">
+
+    <uses-feature android:name="android.hardware.vulkan.version"
+        android:version="0x401000" android:required="true" />
+
+    <application
+        android:label="Space Guard"
+        android:icon="@mipmap/ic_launcher"
+        android:appCategory="game"
+        android:hasCode="false"
+        android:extractNativeLibs="false">
+        <activity
+            android:name="android.app.NativeActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:screenOrientation="sensorLandscape"
+            android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density|fontScale|layoutDirection|locale">
+            <meta-data android:name="android.app.lib_name" android:value="space_guard" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

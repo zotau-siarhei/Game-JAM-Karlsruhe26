@@ -1,0 +1,27 @@
+## Why
+
+Игра есть для настольных систем и для браузера, но браузерная версия на телефоне упирается в WebGPU
+и память вкладки. Нужна нативная сборка под Android: APK, который ставится на телефон напрямую.
+
+## What Changes
+
+- Отдельный пакет `android/` собирает игру библиотекой для `NativeActivity`; обычная сборка не меняется.
+- `scripts/build-android.sh` собирает библиотеку через NDK и упаковывает подписанный APK без Gradle.
+- На Android списки ассетов вшиты в сборку, рекорды и настройки лежат в личном каталоге приложения,
+  качество по умолчанию низкое, звук в фоне останавливается.
+- Выборка тени точечного источника заменяется на 1.0, как в браузерной версии: на ней падает
+  компилятор шейдеров Adreno.
+- Сенсорное управление и геймпад на Android в это изменение не входят.
+
+## Capabilities
+
+### New Capabilities
+- `android-build`: сборка и запуск игры как приложения Android.
+
+### Modified Capabilities
+
+## Impact
+
+- Новые файлы: `android/Cargo.toml`, `android/AndroidManifest.xml`, `scripts/build-android.sh`, `src/android.rs`.
+- Правки: `src/main.rs`, `src/platform.rs`, `src/records.rs`, `.gitignore`.
+- Для сборки нужны Android SDK, NDK и Rust-таргеты Android.
