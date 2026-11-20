@@ -41,6 +41,11 @@ const EFFECT_DEPTH: f32 = 40.0;
 const QUIET_FRAMES: u32 = 10;
 /// Предел прогрева, с.
 const TIMEOUT: f32 = 30.0;
+/// Столько кадров прогрев ждёт перед началом. На Android конвейеры собираются синхронно (`main.rs`),
+/// и сборка всех занимает один кадр в 15 с: без ожидания всё это время был бы чёрный экран, а не
+/// экран загрузки. Дробить прогрев по кадрам нельзя: кадры между сборками теряли устройство GPU
+/// Adreno 810 (3 запуска из 6).
+const START_FRAMES: u32 = if cfg!(target_os = "android") { 3 } else { 0 };
 
 /// Плагин прогрева.
 pub struct PrewarmPlugin;
@@ -335,8 +340,13 @@ fn warm(
     mut flames: ResMut<Assets<FlameMaterial>>,
     watch: Res<PipelineWatch>,
     time: Res<Time<Real>>,
+    mut waited: Local<u32>,
 ) {
     if prewarm.done {
+        return;
+    }
+    if *waited < START_FRAMES {
+        *waited += 1;
         return;
     }
     let now = time.elapsed_secs();

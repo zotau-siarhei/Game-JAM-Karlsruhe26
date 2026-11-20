@@ -251,7 +251,8 @@ fn poll(
 }
 
 /// «Назад» — Esc на один кадр: пауза в забеге, назад в меню. Нажимается после ввода Bevy,
-/// иначе он сбросил бы нажатие.
+/// иначе он сбросил бы нажатие, и после `read_pad`: тот счёл бы Esc клавиатурой и снял бы
+/// раскладку касаний.
 fn back_to_escape(mut held: Local<bool>, mut keys: ResMut<ButtonInput<KeyCode>>) {
     if std::mem::take(&mut *held) {
         keys.release(KeyCode::Escape);
@@ -266,5 +267,10 @@ fn back_to_escape(mut held: Local<bool>, mut keys: ResMut<ButtonInput<KeyCode>>)
 pub(super) fn build(app: &mut App) {
     set_input_filter(filter);
     app.add_systems(PreUpdate, poll.before(bevy::input::InputSystems))
-        .add_systems(PreUpdate, back_to_escape.after(bevy::input::InputSystems));
+        .add_systems(
+            PreUpdate,
+            back_to_escape
+                .after(bevy::input::InputSystems)
+                .after(super::PadRead),
+        );
 }

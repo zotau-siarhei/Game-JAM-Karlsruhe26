@@ -27,6 +27,7 @@ use crate::combat::{Health, Team};
 use crate::enemy::Enemy;
 use crate::explosion::Explosion;
 use crate::frame::GameSet;
+use crate::gamepad::InputDevice;
 use crate::hq::VoiceCue;
 use crate::mortar::Shell;
 use crate::pickups::Pickup;
@@ -37,6 +38,8 @@ use crate::weapons::CurrentWeapon;
 
 /// Реплики интро по порядку.
 const INTRO_LINES: [&str; 5] = ["intro_1", "intro_2", "intro_3", "intro_4", "intro_5"];
+/// Реплика интро про клавиатуру и мышь.
+const KEYBOARD_INTRO_LINE: &str = "intro_5";
 
 /// Сколько секунд ждать появления звучащей реплики. Если её нет — файл не озвучен, идём дальше.
 const START_GRACE: f64 = 0.5;
@@ -193,11 +196,15 @@ fn run_intro(
     mut play: MessageWriter<PlayVoice>,
     time: Res<Time<Real>>,
     playing: Query<&VoicePlayback>,
+    device: Res<InputDevice>,
 ) {
     let intro_playing = playing
         .iter()
         .any(|playback| belongs_to(&playback.id, "intro"));
-    if let Some(id) = intro.step(time.elapsed_secs_f64(), intro_playing) {
+    if let Some(id) = intro.step(time.elapsed_secs_f64(), intro_playing)
+        // Последняя реплика учит клавиатуре и мыши: на сенсорном экране её не звучит.
+        && !(id == KEYBOARD_INTRO_LINE && *device == InputDevice::Touch)
+    {
         play.write(PlayVoice::new(id));
     }
 }
@@ -218,6 +225,7 @@ fn send_tutorials(
     rover: Query<&Health, With<Rover>>,
     weapon: Res<CurrentWeapon>,
     buttons: Res<ButtonInput<MouseButton>>,
+    device: Res<InputDevice>,
     mut explosions: MessageReader<Explosion>,
     mut destroyed: MessageReader<BuildingDestroyed>,
     mut tutorial: MessageWriter<Tutorial>,
@@ -232,9 +240,11 @@ fn send_tutorials(
     if explosions.read().any(|explosion| explosion.source_team == Team::Player) {
         tutorial.write(Tutorial::new("first_crater"));
     }
-    if rover
-        .iter()
-        .any(|health| !health.is_dead() && health.fraction() < REPAIR_HINT_HEALTH)
+    // У касаний кнопки ремонта нет: «держи клавишу ремонта» им не говорим.
+    if *device != InputDevice::Touch
+        && rover
+            .iter()
+            .any(|health| !health.is_dead() && health.fraction() < REPAIR_HINT_HEALTH)
     {
         tutorial.write(Tutorial::new("tut_repair"));
     }

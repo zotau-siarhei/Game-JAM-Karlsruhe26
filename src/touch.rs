@@ -92,11 +92,12 @@ impl Plugin for TouchPlugin {
             .init_resource::<TouchSwipe>()
             .init_resource::<LastTouch>()
             .add_systems(Startup, spawn_overlay)
-            // С `--touch` раскладка касаний видна сразу, до первого нажатия.
+            // С `--touch` и на Android раскладка касаний видна сразу, до первого нажатия, а вступление
+            // и обучение не говорят о клавиатуре.
             .add_systems(
                 Startup,
                 (|mut device: ResMut<InputDevice>| *device = InputDevice::Touch)
-                    .run_if(mouse_touch_enabled),
+                    .run_if(|| mouse_touch_enabled() || cfg!(target_os = "android")),
             )
             .add_systems(
                 PreUpdate,

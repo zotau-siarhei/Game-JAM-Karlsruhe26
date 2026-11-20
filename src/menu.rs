@@ -243,7 +243,7 @@ fn menu_input(
         Res<TouchTap>,
         Res<TouchSwipe>,
         Res<InputDevice>,
-        Query<(&RowValue, &ComputedNode, &UiGlobalTransform)>,
+        Query<(&RowValue, &ComputedNode, &UiGlobalTransform, Option<&bevy::text::TextLayoutInfo>)>,
         Query<&Window, With<bevy::window::PrimaryWindow>>,
     ),
     gamepads: Query<(), With<Gamepad>>,
@@ -290,8 +290,14 @@ fn menu_input(
     let tapped_value = tap.0.and_then(|point| {
         values
             .iter()
-            .find(|(_, node, transform)| node_contains(node, transform, point, scale))
-            .map(|(value, _, transform)| (value.0, if point.x * scale < transform.translation.x { -1 } else { 1 }))
+            .find(|(_, node, transform, _)| node_contains(node, transform, point, scale))
+            .map(|(value, node, transform, text)| {
+                // Текст значения прижат к левому краю узла: середина — по ширине текста, а не узла,
+                // иначе «>» у короткого значения («0%», «ON») попадала в левую половину и уменьшала.
+                let left = transform.translation.x - node.size().x * 0.5;
+                let middle = text.map_or(transform.translation.x, |text| left + text.size.x * 0.5);
+                (value.0, if point.x * scale < middle { -1 } else { 1 })
+            })
     });
     if let Some(row) = tapped.or(tapped_value.map(|(row, _)| row)) {
         next.selected = row;

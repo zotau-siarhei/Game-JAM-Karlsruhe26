@@ -419,7 +419,10 @@ fn update_panel(
     mut texts: Query<(&AmmoText, &mut Text)>,
     mut pips: Query<(&LevelPip, &mut BackgroundColor), Without<Cell>>,
 ) {
-    let wanted = if *state.get() == GameState::Menu {
+    // На экране конца забега низ занят экранной клавиатурой и кнопками: панель просвечивала бы
+    // сквозь клавиши.
+    let touch_keyboard = *state.get() == GameState::GameOver && *device == crate::gamepad::InputDevice::Touch;
+    let wanted = if *state.get() == GameState::Menu || touch_keyboard {
         Visibility::Hidden
     } else {
         Visibility::Inherited

@@ -367,8 +367,9 @@ fn log_connections(mut events: MessageReader<GamepadConnectionEvent>) {
 }
 
 /// С геймпадом курсор мыши не виден: он только мешал бы.
+/// На Android курсора нет: смена его настроек только пишет в лог ошибку winit.
 fn show_cursor(device: Res<InputDevice>, mut cursor: Single<&mut CursorOptions, With<PrimaryWindow>>) {
-    if device.is_changed() {
+    if device.is_changed() && !cfg!(target_os = "android") {
         cursor.visible = *device == InputDevice::KeyboardMouse;
     }
 }

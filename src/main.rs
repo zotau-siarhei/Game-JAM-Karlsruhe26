@@ -117,6 +117,15 @@ const SUN_POSITION: Vec3 = Vec3::new(6.0, 8.0, 3.0);
 // На Android игра — библиотека (`android/Cargo.toml`), макрос даёт ей точку входа `android_main`.
 #[bevy_main]
 fn main() {
+    // Вторая активность в живом процессе (старая ещё не закрыта): цикл событий winit второй раз
+    // не построить. Процесс уходит, система поднимает активность в новом.
+    #[cfg(target_os = "android")]
+    {
+        static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            std::process::exit(0);
+        }
+    }
     // Замер скорости: `cargo run -- --bench=180` (см. `perf.rs`).
     let bench = perf::Bench::from_args(std::env::args());
     // Проверка волн без гибели: `cargo run -- --immortal`; в замере луноход тоже бессмертен.
@@ -160,6 +169,11 @@ fn main() {
         .add_plugins(game_plugins)
         .add_systems(Startup, spawn_light)
         .run();
+    // winit строит цикл событий один раз на процесс. Android держит процесс после выхода из игры
+    // и открывает в нём новую активность (иконка, «открыть» после установки): второй запуск
+    // падал с «Failed to build event loop: RecreationAttempt». Процесс уходит вместе с игрой.
+    #[cfg(target_os = "android")]
+    std::process::exit(0);
 }
 
 /// Все плагины игры. Отдельной функцией, чтобы тест собирал тот же кадр, что и игра.
