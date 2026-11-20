@@ -4,7 +4,7 @@
 #
 #   scripts/build-ios.sh                # для iPhone (aarch64-apple-ios)
 #   scripts/build-ios.sh --sim          # для симулятора на Mac с Apple Silicon
-#   scripts/build-ios.sh --release      # профиль release (по умолчанию dev: он и так оптимизирован)
+#   scripts/build-ios.sh --release      # профиль release: LTO, дольше собирается, быстрее и меньше
 #   scripts/build-ios.sh --install      # поставить: в загруженный симулятор или на подключённый iPhone
 #   scripts/build-ios.sh --run          # поставить и запустить
 #
