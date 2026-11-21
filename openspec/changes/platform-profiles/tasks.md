@@ -4,7 +4,7 @@
 
 - [x] 1.1 `assets/platform/profiles.json` с профилями base, desktop, macos, linux, windows, web, web-mobile, mobile, android, ios-phone, ios-tablet и числами из таблицы Context в design.md; `src/profile.rs`: разбор, глубокое слияние по `parent`, значения со ступенями `[low, medium, high]`, ресурс `PlatformProfile`, `ProfilePlugin` первым в `main.rs`; проверка: `cargo test` — каждый профиль собирается, все поля заданы
 - [ ] 1.2 Определение платформы и класса устройства: iOS — `UIDevice.userInterfaceIdiom` через `objc2` в `src/ios.rs`, браузер — `window.spaceGuardMobile`, Android — телефон; `SPACE_GUARD_MOBILE=1` на компьютере выбирает профиль mobile; проверка: `cargo test`, имя профиля в логе на Mac и в симуляторе iPhone
-- [ ] 1.3 Переопределения: путь ключа → `SPACE_GUARD_<ПУТЬ>` (компьютер, iOS), `debug.spaceguard.<путь>` (Android), `?<путь>=` (браузер); синонимы старых ручек (`density`, `shadows`, `detail`, `quality`, `off`, `SPACE_GUARD_OFF`, `SPACE_GUARD_DETAIL`, `?quality=`); строка в лог со всеми действующими; проверка: `cargo test` на разбор ключей, запуск с `SPACE_GUARD_RENDER_DENSITY=1`
+- [x] 1.3 Переопределения: путь ключа → `SPACE_GUARD_<ПУТЬ>` (компьютер, iOS), `debug.spaceguard.<путь>` (Android), `?<путь>=` (браузер); синонимы старых ручек (`density`, `shadows`, `detail`, `quality`, `off`, `SPACE_GUARD_OFF`, `SPACE_GUARD_DETAIL`, `?quality=`); строка в лог со всеми действующими; проверка: `cargo test` на разбор ключей, запуск с `SPACE_GUARD_RENDER_DENSITY=1`
 - [x] 1.4 Тест равенства: профили macos, linux, windows, web, web-mobile, android дают ровно сегодняшние числа (таблица Context); проверка: `cargo test`
 
 ## 2. Перенос модулей на профиль
@@ -12,7 +12,7 @@
 - [ ] 2.1 `render_scale.rs` и `quality.rs`: плотность кадра, MSAA на high, карта и каскады теней, bloom — из профиля; убраны `cfg!(target_os = "android")` и чтение свойств Android в этих модулях; проверка: `cargo test`, снимок `SPACE_GUARD_SHOT` на Mac до и после совпадает, APK на эмуляторе — ступени как раньше
 - [ ] 2.2 `debris.rs`, `explosion_fx.rs`, `fire.rs`: лежащие обломки, размер обломка с тенью, вспышки, пул огней — из профиля вместо `is_mobile()`; проверка: `cargo test`, `cargo run -- --bench=60` на Mac — числа в сводке прежние
 - [ ] 2.3 `lod.rs`, `models.rs`: множитель упрощения моделей, тени-силуэты, предел текстур — из профиля; `SPACE_GUARD_DETAIL` — синоним; проверка: `cargo test`, снимок с `SPACE_GUARD_MOBILE=1` на Mac совпадает с прежним
-- [ ] 2.4 `prewarm.rs`, `main.rs`: кадров до старта, ожидание конвейеров, синхронная сборка, пулы потоков — из профиля; Android-значения прежние; проверка: `cargo build`, APK на эмуляторе загружается до меню без зависания
+- [x] 2.4 `prewarm.rs`, `main.rs`: кадров до старта, ожидание конвейеров, синхронная сборка, пулы потоков — из профиля; Android-значения прежние; проверка: `cargo build`, APK на эмуляторе загружается до меню без зависания
 - [ ] 2.5 `platform.rs`, `settings.rs`, `touch.rs`, `gamepad.rs`, `menu.rs`: ступень по умолчанию, касание по умолчанию, скрытие курсора, пункт «Выход» — из профиля; `platform::quality_hint` и `is_mobile` остаются только там, где речь не о железе; проверка: `cargo test`, `cargo run -- --touch`, меню в браузерной сборке без «Выход»
 - [ ] 2.6 F3 и сводка `--bench`: имя профиля, класс устройства, ступень, переопределения; проверка: `cargo run`, F3
 
