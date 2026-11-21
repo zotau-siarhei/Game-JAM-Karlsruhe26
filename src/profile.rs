@@ -219,8 +219,10 @@ impl Plugin for ProfilePlugin {
         }
         app.insert_resource(profile.clone());
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(fps) = profile.render.frame_limit.filter(|fps| *fps > 0.0) {
-            info!("Предел кадров: {fps} в секунду");
+        {
+            if let Some(fps) = profile.render.frame_limit.filter(|fps| *fps > 0.0) {
+                info!("Предел кадров: {fps} в секунду");
+            }
             app.add_systems(Last, limit_frames);
         }
     }
@@ -232,7 +234,8 @@ impl Plugin for ProfilePlugin {
 /// в `Info.plist` и так не быстрее 60 Гц. В браузере спать нельзя, там кадры задаёт страница.
 #[cfg(not(target_arch = "wasm32"))]
 fn limit_frames(mut last: Local<Option<bevy::platform::time::Instant>>) {
-    let Some(fps) = get().render.frame_limit else {
+    let Some(fps) = frame_limit(get().render.frame_limit, overheated()) else {
+        *last = None;
         return;
     };
     let frame = std::time::Duration::from_secs_f32(1.0 / fps);
@@ -297,6 +300,87 @@ pub fn set_throttled(on: bool) {
     THROTTLED.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Нагрев «critical»: кадров не больше [`OVERHEAT_FPS`], пока устройство не остынет (`ios.rs`).
+static OVERHEATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Предел кадров при критическом нагреве.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub const OVERHEAT_FPS: f32 = 30.0;
+
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub fn overheated() -> bool {
+    OVERHEATED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+pub fn set_overheated(on: bool) {
+    OVERHEATED.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Действующий предел кадров: из профиля, а при критическом нагреве — не больше [`OVERHEAT_FPS`].
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+fn frame_limit(profile: Option<f32>, overheated: bool) -> Option<f32> {
+    let profile = profile.filter(|fps| *fps > 0.0);
+    if overheated {
+        Some(profile.map_or(OVERHEAT_FPS, |fps| fps.min(OVERHEAT_FPS)))
+    } else {
+        profile
+    }
+}
+
+/// Мало памяти до предела процесса (`ios.rs`): лежащих обломков вдвое меньше (`debris.rs`).
+static LOW_MEMORY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn low_memory() -> bool {
+    LOW_MEMORY.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+pub fn set_low_memory(on: bool) {
+    LOW_MEMORY.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Уровень устройства iOS: по нему выбирается профиль внутри класса (iPhone, iPad).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceTier {
+    Low,
+    Mid,
+    High,
+}
+
+/// Уровень по возможностям, а не по модели: семейство GPU Metal (`Apple<N>`: A12 — 5, A13 — 6,
+/// A14 и M1 — 7, A17 Pro и M3 — 9), объём памяти и сколько до предела памяти процесса при запуске
+/// (0 — неизвестно, как в симуляторе). Семейства накопительные, так что неизвестное новое устройство
+/// попадает в сильные.
+#[cfg_attr(not(any(target_os = "ios", test)), allow(dead_code))]
+pub fn device_tier(apple_family: u32, physical: u64, available: u64, tablet: bool) -> DeviceTier {
+    const GIB: u64 = 1 << 30;
+    // До предела процесса меньше 1,8 ГБ — устройство с 3 ГБ памяти, какой бы ни был GPU.
+    let tight = available > 0 && available < GIB * 18 / 10;
+    // Устройства с 8 ГБ сообщают чуть меньше 8 ГиБ.
+    let big = physical >= GIB * 7;
+    if apple_family < 7 || tight {
+        DeviceTier::Low
+    } else if big && (apple_family >= 9 || tablet) {
+        DeviceTier::High
+    } else {
+        DeviceTier::Mid
+    }
+}
+
+/// Имя профиля iOS по уровню и классу устройства.
+#[cfg_attr(not(any(target_os = "ios", test)), allow(dead_code))]
+fn ios_profile(tier: DeviceTier, tablet: bool) -> &'static str {
+    match (tablet, tier) {
+        (false, DeviceTier::Low) => "ios-phone-low",
+        (false, DeviceTier::Mid) => "ios-phone",
+        (false, DeviceTier::High) => "ios-phone-high",
+        (true, DeviceTier::Low) => "ios-tablet-low",
+        (true, DeviceTier::Mid) => "ios-tablet",
+        (true, DeviceTier::High) => "ios-tablet-high",
+    }
+}
+
 /// Разобранный файл профилей.
 fn profiles() -> Map<String, Value> {
     serde_json::from_str(PROFILES).expect("assets/platform/profiles.json: не JSON-объект")
@@ -318,11 +402,8 @@ fn platform_profile() -> &'static str {
     }
     #[cfg(target_os = "ios")]
     {
-        if crate::ios::is_tablet() {
-            "ios-tablet"
-        } else {
-            "ios-phone"
-        }
+        let device = crate::ios::device();
+        ios_profile(device.tier(), device.tablet)
     }
     #[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
     {
@@ -576,7 +657,7 @@ fn url_parameter(key: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    const ALL: [&str; 11] = [
+    const ALL: [&str; 15] = [
         "base",
         "desktop",
         "macos",
@@ -588,6 +669,10 @@ mod tests {
         "android",
         "ios-phone",
         "ios-tablet",
+        "ios-phone-low",
+        "ios-phone-high",
+        "ios-tablet-low",
+        "ios-tablet-high",
     ];
 
     fn build(name: &str, overrides: &[(&str, &str)]) -> PlatformProfile {
@@ -696,6 +781,64 @@ mod tests {
         );
         assert!(android.input.touch_default && !android.input.cursor && android.menu.quit);
         assert!(android.audio.pause_in_background);
+    }
+
+    #[test]
+    fn уровень_устройства_ios_по_возможностям() {
+        const GB: u64 = 1 << 30;
+        // iPad 9: A13, 3 ГБ.
+        assert_eq!(device_tier(6, 3 * GB, 0, true), DeviceTier::Low);
+        // iPhone 12: A14, 4 ГБ, до предела 2 ГБ.
+        assert_eq!(device_tier(7, 4 * GB, 2 * GB, false), DeviceTier::Mid);
+        // Новое семейство, но памяти мало — слабый.
+        assert_eq!(device_tier(9, 8 * GB, GB, false), DeviceTier::Low);
+        // iPhone 15 Pro Max: A17 Pro, 8 ГБ (система сообщает чуть меньше).
+        assert_eq!(device_tier(9, 8 * GB - (300 << 20), 5 * GB, false), DeviceTier::High);
+        // iPhone 15: A16, 6 ГБ.
+        assert_eq!(device_tier(8, 6 * GB, 3 * GB, false), DeviceTier::Mid);
+        // iPad Pro M1, 8 ГБ — сильный; iPhone на A14 с 8 ГБ не бывает, но был бы средним.
+        assert_eq!(device_tier(7, 8 * GB, 5 * GB, true), DeviceTier::High);
+        assert_eq!(device_tier(7, 8 * GB, 5 * GB, false), DeviceTier::Mid);
+        // Неизвестное новое устройство.
+        assert_eq!(device_tier(12, 16 * GB, 0, false), DeviceTier::High);
+        assert_eq!(ios_profile(DeviceTier::Low, true), "ios-tablet-low");
+        assert_eq!(ios_profile(DeviceTier::High, false), "ios-phone-high");
+    }
+
+    /// Слабый уровень легче среднего, средний легче сильного — по каждому числу нагрузки.
+    #[test]
+    fn уровни_ios_упорядочены() {
+        for class in ["ios-phone", "ios-tablet"] {
+            let [low, mid, high] =
+                [format!("{class}-low"), class.to_owned(), format!("{class}-high")].map(|n| build(&n, &[]));
+            assert_eq!((low.class, high.class), (mid.class, mid.class), "{class}");
+            for q in [Quality::Low, Quality::Medium, Quality::High] {
+                assert!(low.density(q) <= mid.density(q) && mid.density(q) <= high.density(q), "{class} {q:?}");
+                let shadow = |p: &PlatformProfile| (p.shadows(q).map, p.shadows(q).cascades);
+                assert!(shadow(&low) <= shadow(&mid) && shadow(&mid) <= shadow(&high), "{class} {q:?}");
+                assert!(low.lights.fire.at(q) <= mid.lights.fire.at(q), "{class} {q:?}");
+                assert!(mid.lights.fire.at(q) <= high.lights.fire.at(q), "{class} {q:?}");
+            }
+            assert!(low.debris.max_resting < mid.debris.max_resting, "{class}");
+            assert!(mid.debris.max_resting < high.debris.max_resting, "{class}");
+            assert!(low.lights.flashes <= mid.lights.flashes && mid.lights.flashes <= high.lights.flashes);
+            assert!(low.models.texture_max < mid.models.texture_max, "{class}");
+            assert!(low.render.msaa_high <= mid.render.msaa_high);
+            let rank = |p: &PlatformProfile| p.default_quality as u8;
+            assert!(rank(&low) <= rank(&mid) && rank(&mid) <= rank(&high), "{class}");
+            // Не заданное у уровня — от профиля класса.
+            assert_eq!((low.menu.quit, high.input.touch_default), (mid.menu.quit, mid.input.touch_default));
+        }
+    }
+
+    #[test]
+    fn предел_кадров_при_нагреве() {
+        assert_eq!(frame_limit(None, false), None);
+        assert_eq!(frame_limit(Some(60.0), false), Some(60.0));
+        assert_eq!(frame_limit(Some(0.0), false), None);
+        assert_eq!(frame_limit(None, true), Some(OVERHEAT_FPS));
+        assert_eq!(frame_limit(Some(60.0), true), Some(OVERHEAT_FPS));
+        assert_eq!(frame_limit(Some(20.0), true), Some(20.0));
     }
 
     #[test]

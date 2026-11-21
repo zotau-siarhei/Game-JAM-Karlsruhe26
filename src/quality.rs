@@ -119,6 +119,12 @@ fn setup_camera(mut commands: Commands, camera: Single<Entity, With<GameCamera>>
         .insert((bevy::camera::Hdr, Tonemapping::TonyMcMapface));
 }
 
+/// Наибольшее число выборок MSAA не больше `wanted` из тех, что есть у Bevy (1, 2, 4, 8) и
+/// поддерживает видеокарта.
+fn supported_samples(wanted: u32, supported: impl Fn(u32) -> bool) -> u32 {
+    [8, 4, 2].into_iter().find(|&n| n <= wanted && supported(n)).unwrap_or(1)
+}
+
 /// Q на паузе меняет ступень по кругу.
 fn switch_quality(keys: Res<ButtonInput<KeyCode>>, mut quality: ResMut<Quality>) {
     if keys.just_pressed(KeyCode::KeyQ) {
@@ -141,13 +147,27 @@ fn apply_quality(
     quality: Res<Quality>,
     camera: Query<Entity, With<GameCamera>>,
     mut suns: Query<(Entity, &mut DirectionalLight)>,
+    adapter: Option<Res<bevy::render::renderer::RenderAdapter>>,
 ) {
     let q = *quality;
     let profile = crate::profile::get();
     let bloom = profile.render.bloom.at(q) && !crate::perf::off("bloom");
-    // MSAA только на высокой ступени и сколько разрешает профиль (на Android — нет).
-    let msaa = match profile.render.msaa_high {
-        _ if q != Quality::High || crate::perf::off("msaa") => Msaa::Off,
+    // MSAA только на высокой ступени и сколько разрешает профиль (на Android — нет), но не больше,
+    // чем умеет видеокарта: 8 выборок у iPhone до A17 нет, и Bevy упал бы при создании цели.
+    let wanted = if q != Quality::High || crate::perf::off("msaa") { 1 } else { profile.render.msaa_high };
+    let samples = match &adapter {
+        Some(adapter) => {
+            use bevy::render::render_resource::TextureFormat;
+            let formats = [TextureFormat::Rgba16Float, TextureFormat::Bgra8UnormSrgb, TextureFormat::Depth32Float]
+                .map(|format| adapter.get_texture_format_features(format).flags);
+            supported_samples(wanted, |n| formats.iter().all(|flags| flags.sample_count_supported(n)))
+        }
+        None => supported_samples(wanted, |_| true),
+    };
+    if samples != wanted {
+        warn!("MSAA {wanted}: видеокарта не поддерживает, взято {samples}");
+    }
+    let msaa = match samples {
         2 => Msaa::Sample2,
         4 => Msaa::Sample4,
         8 => Msaa::Sample8,
@@ -233,6 +253,18 @@ fn show_label(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn msaa_не_больше_возможностей_видеокарты() {
+        let ios = |n: u32| matches!(n, 1 | 2 | 4);
+        assert_eq!(supported_samples(8, ios), 4);
+        assert_eq!(supported_samples(4, ios), 4);
+        assert_eq!(supported_samples(16, |_| true), 8);
+        assert_eq!(supported_samples(3, ios), 2);
+        assert_eq!(supported_samples(4, |n| n == 1 || n == 4), 4);
+        assert_eq!(supported_samples(2, |n| n == 1 || n == 4), 1);
+        assert_eq!(supported_samples(1, ios), 1);
+    }
 
     #[test]
     fn ступени_идут_по_кругу_и_читаются_по_имени() {

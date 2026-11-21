@@ -30,11 +30,22 @@
 		<integer>1</integer>
 		<integer>2</integer>
 	</array>
+	<!-- Не слабее A12: на A9–A11 (iPhone 8/X, iPad 5–7, iPad Pro 2017) не хватает памяти и GPU.
+	     Требование можно ослабить в обновлении, но не ужесточить. -->
 	<key>UIRequiredDeviceCapabilities</key>
 	<array>
 		<string>arm64</string>
 		<string>metal</string>
+		<string>iphone-ipad-minimum-performance-a12</string>
 	</array>
+	<!-- Игра: категория и Game Mode (iOS 18+, iOS 26+) — система отдаёт ей приоритет и
+	     уменьшает задержку геймпада. -->
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.action-games</string>
+	<key>GCSupportsGameMode</key>
+	<true/>
+	<key>LSSupportsGameMode</key>
+	<true/>
 	<!-- Без экрана запуска iOS открывает приложение в режиме совместимости, не на весь экран. -->
 	<key>UILaunchScreen</key>
 	<dict/>

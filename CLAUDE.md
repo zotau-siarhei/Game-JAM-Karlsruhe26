@@ -237,6 +237,16 @@ cargo test                                  # тесты
   `profile` (`SPACE_GUARD_PROFILE=ios-phone` показывает облик iPhone на Mac). Профиль и переопределения
   видны в логе при запуске, в F3 и в сводке `--bench`. Тест `profile::tests` сверяет профили компьютера,
   браузера и Android с прежними числами: меняешь число — меняй и тест.
+  iOS выбирает профиль ещё и по уровню устройства (`ios::device`, `profile::device_tier`): по семейству GPU
+  Metal (`supportsFamily`), объёму памяти и запасу до предела процесса (`os_proc_available_memory`), а не по
+  модели — `ios-phone-low|ios-phone|ios-phone-high`, `ios-tablet-low|ios-tablet|ios-tablet-high` (слабые —
+  A12/A13 или меньше 1,8 ГБ до предела, сильные — A17 Pro+ с 8 ГБ, iPad на M). Симулятор сообщает GPU
+  Apple2 и получает слабый уровень. Уровень и данные — строка «iOS: GPU…» в логе. Значение, которое
+  видеокарта не умеет (MSAA больше поддерживаемого), уменьшается с предупреждением, а не роняет игру.
+  На iOS при остатке памяти меньше 300 МБ обломков вдвое меньше, при нагреве «critical» — не больше
+  30 кадров. Info.plist (`ios/Info.plist`) требует A12+ (`iphone-ipad-minimum-performance-a12`: ослабить
+  можно, ужесточить в обновлении нельзя), заявляет категорию игры и Game Mode; полоска «Домой» скрыта,
+  свайп снизу сворачивает игру только со второго раза (поля `Window` в `main.rs`).
 - Браузерная версия выкладывается на GitHub Pages: https://zotau-siarhei.github.io/Game-JAM-Karlsruhe26/
   Workflow `.github/workflows/web.yml` раз в 4 часа собирает main (`--release`), если после последней
   выкладки были коммиты. Сборка не чаще раза в 4 часа при любом запуске, ручной (Actions → web → Run

@@ -161,6 +161,14 @@ fn main() {
             } else {
                 bevy::window::WindowMode::Windowed
             },
+            // iOS: полоска «Домой» скрыта, свайп снизу сначала только показывает её — левый стик у
+            // нижнего края не сворачивает игру.
+            prefers_home_indicator_hidden: cfg!(target_os = "ios"),
+            preferred_screen_edges_deferring_system_gestures: if cfg!(target_os = "ios") {
+                bevy::window::ScreenEdge::Bottom
+            } else {
+                bevy::window::ScreenEdge::None
+            },
             ..default()
         }),
         ..default()

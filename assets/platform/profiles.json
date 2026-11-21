@@ -73,10 +73,68 @@
     "menu": { "quit": false },
     "audio": { "pause_in_background": true }
   },
+  "ios-phone-low": {
+    "parent": "ios-phone",
+    "render": {
+      "density": [1.0, 1.25, 1.5],
+      "msaa_high": 1,
+      "shadows": [
+        { "map": 512, "cascades": 1, "far": 40.0 },
+        { "map": 1024, "cascades": 1, "far": 50.0 },
+        { "map": 1024, "cascades": 1, "far": 60.0 }
+      ]
+    },
+    "debris": { "max_resting": 300 },
+    "lights": { "fire": [1, 2, 3], "flashes": 2 },
+    "models": { "texture_max": 512 }
+  },
+  "ios-phone-high": {
+    "parent": "ios-phone",
+    "default_quality": "medium",
+    "render": {
+      "density": [1.5, 2.0, 2.5],
+      "shadows": [
+        { "map": 512, "cascades": 1, "far": 40.0 },
+        { "map": 1024, "cascades": 2, "far": 70.0 },
+        { "map": 2048, "cascades": 3, "far": 110.0 }
+      ]
+    },
+    "debris": { "max_resting": 800 },
+    "lights": { "fire": [3, 4, 6], "flashes": 4 }
+  },
   "ios-tablet": {
     "parent": "ios-phone",
     "class": "tablet",
     "default_quality": "medium",
     "render": { "density": [1.0, 1.5, 2.0], "frame_limit": 60.0 }
+  },
+  "ios-tablet-low": {
+    "parent": "ios-tablet",
+    "default_quality": "low",
+    "render": {
+      "density": [1.0, 1.25, 1.5],
+      "msaa_high": 1,
+      "shadows": [
+        { "map": 512, "cascades": 1, "far": 40.0 },
+        { "map": 1024, "cascades": 1, "far": 50.0 },
+        { "map": 1024, "cascades": 1, "far": 60.0 }
+      ]
+    },
+    "debris": { "max_resting": 300 },
+    "lights": { "fire": [1, 2, 3], "flashes": 2 },
+    "models": { "texture_max": 512 }
+  },
+  "ios-tablet-high": {
+    "parent": "ios-tablet",
+    "render": {
+      "density": [1.5, 2.0, 2.0],
+      "shadows": [
+        { "map": 512, "cascades": 1, "far": 40.0 },
+        { "map": 1024, "cascades": 2, "far": 70.0 },
+        { "map": 2048, "cascades": 3, "far": 110.0 }
+      ]
+    },
+    "debris": { "max_resting": 1000 },
+    "lights": { "fire": [4, 6, 8], "flashes": 6 }
   }
 }

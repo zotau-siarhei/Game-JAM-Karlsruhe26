@@ -54,7 +54,12 @@ const PUFF_SECONDS: f32 = 1.4;
 /// На телефоне лежит меньше обломков и тень бросают только крупные (`debris.shadow_min_size`):
 /// каждый обломок — ещё одна сетка в проходах кадра и теней, а к концу долгого забега их тысячи.
 fn max_resting() -> usize {
-    crate::profile::get().debris.max_resting
+    resting_limit(crate::profile::get().debris.max_resting, crate::profile::low_memory())
+}
+
+/// Предел лежащих обломков: из профиля, а когда памяти мало (`profile::low_memory`) — вдвое меньше.
+fn resting_limit(profile: usize, low_memory: bool) -> usize {
+    if low_memory { profile / 2 } else { profile }
 }
 
 /// Обломок меньше этого тени не отбрасывает, м.
@@ -699,6 +704,12 @@ fn stream_debris(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn мало_памяти_вдвое_меньше_обломков() {
+        assert_eq!(resting_limit(600, false), 600);
+        assert_eq!(resting_limit(600, true), 300);
+    }
 
     fn piece(at: Vec3, size: f32) -> DebrisPiece {
         DebrisPiece {

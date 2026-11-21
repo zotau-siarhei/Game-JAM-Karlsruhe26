@@ -28,8 +28,78 @@ pub struct IosPlugin;
 
 impl Plugin for IosPlugin {
     fn build(&self, app: &mut App) {
+        let d = device();
+        info!(
+            "iOS: GPU Apple{}, памяти {:.1} ГБ, до предела процесса {:.1} ГБ, {} → уровень {:?}",
+            d.apple_family,
+            d.physical as f64 / GIB,
+            d.available as f64 / GIB,
+            if d.tablet { "iPad" } else { "iPhone" },
+            d.tier(),
+        );
         app.add_systems(PreUpdate, (read_view, watch_thermal, log_memory));
     }
+}
+
+const GIB: f64 = (1u64 << 30) as f64;
+
+#[link(name = "Metal", kind = "framework")]
+unsafe extern "C" {
+    fn MTLCreateSystemDefaultDevice() -> *mut AnyObject;
+}
+
+unsafe extern "C" {
+    /// libSystem, iOS 13+: байт до предела памяти процесса (в симуляторе — 0).
+    fn os_proc_available_memory() -> usize;
+}
+
+/// Возможности устройства, по которым выбирается профиль (`profile::device_tier`).
+#[derive(Debug, Clone, Copy)]
+pub struct Device {
+    /// Наибольшее семейство GPU Metal `Apple<N>`, которое поддерживает видеокарта (0 — нет Metal).
+    pub apple_family: u32,
+    /// Объём памяти, байт.
+    pub physical: u64,
+    /// Сколько памяти до предела процесса при запуске, байт (0 — неизвестно).
+    pub available: u64,
+    pub tablet: bool,
+}
+
+impl Device {
+    pub fn tier(&self) -> crate::profile::DeviceTier {
+        crate::profile::device_tier(self.apple_family, self.physical, self.available, self.tablet)
+    }
+}
+
+/// Возможности устройства, один раз за запуск. Спрашивать из главного потока до цикла событий:
+/// профиль платформы собирается в начале `main`, раньше адаптера wgpu.
+pub fn device() -> Device {
+    static DEVICE: std::sync::OnceLock<Device> = std::sync::OnceLock::new();
+    *DEVICE.get_or_init(|| {
+        /// `MTLGPUFamilyApple1`; `Apple<N>` = 1000 + N.
+        const APPLE: isize = 1000;
+        // SAFETY: функции Metal и Foundation без побочных эффектов; объекты живут всё время процесса.
+        unsafe {
+            let metal = MTLCreateSystemDefaultDevice();
+            let apple_family = if metal.is_null() {
+                0
+            } else {
+                // Семейства накопительные: берётся самое новое, которое устройство поддерживает.
+                (1..=16)
+                    .rev()
+                    .find(|n| msg_send![&*metal, supportsFamily: APPLE + *n as isize])
+                    .unwrap_or(0)
+            };
+            let info: *mut AnyObject = msg_send![objc2::class!(NSProcessInfo), processInfo];
+            let physical: u64 = msg_send![&*info, physicalMemory];
+            Device {
+                apple_family,
+                physical,
+                available: os_proc_available_memory() as u64,
+                tablet: is_tablet(),
+            }
+        }
+    })
 }
 
 /// Последние отступы безопасной области в точках (dp): слева, сверху, справа, снизу.
@@ -68,8 +138,9 @@ pub fn is_tablet() -> bool {
 /// (`profile::set_throttled`), назад — когда остыл. iPhone 15 Pro Max в долгой нагрузке держит
 /// 60–76 % пиковой мощности видеокарты: лучше заранее рисовать меньше, чем терять кадры.
 fn watch_thermal(time: Res<Time<Real>>, mut next: Local<f32>) {
-    /// `NSProcessInfoThermalStateSerious`.
+    /// `NSProcessInfoThermalStateSerious`, `…Critical`.
     const SERIOUS: isize = 2;
+    const CRITICAL: isize = 3;
     let now = time.elapsed_secs();
     if now < *next {
         return;
@@ -84,6 +155,15 @@ fn watch_thermal(time: Res<Time<Real>>, mut next: Local<f32>) {
     if throttle != crate::profile::throttled() {
         info!("iOS: нагрев {thermal}, энергосбережение {low_power} → кадр {}", if throttle { "реже" } else { "как в профиле" });
         crate::profile::set_throttled(throttle);
+    }
+    // Критический нагрев — ещё и не больше 30 кадров: система вот-вот начнёт душить сама.
+    let overheated = thermal >= CRITICAL;
+    if overheated != crate::profile::overheated() {
+        info!(
+            "iOS: нагрев {thermal} → кадров {}",
+            if overheated { format!("не больше {}", crate::profile::OVERHEAT_FPS) } else { "как в профиле".into() }
+        );
+        crate::profile::set_overheated(overheated);
     }
 }
 
@@ -105,12 +185,14 @@ pub fn file_log_layer(_app: &mut App) -> Option<bevy::log::BoxedLayer> {
     )
 }
 
+/// Меньше этого до предела процесса — «мало памяти»: обломков вдвое меньше (`profile::low_memory`).
+const LOW_MEMORY: usize = 300 << 20;
+/// Больше этого — памяти снова хватает (запас, чтобы флаг не мигал).
+const ENOUGH_MEMORY: usize = 500 << 20;
+
 /// Раз в 10 с — сколько памяти ещё может взять игра, пока система её не закрыла (jetsam).
+/// Когда её мало, игра держит меньше обломков.
 fn log_memory(time: Res<Time<Real>>, mut next: Local<f32>) {
-    unsafe extern "C" {
-        /// libSystem, iOS 13+: байт до предела памяти процесса.
-        fn os_proc_available_memory() -> usize;
-    }
     let now = time.elapsed_secs();
     if now < *next {
         return;
@@ -123,6 +205,15 @@ fn log_memory(time: Res<Time<Real>>, mut next: Local<f32>) {
         return;
     }
     info!("iOS: памяти до предела {} МБ", available / (1024 * 1024));
+    let low = crate::profile::low_memory();
+    if !low && available < LOW_MEMORY || low && available > ENOUGH_MEMORY {
+        warn!(
+            "iOS: памяти до предела {} МБ → обломков {}",
+            available >> 20,
+            if low { "как в профиле" } else { "вдвое меньше" }
+        );
+        crate::profile::set_low_memory(!low);
+    }
 }
 
 /// `UIEdgeInsets` из UIKit.
