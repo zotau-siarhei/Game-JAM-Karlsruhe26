@@ -170,6 +170,9 @@ pub struct PlatformProfile {
     /// Действующие переопределения: `путь = значение`.
     #[serde(skip)]
     pub overrides: Vec<String>,
+    /// Отклонённые переопределения с причиной: опечатка в значении не роняет игру.
+    #[serde(skip)]
+    pub rejected: Vec<String>,
     pub class: DeviceClass,
     pub default_quality: Quality,
     pub render: Render,
@@ -211,6 +214,9 @@ impl Plugin for ProfilePlugin {
     fn build(&self, app: &mut App) {
         let profile = get();
         info!("Профиль платформы: {}", profile.describe());
+        for rejected in &profile.rejected {
+            warn!("Профиль платформы: переопределение не принято: {rejected}");
+        }
         app.insert_resource(profile.clone());
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(fps) = profile.render.frame_limit.filter(|fps| *fps > 0.0) {
@@ -245,15 +251,32 @@ fn limit_frames(mut last: Local<Option<bevy::platform::time::Instant>>) {
 pub fn get() -> &'static PlatformProfile {
     static PROFILE: OnceLock<PlatformProfile> = OnceLock::new();
     PROFILE.get_or_init(|| {
-        let name = debug_value("profile").unwrap_or_else(|| platform_profile().to_owned());
-        let (value, overrides) =
-            resolve(&profiles(), &name, &debug_value).unwrap_or_else(|error| {
-                panic!("Профиль платформы «{name}»: {error}");
-            });
-        let mut profile: PlatformProfile = serde_json::from_value(value)
+        let all = profiles();
+        let platform = platform_profile().to_owned();
+        let mut rejected = Vec::new();
+        // Профиль целиком из переопределения; опечатка в имени — профиль платформы.
+        let name = match debug_value("profile") {
+            Some(name) if all.contains_key(name.trim()) => name.trim().to_owned(),
+            Some(name) => {
+                rejected.push(format!("profile = {name} (нет такого профиля)"));
+                platform
+            }
+            None => platform,
+        };
+        let resolved = resolve(&all, &name, &debug_value)
+            .unwrap_or_else(|error| panic!("Профиль платформы «{name}»: {error}"));
+        let mut profile: PlatformProfile = serde_json::from_value(resolved.value)
             .unwrap_or_else(|error| panic!("Профиль платформы «{name}»: {error}"));
         profile.name = name;
-        profile.overrides = overrides;
+        profile.overrides = resolved.applied;
+        // Переопределения вне профиля — тоже в строку профиля: всё действующее видно в одном месте.
+        for key in ["quality", "off", "perf"] {
+            if let Some(value) = debug_value(key) {
+                profile.overrides.push(format!("{key} = {}", value.trim()));
+            }
+        }
+        rejected.extend(resolved.rejected);
+        profile.rejected = rejected;
         profile
     })
 }
@@ -316,32 +339,67 @@ fn platform_profile() -> &'static str {
     }
 }
 
-/// Профиль `name` после наследования и переопределений, и список действующих переопределений.
+/// Профиль после наследования и переопределений.
+struct Resolved {
+    value: Value,
+    /// Принятые переопределения: `путь = значение`.
+    applied: Vec<String>,
+    /// Отклонённые: значение не того вида — профиль с ним не разбирается.
+    rejected: Vec<String>,
+}
+
+/// Профиль `name` после наследования и переопределений. Каждое переопределение проверяется
+/// разбором профиля: неверное значение отклоняется, а не роняет игру.
 fn resolve(
     all: &Map<String, Value>,
     name: &str,
     lookup: &dyn Fn(&str) -> Option<String>,
-) -> Result<(Value, Vec<String>), String> {
-    let mut value = inherited(all, name, 0)?;
-    let mut overrides = Vec::new();
+) -> Result<Resolved, String> {
+    let value = inherited(all, name, 0)?;
+    serde_json::from_value::<PlatformProfile>(value.clone()).map_err(|error| error.to_string())?;
+    let mut resolved = Resolved {
+        value,
+        applied: Vec::new(),
+        rejected: Vec::new(),
+    };
+    let accept = |resolved: &mut Resolved,
+                      label: String,
+                      change: &dyn Fn(&mut Value) -> Result<(), String>| {
+        let mut candidate = resolved.value.clone();
+        let checked = change(&mut candidate).and_then(|()| {
+            serde_json::from_value::<PlatformProfile>(candidate.clone())
+                .map_err(|error| error.to_string())
+        });
+        match checked {
+            Ok(_) => {
+                resolved.value = candidate;
+                resolved.applied.push(label);
+            }
+            Err(error) => resolved.rejected.push(format!("{label} ({error})")),
+        }
+    };
     // Старые имена — до путей: путь задаёт точнее и побеждает.
     for (alias, apply) in ALIASES {
         if let Some(text) = lookup(alias) {
-            apply(&mut value, text.trim())?;
-            overrides.push(format!("{alias} = {}", text.trim()));
+            let text = text.trim().to_owned();
+            accept(&mut resolved, format!("{alias} = {text}"), &|value| {
+                apply(value, &text)
+            });
         }
     }
     let mut paths = Vec::new();
-    leaf_paths(&value, String::new(), &mut paths);
+    leaf_paths(&resolved.value, String::new(), &mut paths);
     for path in paths {
         if let Some(text) = lookup(&path) {
-            let parsed =
-                serde_json::from_str(text.trim()).unwrap_or(Value::String(text.trim().to_owned()));
-            set_path(&mut value, &path, parsed);
-            overrides.push(format!("{path} = {}", text.trim()));
+            let text = text.trim().to_owned();
+            let parsed = serde_json::from_str(&text).unwrap_or(Value::String(text.clone()));
+            accept(&mut resolved, format!("{path} = {text}"), &|value| {
+                set_path(value, &path, parsed.clone());
+                Ok(())
+            });
         }
     }
-    Ok((value, overrides))
+    Ok(resolved)
 }
 
 /// Профиль с наследованием: родитель, поверх него — свои поля.
@@ -539,10 +597,11 @@ mod tests {
                 .find(|(k, _)| *k == key)
                 .map(|(_, v)| v.to_string())
         };
-        let (value, list) = resolve(&profiles(), name, &lookup).unwrap();
-        let mut profile: PlatformProfile = serde_json::from_value(value).unwrap();
+        let resolved = resolve(&profiles(), name, &lookup).unwrap();
+        let mut profile: PlatformProfile = serde_json::from_value(resolved.value).unwrap();
         profile.name = name.to_owned();
-        profile.overrides = list;
+        profile.overrides = resolved.applied;
+        profile.rejected = resolved.rejected;
         profile
     }
 
@@ -691,6 +750,23 @@ mod tests {
             &[("density", "2"), ("render.density", "[1, 1.5, 2]")],
         );
         assert_eq!(p.density(Quality::Low), Some(1.0));
+    }
+
+    #[test]
+    fn неверное_переопределение_отклоняется() {
+        let p = build(
+            "android",
+            &[
+                ("render.density", "abc"),
+                ("shadows", "x"),
+                ("debris.max_resting", "50"),
+            ],
+        );
+        assert_eq!(p.density(Quality::Low), Some(1.25));
+        assert_eq!(p.shadows(Quality::Medium).cascades, 1);
+        assert_eq!(p.debris.max_resting, 50);
+        assert_eq!(p.rejected.len(), 2);
+        assert_eq!(p.overrides, vec!["debris.max_resting = 50".to_owned()]);
     }
 
     #[test]

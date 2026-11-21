@@ -118,8 +118,14 @@ fn switch_quality(keys: Res<ButtonInput<KeyCode>>, mut quality: ResMut<Quality>)
     }
 }
 
-/// Новая ступень — в настройки: они сохраняют её в файл.
+/// Новая ступень — в настройки: они сохраняют её в файл. Ступень из отладочного переопределения
+/// (`quality`) в файл не попадает: после замера игрок остаётся на своей.
 fn remember_quality(quality: Res<Quality>, mut settings: ResMut<Settings>) {
+    static FORCED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let forced = *FORCED.get_or_init(|| crate::profile::debug_value("quality").is_some());
+    if forced && quality.is_added() {
+        return;
+    }
     if settings.quality != *quality {
         settings.quality = *quality;
     }
