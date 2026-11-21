@@ -119,6 +119,28 @@ fn pause_audio_in_background(
     }
 }
 
+/// Аргументы запуска и переменные окружения для проверок на телефоне, где их не передать:
+/// `adb shell setprop debug.spaceguard.args "--bench=60"` и
+/// `adb shell setprop debug.spaceguard.env "SPACE_GUARD_AUTOSTART=1;SPACE_GUARD_SCENE=fire"`.
+/// Возвращает аргументы, переменные ставит сразу.
+pub fn debug_launch() -> Vec<String> {
+    if let Some(env) = system_property(c"debug.spaceguard.env") {
+        for pair in env.split(';') {
+            if let Some((key, value)) = pair.split_once('=') {
+                // SAFETY: вызывается в начале `main`, до того как игра запустила свои потоки
+                // и стала читать окружение.
+                unsafe { std::env::set_var(key.trim(), value.trim()) };
+                info!("Проверка: {}={}", key.trim(), value.trim());
+            }
+        }
+    }
+    let mut args: Vec<String> = std::env::args().collect();
+    if let Some(extra) = system_property(c"debug.spaceguard.args") {
+        args.extend(extra.split_whitespace().map(str::to_owned));
+    }
+    args
+}
+
 /// Системное свойство Android (`adb shell setprop <имя> <значение>`); `None` — не задано.
 /// Свойства `debug.*` ставятся без root: ими замеры переключаются без пересборки.
 pub fn system_property(name: &std::ffi::CStr) -> Option<String> {

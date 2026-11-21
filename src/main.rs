@@ -128,10 +128,15 @@ fn main() {
             std::process::exit(0);
         }
     }
+    // На Android аргументов запуска и переменных окружения нет: их задают свойства (`android.rs`).
+    #[cfg(target_os = "android")]
+    let args = android::debug_launch();
+    #[cfg(not(target_os = "android"))]
+    let args: Vec<String> = std::env::args().collect();
     // Замер скорости: `cargo run -- --bench=180` (см. `perf.rs`).
-    let bench = perf::Bench::from_args(std::env::args());
+    let bench = perf::Bench::from_args(args.clone());
     // Проверка волн без гибели: `cargo run -- --immortal`; в замере луноход тоже бессмертен.
-    let immortal = combat::Immortal(combat::Immortal::from_args(std::env::args()).0 || bench.on);
+    let immortal = combat::Immortal(combat::Immortal::from_args(args).0 || bench.on);
     // На Android аргументов запуска нет: развёртку для замера выключает
     // `adb shell setprop debug.spaceguard.novsync 1`.
     #[cfg(target_os = "android")]

@@ -67,7 +67,7 @@ const RENDER_PARTS: usize = RENDER_SETS.len();
 
 /// Выключенные для замера части картинки: `adb shell setprop debug.spaceguard.off shadows,bloom`
 /// на Android или `SPACE_GUARD_OFF=shadows,bloom` на компьютере; читается при запуске.
-/// Части: `shadows`, `bloom`, `hdr`, `grass`, `particles`.
+/// Части: `shadows`, `bloom`, `hdr`, `grass`, `particles`, `lights`, `proxies`, `msaa`, `model:<id>`.
 pub fn off(part: &str) -> bool {
     static LIST: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
     LIST.get_or_init(|| {
@@ -180,13 +180,20 @@ fn log_batches(
     info!("  batches: opaque {}; shadow {}", count(&opaque), count(&shadow));
 }
 
-/// Прячет эффекты частиц, если они выключены для замера.
-fn hide_particles(mut effects: Query<&mut Visibility, Added<bevy_hanabi::prelude::ParticleEffect>>) {
-    if !off("particles") {
-        return;
+/// Прячет эффекты частиц и точечные источники света, если они выключены для замера.
+fn hide_particles(
+    mut effects: Query<&mut Visibility, Added<bevy_hanabi::prelude::ParticleEffect>>,
+    mut lights: Query<&mut Visibility, (Added<PointLight>, Without<bevy_hanabi::prelude::ParticleEffect>)>,
+) {
+    if off("particles") {
+        for mut visibility in &mut effects {
+            *visibility = Visibility::Hidden;
+        }
     }
-    for mut visibility in &mut effects {
-        *visibility = Visibility::Hidden;
+    if off("lights") {
+        for mut visibility in &mut lights {
+            *visibility = Visibility::Hidden;
+        }
     }
 }
 
