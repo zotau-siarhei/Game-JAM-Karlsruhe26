@@ -43,8 +43,14 @@ if [[ ! -f "$bundletool" ]]; then
     mkdir -p "$(dirname "$bundletool")"
     curl -fsSL -o "$bundletool.part" \
         "https://github.com/google/bundletool/releases/download/$bundletool_version/bundletool-all-$bundletool_version.jar"
+    # Хэш сравнивается строкой: у sha256sum в macOS нет ключа --quiet, как у GNU.
     if command -v sha256sum >/dev/null; then sum=(sha256sum); else sum=(shasum -a 256); fi
-    echo "$bundletool_sha  $bundletool.part" | "${sum[@]}" -c --quiet
+    actual=$("${sum[@]}" "$bundletool.part" | awk '{ print $1 }')
+    if [[ "$actual" != "$bundletool_sha" ]]; then
+        rm -f "$bundletool.part"
+        echo "bundletool: SHA-256 $actual, а ожидался $bundletool_sha" >&2
+        exit 1
+    fi
     mv "$bundletool.part" "$bundletool"
 fi
 

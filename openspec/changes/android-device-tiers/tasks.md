@@ -16,7 +16,7 @@
 
 ## 3. Google Play
 
-- [ ] 3.1 `scripts/build-aab.sh`: `PAGE_ALIGNMENT_16K` в `BundleConfig.json` и проверка `bundletool dump config`; проверка: `scripts/build-aab.sh`
+- [x] 3.1 `scripts/build-aab.sh`: `PAGE_ALIGNMENT_16K` в `BundleConfig.json` и проверка `bundletool dump config`; проверка: `scripts/build-aab.sh`
 
 ## 4. Проверка
 
