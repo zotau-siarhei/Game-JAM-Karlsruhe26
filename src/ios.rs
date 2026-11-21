@@ -118,6 +118,10 @@ fn log_memory(time: Res<Time<Real>>, mut next: Local<f32>) {
     *next = now + 10.0;
     // SAFETY: функция без аргументов, только читает счётчик процесса.
     let available = unsafe { os_proc_available_memory() };
+    // В симуляторе предела нет, функция отдаёт 0.
+    if available == 0 {
+        return;
+    }
     info!("iOS: памяти до предела {} МБ", available / (1024 * 1024));
 }
 

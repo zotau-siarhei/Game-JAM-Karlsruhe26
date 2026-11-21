@@ -77,16 +77,6 @@
     "parent": "ios-phone",
     "class": "tablet",
     "default_quality": "medium",
-    "render": {
-      "density": [1.5, 2.0, 2.0],
-      "shadows": [
-        { "map": 512, "cascades": 1, "far": 40.0 },
-        { "map": 1024, "cascades": 2, "far": 70.0 },
-        { "map": 2048, "cascades": 3, "far": 110.0 }
-      ],
-      "frame_limit": 60.0
-    },
-    "debris": { "max_resting": 800 },
-    "lights": { "fire": [3, 4, 6], "flashes": 4 }
+    "render": { "density": [1.0, 1.5, 2.0], "frame_limit": 60.0 }
   }
 }

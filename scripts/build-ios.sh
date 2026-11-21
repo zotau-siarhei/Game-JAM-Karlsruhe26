@@ -19,7 +19,8 @@
 # Для телефона нужны сертификат «Apple Development» в связке ключей и профиль подготовки с этим
 # iPhone для io.github.zotausiarhei.spaceguard (или для «*»); профиль ищется в каталогах Xcode,
 # путь можно задать явно: IOS_PROFILE=/путь/профиль.mobileprovision.
-# Симулятор — IOS_SIM (по умолчанию загруженный, иначе «iPhone 15 Pro»), телефон — IOS_DEVICE (UDID).
+# Симулятор — IOS_SIM (по умолчанию загруженный, иначе «iPhone 15 Pro»), устройство — IOS_DEVICE (UDID;
+# без него — подключённый iPhone, иначе любое другое подключённое).
 set -euo pipefail
 
 root=$(git rev-parse --show-toplevel)
@@ -203,7 +204,15 @@ if ((sim)); then
         xcrun simctl launch booted "$bundle_id"
     fi
 else
-    device=${IOS_DEVICE:-$(xcrun devicectl list devices 2>/dev/null | awk '/physical/ && !/unavailable/ { for (i = 1; i <= NF; i++) if ($i ~ /^[0-9A-F]{8}-[0-9A-F]{16}$/) { print $i; exit } }')}
+    # Без IOS_DEVICE — подключённый iPhone, а если его нет — первое другое устройство (iPad):
+    # к Mac бывают подключены сразу несколько.
+    pick_device() {
+        xcrun devicectl list devices 2>/dev/null | awk -v want="$1" '/physical/ && !/unavailable/ && $0 ~ want {
+            for (i = 1; i <= NF; i++) if ($i ~ /^[0-9A-F]{8}-[0-9A-F]{16}$/) { print $i; exit }
+        }'
+    }
+    device=${IOS_DEVICE:-$(pick_device iPhone)}
+    device=${device:-$(pick_device .)}
     if [[ -z "$device" ]]; then
         echo "iPhone не подключён или не готов (xcrun devicectl list devices)" >&2
         exit 1

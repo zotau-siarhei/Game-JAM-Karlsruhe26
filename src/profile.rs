@@ -708,8 +708,10 @@ mod tests {
         assert_eq!(phone.shadows(Quality::Medium).cascades, 1);
         assert_eq!(phone.render.msaa_high, 4);
         assert!(!phone.menu.quit && phone.input.touch_default && phone.audio.pause_in_background);
-        assert_eq!(tablet.debris.max_resting, 800);
+        assert_eq!(tablet.density(Quality::Medium), Some(1.5));
+        assert_eq!(tablet.default_quality, Quality::Medium);
         assert_eq!(tablet.render.frame_limit, Some(60.0));
+        assert_eq!(tablet.debris, phone.debris);
         // Не заданное у iPad берётся у iPhone.
         assert_eq!(tablet.menu.quit, phone.menu.quit);
         assert_eq!(tablet.models, phone.models);
