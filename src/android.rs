@@ -119,6 +119,23 @@ fn pause_audio_in_background(
     }
 }
 
+/// Системное свойство Android (`adb shell setprop <имя> <значение>`); `None` — не задано.
+/// Свойства `debug.*` ставятся без root: ими замеры переключаются без пересборки.
+pub fn system_property(name: &std::ffi::CStr) -> Option<String> {
+    unsafe extern "C" {
+        fn __system_property_get(name: *const std::ffi::c_char, value: *mut std::ffi::c_char) -> i32;
+    }
+    let mut buffer = [0 as std::ffi::c_char; 92];
+    // SAFETY: имя — строка с нулём на конце, буфер не короче PROP_VALUE_MAX (92).
+    let length = unsafe { __system_property_get(name.as_ptr(), buffer.as_mut_ptr()) };
+    if length <= 0 {
+        return None;
+    }
+    // SAFETY: функция записала строку с нулём на конце в буфер.
+    let text = unsafe { std::ffi::CStr::from_ptr(buffer.as_ptr()) }.to_str().ok()?;
+    (!text.is_empty()).then(|| text.to_owned())
+}
+
 /// Отступы от выреза камеры в dp: слева, сверху, справа, снизу. С target SDK 35+ окно рисуется и
 /// под вырезом (edge-to-edge принудительно), поэтому сенсорные кнопки его обходят сами.
 /// Спрашивает систему не чаще раза в секунду: телефон переворачивают, и вырез переходит на другой бок.

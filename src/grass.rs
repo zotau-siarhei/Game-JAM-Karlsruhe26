@@ -356,6 +356,7 @@ fn stream_grass(
                             MeshMaterial3d(material.0.clone()),
                             NotShadowCaster,
                             Transform::IDENTITY,
+                            if crate::perf::off("grass") { Visibility::Hidden } else { Visibility::Inherited },
                         ))
                         .id(),
                 );

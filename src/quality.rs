@@ -68,6 +68,11 @@ pub struct QualityPlugin;
 impl Plugin for QualityPlugin {
     fn build(&self, app: &mut App) {
         let quality = crate::settings::stored(app).quality;
+        // Для замеров на телефоне: `adb shell setprop debug.spaceguard.quality medium`.
+        #[cfg(target_os = "android")]
+        let quality = crate::android::system_property(c"debug.spaceguard.quality")
+            .and_then(|name| serde_json::from_value(serde_json::Value::String(name)).ok())
+            .unwrap_or(quality);
         app.insert_resource(quality)
             .insert_resource(GlobalAmbientLight {
                 color: Color::srgb(0.7, 0.8, 1.0),
@@ -94,6 +99,9 @@ struct QualityLabel;
 
 /// Камера в HDR с тональной коррекцией.
 fn setup_camera(mut commands: Commands, camera: Single<Entity, With<GameCamera>>) {
+    if crate::perf::off("hdr") {
+        return;
+    }
     commands
         .entity(*camera)
         .insert((bevy::camera::Hdr, Tonemapping::TonyMcMapface));
@@ -128,6 +136,9 @@ fn apply_quality(
             Quality::Low => {
                 c.remove::<Bloom>().insert(Msaa::Off);
             }
+            Quality::Medium if crate::perf::off("bloom") => {
+                c.remove::<Bloom>().insert(Msaa::Off);
+            }
             Quality::Medium => {
                 c.insert((Bloom::NATURAL, Msaa::Off));
             }
@@ -138,12 +149,23 @@ fn apply_quality(
     }
     let (size, cascades, far) = match q {
         Quality::Low => (512, 1, 40.0),
+        // Тени — самая дорогая часть кадра на телефоне: каждый каскад заново рисует все меши,
+        // отбрасывающие тень. Один каскад до края кадра вдвое дешевле двух.
+        Quality::Medium if cfg!(target_os = "android") => (1024, 1, 60.0),
         Quality::Medium => (1024, 2, 70.0),
         Quality::High => (2048, 3, 110.0),
     };
+    // Для замеров на телефоне: `adb shell setprop debug.spaceguard.shadows 1,60` — каскадов и дальность.
+    #[cfg(target_os = "android")]
+    let (cascades, far) = crate::android::system_property(c"debug.spaceguard.shadows")
+        .and_then(|text| {
+            let (count, distance) = text.split_once(',')?;
+            Some((count.trim().parse().ok()?, distance.trim().parse().ok()?))
+        })
+        .unwrap_or((cascades, far));
     commands.insert_resource(DirectionalLightShadowMap { size });
     for (entity, mut sun) in &mut suns {
-        sun.shadow_maps_enabled = q != Quality::Low;
+        sun.shadow_maps_enabled = q != Quality::Low && !crate::perf::off("shadows");
         commands.entity(entity).insert(
             CascadeShadowConfigBuilder {
                 num_cascades: cascades,

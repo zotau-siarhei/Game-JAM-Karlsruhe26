@@ -72,6 +72,9 @@ for abi in "${abis[@]}"; do
     under=${triple//-/_}
     upper=${under^^}
     export "CC_$under=$clang" "CXX_$under=$clang++" "AR_$under=$llvm/llvm-ar"
+    # C++ зависимостей (meshoptimizer) без исключений и RTTI: среды C++ с ними в системе Android нет,
+    # библиотека не загрузилась бы (нет __gxx_personality_v0).
+    export "CXXFLAGS_$under=-fno-exceptions -fno-rtti"
     export "CARGO_TARGET_${upper}_LINKER=$clang"
     # Страницы по 16 КБ: без этого библиотека не загрузится на новых устройствах.
     export "CARGO_TARGET_${upper}_RUSTFLAGS=-C link-arg=-Wl,-z,max-page-size=16384"

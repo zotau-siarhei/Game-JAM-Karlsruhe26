@@ -59,6 +59,26 @@ pub fn asset_exists(dir: &str, file: &str) -> bool {
     }
 }
 
+/// Телефон или планшет: Android или мобильный браузер (`window.spaceGuardMobile` страницы).
+pub fn is_mobile() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        js_sys::Reflect::get(&js_sys::global(), &"spaceGuardMobile".into())
+            .ok()
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+    }
+    #[cfg(target_os = "android")]
+    {
+        true
+    }
+    // На компьютере облегчение для телефона включает `SPACE_GUARD_MOBILE=1`: так его видно на снимках.
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    {
+        std::env::var("SPACE_GUARD_MOBILE").is_ok_and(|v| v == "1")
+    }
+}
+
 /// Ступень качества, которую предлагает страница браузерной версии (`window.spaceGuardQuality`:
 /// на телефоне — `low`, вручную — `?quality=`). Android — телефон, ему тоже `low`.
 /// Остальной натив подсказок не получает.
@@ -70,9 +90,11 @@ pub fn quality_hint() -> Option<String> {
             .as_string()
             .filter(|name| !name.is_empty())
     }
+    // Для замеров ступень задаёт `adb shell setprop debug.spaceguard.quality medium`
+    // (действует, пока нет файла настроек).
     #[cfg(target_os = "android")]
     {
-        Some("low".to_owned())
+        Some(crate::android::system_property(c"debug.spaceguard.quality").unwrap_or_else(|| "low".to_owned()))
     }
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     {

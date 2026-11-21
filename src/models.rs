@@ -64,6 +64,9 @@ pub struct ModelEntry {
     /// Бюджет треугольников. Ноль — без проверки.
     #[serde(default)]
     pub budget: usize,
+    /// Доля треугольников модели на телефоне (`src/lod.rs`): 0,25 — четверть. Без поля — вся сетка.
+    #[serde(default = "full_detail")]
+    pub mobile_detail: f32,
     /// Главные цвета нижних 70 % высоты модели, sRGB `#rrggbb`, по убыванию площади: для обломков.
     /// Считает `scripts/model_colors.py`.
     #[serde(default)]
@@ -71,6 +74,10 @@ pub struct ModelEntry {
     /// Главные цвета верхних 30 % высоты модели (крыша дома).
     #[serde(default)]
     pub top_colors: Vec<String>,
+}
+
+fn full_detail() -> f32 {
+    1.0
 }
 
 fn unit_scale() -> f32 {
@@ -140,7 +147,7 @@ pub fn parse_list(json: &str) -> Result<Vec<ModelEntry>, serde_json::Error> {
     serde_json::from_str::<ListFile>(json).map(|file| file.models)
 }
 
-/// Загруженная или загружаемая модель: весь файл и его сцена.
+/// Загруженная модель: весь файл и его сцена.
 struct Handles {
     gltf: Handle<Gltf>,
     scene: Handle<WorldAsset>,
@@ -152,7 +159,10 @@ enum ModelState {
     Missing,
     /// Файл есть, модель ещё никто не просил.
     Idle,
-    Loading(Handles),
+    /// Грузится файл. Сцену запрашивать нельзя, пока файл не загрузился: запрос `x.glb`
+    /// и `x.glb#Scene0` в одном кадре грузит файл дважды (bevy#10549), и второй раз затирает
+    /// то, что сделали с первым (упрощение для телефона).
+    Loading(Handle<Gltf>),
     Ready(Handles),
     /// Файл не загрузился: остаётся запасной облик.
     Failed,
@@ -288,23 +298,24 @@ impl ModelBank {
 
     /// Сцена модели, её положение относительно низа объекта и признак «уже загружена».
     /// Первый запрос ставит файл на загрузку. `None` — модели нет, нужен запасной облик.
-    fn request(&mut self, asset_server: &AssetServer, id: &str) -> Option<(Handle<WorldAsset>, Transform, bool)> {
+    /// Сцена есть, только когда модель загружена.
+    fn request(
+        &mut self,
+        asset_server: &AssetServer,
+        id: &str,
+    ) -> Option<(Option<Handle<WorldAsset>>, Transform, bool)> {
         let model = self.models.get_mut(id)?;
         if matches!(model.state, ModelState::Idle) {
-            model.state = ModelState::Loading(Handles {
-                gltf: asset_server
+            model.state = ModelState::Loading(
+                asset_server
                     .load_builder()
                     .with_settings(texture_in_gpu_only)
                     .load(model.path.clone()),
-                scene: asset_server
-                    .load_builder()
-                    .with_settings(texture_in_gpu_only)
-                    .load(GltfAssetLabel::Scene(0).from_asset(model.path.clone())),
-            });
+            );
         }
         match &model.state {
-            ModelState::Loading(handles) => Some((handles.scene.clone(), model.entry.transform(), false)),
-            ModelState::Ready(handles) => Some((handles.scene.clone(), model.entry.transform(), true)),
+            ModelState::Loading(_) => Some((None, model.entry.transform(), false)),
+            ModelState::Ready(handles) => Some((Some(handles.scene.clone()), model.entry.transform(), true)),
             ModelState::Missing | ModelState::Idle | ModelState::Failed => None,
         }
     }
@@ -329,7 +340,8 @@ impl Models<'_> {
     /// Файл glTF модели `id`, если она уже запрошена: из него берутся анимации.
     pub fn gltf(&self, id: &str) -> Option<Handle<Gltf>> {
         match &self.bank.models.get(id)?.state {
-            ModelState::Loading(handles) | ModelState::Ready(handles) => Some(handles.gltf.clone()),
+            ModelState::Loading(gltf) => Some(gltf.clone()),
+            ModelState::Ready(handles) => Some(handles.gltf.clone()),
             _ => None,
         }
     }
@@ -358,7 +370,15 @@ impl Models<'_> {
         let Some((scene, transform, ready)) = model else {
             return;
         };
-        let mut visual = parent.spawn((WorldAssetRoot(scene), ground * transform));
+        // Пока файл грузится, корень облика стоит без сцены: её вешает `swap_fallbacks`.
+        let mut visual = parent.spawn((ground * transform, Visibility::default(), ModelVisual(id.to_owned())));
+        if let Some(scene) = scene {
+            visual.insert(WorldAssetRoot(scene));
+        }
+        // Замер: `debug.spaceguard.off model:tree_pine` прячет модель (`perf::off`).
+        if crate::perf::off(&format!("model:{id}")) {
+            visual.insert(Visibility::Hidden);
+        }
         if !ready {
             visual.insert(PendingModel {
                 id: id.to_owned(),
@@ -367,6 +387,10 @@ impl Models<'_> {
         }
     }
 }
+
+/// Корень облика модели: её идентификатор из списка. По нему сводка замера делит треугольники.
+#[derive(Component, Debug, Clone)]
+pub struct ModelVisual(pub String);
 
 /// Создаёт части запасного облика и запоминает их, чтобы убрать, когда модель загрузится.
 pub struct FallbackSpawner<'a, 'w> {
@@ -397,19 +421,19 @@ fn track_loading(
     mut bank: ResMut<ModelBank>,
     gltfs: Res<Assets<Gltf>>,
     gltf_meshes: Res<Assets<GltfMesh>>,
-    meshes: Res<Assets<Mesh>>,
+    mut meshes: ResMut<Assets<Mesh>>,
 ) {
     if !bank.models.values().any(|model| matches!(model.state, ModelState::Loading(_))) {
         return;
     }
     for model in bank.models.values_mut() {
-        let ModelState::Loading(handles) = &model.state else {
+        let ModelState::Loading(gltf_handle) = &model.state else {
             continue;
         };
         let id = &model.entry.id;
         let failure = match (
-            asset_server.load_state(&handles.gltf),
-            asset_server.recursive_dependency_load_state(&handles.gltf),
+            asset_server.load_state(gltf_handle),
+            asset_server.recursive_dependency_load_state(gltf_handle),
         ) {
             (LoadState::Failed(error), _) | (_, RecursiveDependencyLoadState::Failed(error)) => Some(error),
             _ => None,
@@ -419,9 +443,18 @@ fn track_loading(
             model.state = ModelState::Failed;
             continue;
         }
-        if !asset_server.is_loaded_with_dependencies(&handles.gltf) {
+        if !asset_server.is_loaded_with_dependencies(gltf_handle) {
             continue;
         }
+        let Some(scene) = gltfs.get(gltf_handle).and_then(|gltf| gltf.scenes.first().cloned()) else {
+            warn!("Модели: в «{id}» нет сцены, остаётся запасной облик");
+            model.state = ModelState::Failed;
+            continue;
+        };
+        let handles = Handles {
+            gltf: gltf_handle.clone(),
+            scene,
+        };
         let triangles = gltfs
             .get(&handles.gltf)
             .map_or(0, |gltf| triangle_count(gltf, &gltf_meshes, &meshes));
@@ -429,9 +462,21 @@ fn track_loading(
         if budget > 0 && triangles > budget {
             warn!("Модели: «{id}» тяжелее бюджета: треугольников {triangles}, бюджет {budget}");
         }
-        if let ModelState::Loading(handles) = std::mem::replace(&mut model.state, ModelState::Failed) {
-            model.state = ModelState::Ready(handles);
+        // На телефоне сетка упрощается до сцены: все экземпляры модели берут уже упрощённую.
+        let detail = model.entry.mobile_detail;
+        if crate::platform::is_mobile() && detail < 1.0 && let Some(gltf) = gltfs.get(&handles.gltf) {
+            let (mut before, mut after) = (0, 0);
+            for primitive in gltf.meshes.iter().filter_map(|m| gltf_meshes.get(m)).flat_map(|m| &m.primitives) {
+                if let Some(mesh) = meshes.get_mut(&primitive.mesh)
+                    && let Some((was, now)) = crate::lod::simplify(&mut mesh.into_inner(), detail)
+                {
+                    before += was;
+                    after += now;
+                }
+            }
+            info!("Модели: «{id}» упрощена для телефона: треугольников {before} → {after}");
         }
+        model.state = ModelState::Ready(handles);
     }
 }
 
@@ -461,10 +506,14 @@ fn mesh_triangles(mesh: &Mesh) -> usize {
 fn swap_fallbacks(
     mut commands: Commands,
     bank: Res<ModelBank>,
-    pending: Query<(Entity, &PendingModel, Has<Children>)>,
+    pending: Query<(Entity, &PendingModel, Has<Children>, Has<WorldAssetRoot>)>,
 ) {
-    for (entity, model, spawned) in &pending {
+    for (entity, model, spawned, has_scene) in &pending {
         match bank.models.get(&model.id).map(|model| &model.state) {
+            // Файл загрузился: корню облика — сцена модели.
+            Some(ModelState::Ready(handles)) if !has_scene => {
+                commands.entity(entity).try_insert(WorldAssetRoot(handles.scene.clone()));
+            }
             // Примитивы уходят, когда сцена модели уже стоит на месте: без кадра с пустотой.
             Some(ModelState::Ready(_)) if spawned => {
                 for &part in &model.fallback {

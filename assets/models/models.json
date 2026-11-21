@@ -67,6 +67,7 @@
       "rotation_y": 0.0,
       "offset_y": 3.0,
       "budget": 3000,
+      "mobile_detail": 0.25,
       "colors": ["#3b5d12", "#496730", "#294a05", "#544b2e"],
       "top_colors": ["#375909", "#486730"]
     },
@@ -77,6 +78,7 @@
       "rotation_y": 0.0,
       "offset_y": 3.0,
       "budget": 3000,
+      "mobile_detail": 0.25,
       "colors": ["#40571c", "#4e6540", "#54432d"],
       "top_colors": ["#42571b", "#4b6136"]
     },
@@ -87,6 +89,7 @@
       "rotation_y": 0.0,
       "offset_y": 3.5,
       "budget": 3000,
+      "mobile_detail": 0.25,
       "colors": ["#505e02", "#596625"],
       "top_colors": ["#515f01", "#596723"]
     },
@@ -97,6 +100,7 @@
       "rotation_y": 0.0,
       "offset_y": 3.25,
       "budget": 3000,
+      "mobile_detail": 0.25,
       "colors": ["#2c430c", "#3d5026", "#4e5c47"],
       "top_colors": ["#2c410b"]
     },
@@ -107,6 +111,7 @@
       "rotation_y": 0.0,
       "offset_y": 0.563,
       "budget": 1500,
+      "mobile_detail": 0.5,
       "colors": ["#2a4206", "#364f17"],
       "top_colors": ["#2d4508"]
     },
@@ -117,6 +122,7 @@
       "rotation_y": 0.0,
       "offset_y": 1.424,
       "budget": 1500,
+      "mobile_detail": 0.4,
       "colors": ["#564c3f", "#665f54", "#4b4332"],
       "top_colors": ["#6f6960", "#878178"]
     },
@@ -127,6 +133,7 @@
       "rotation_y": 0.0,
       "offset_y": 1.158,
       "budget": 1500,
+      "mobile_detail": 0.35,
       "colors": ["#4c4c4a", "#797a77", "#636361", "#dee5e6"],
       "top_colors": ["#e5e7e6", "#cadfe7"]
     },

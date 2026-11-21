@@ -46,6 +46,7 @@ mod minimap;
 mod menu;
 mod models;
 mod laser;
+mod lod;
 mod lava;
 mod mortar;
 mod obstacles;
@@ -65,6 +66,7 @@ mod rails;
 mod railway;
 mod records;
 mod recoil;
+mod render_scale;
 mod regen;
 mod repair;
 mod resident_anim;
@@ -130,11 +132,17 @@ fn main() {
     let bench = perf::Bench::from_args(std::env::args());
     // Проверка волн без гибели: `cargo run -- --immortal`; в замере луноход тоже бессмертен.
     let immortal = combat::Immortal(combat::Immortal::from_args(std::env::args()).0 || bench.on);
+    // На Android аргументов запуска нет: развёртку для замера выключает
+    // `adb shell setprop debug.spaceguard.novsync 1`.
+    #[cfg(target_os = "android")]
+    let no_vsync = bench.on || android::system_property(c"debug.spaceguard.novsync").is_some_and(|v| v == "1");
+    #[cfg(not(target_os = "android"))]
+    let no_vsync = bench.on;
     let plugins = DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
             title: "Space Guard".into(),
             // В замере кадры не ждут развёртки экрана: видно, сколько игра может.
-            present_mode: if bench.on { bevy::window::PresentMode::AutoNoVsync } else { bevy::window::PresentMode::default() },
+            present_mode: if no_vsync { bevy::window::PresentMode::AutoNoVsync } else { bevy::window::PresentMode::default() },
             // В браузере игра рисует в холст `#space-guard` и занимает всю страницу.
             canvas: cfg!(target_arch = "wasm32").then(|| "#space-guard".into()),
             fit_canvas_to_parent: true,
@@ -218,6 +226,7 @@ fn game_plugins(app: &mut App) {
             trains::TrainsPlugin,
             tracks::TracksPlugin,
         ))
+        .add_plugins((render_scale::RenderScalePlugin, lod::LodPlugin))
         .add_plugins((
             TerrainPlugin,
             RoverPlugin,

@@ -10,7 +10,8 @@
 //!
 //! `--bench` или `--bench=<секунд>`: забег начинается сам, луноход бессмертен, пауза при
 //! потере фокуса выключена, вертикальная синхронизация тоже, сводка пишется в лог раз
-//! в 5 с, по истечении срока игра закрывается.
+//! в 5 с, по истечении срока игра закрывается. На Android сводку в logcat включает свойство
+//! `debug.spaceguard.perf` (см. [`phone_log`]), части картинки для сравнения выключает [`off`].
 //!
 //! Отметки времени — системы между наборами `GameSet`: они сами вне наборов, иначе не встать
 //! на границу.
@@ -63,6 +64,97 @@ const RENDER_SETS: [(RenderSystems, &str); 10] = [
     (RenderSystems::Cleanup, "Cleanup"),
 ];
 const RENDER_PARTS: usize = RENDER_SETS.len();
+
+/// Выключенные для замера части картинки: `adb shell setprop debug.spaceguard.off shadows,bloom`
+/// на Android или `SPACE_GUARD_OFF=shadows,bloom` на компьютере; читается при запуске.
+/// Части: `shadows`, `bloom`, `hdr`, `grass`, `particles`.
+pub fn off(part: &str) -> bool {
+    static LIST: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    LIST.get_or_init(|| {
+        #[cfg(target_os = "android")]
+        let text = crate::android::system_property(c"debug.spaceguard.off");
+        #[cfg(not(target_os = "android"))]
+        let text = std::env::var("SPACE_GUARD_OFF").ok();
+        let list: Vec<String> = text.unwrap_or_default().split(',').map(|p| p.trim().to_owned()).filter(|p| !p.is_empty()).collect();
+        if !list.is_empty() {
+            info!("Замер: выключено {list:?}");
+        }
+        list
+    })
+    .iter()
+    .any(|p| p == part)
+}
+
+/// Сводка замера в logcat на телефоне, где нет аргументов запуска:
+/// `adb shell setprop debug.spaceguard.perf 1`, читается при запуске. Игра при этом не закрывается.
+fn phone_log() -> bool {
+    #[cfg(target_os = "android")]
+    {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| crate::android::system_property(c"debug.spaceguard.perf").is_some_and(|v| v == "1"))
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        false
+    }
+}
+
+/// Меши, отбрасывающие тень, для сводки: сколько треугольников у каких моделей.
+#[derive(bevy::ecs::system::SystemParam)]
+struct ShadowCasters<'w, 's> {
+    meshes: Query<'w, 's, (&'static Mesh3d, Option<&'static ChildOf>), Without<bevy::light::NotShadowCaster>>,
+    names: Query<'w, 's, &'static Name>,
+    parents: Query<'w, 's, &'static ChildOf>,
+    models: Query<'w, 's, &'static crate::models::ModelVisual>,
+    assets: Res<'w, Assets<Mesh>>,
+}
+
+impl ShadowCasters<'_, '_> {
+    /// Всего треугольников и самые тяжёлые модели: «имя тысяч/экземпляров». Имя — идентификатор
+    /// модели над мешем, иначе имя ближайшего предка.
+    fn summary(&self) -> String {
+        let mut heavy: std::collections::HashMap<String, (usize, usize)> = std::collections::HashMap::new();
+        for (mesh, parent) in &self.meshes {
+            let triangles = self
+                .assets
+                .get(&mesh.0)
+                .and_then(|m| m.try_indices_option().ok().flatten())
+                .map_or(0, |i| i.len() / 3);
+            let mut name = None;
+            let mut fallback = None;
+            let mut owner = parent.map(|p| p.parent());
+            for _ in 0..10 {
+                let Some(entity) = owner else { break };
+                if let Ok(model) = self.models.get(entity) {
+                    name = Some(model.0.clone());
+                    break;
+                }
+                if fallback.is_none() {
+                    fallback = self.names.get(entity).ok().map(|n| n.as_str().to_owned());
+                }
+                owner = self.parents.get(entity).ok().map(|p| p.parent());
+            }
+            let entry = heavy.entry(name.or(fallback).unwrap_or_else(|| "?".to_owned())).or_default();
+            entry.0 += triangles;
+            entry.1 += 1;
+        }
+        let total: usize = heavy.values().map(|v| v.0).sum();
+        let mut heavy: Vec<_> = heavy.into_iter().collect();
+        heavy.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+        let top: Vec<String> = heavy.iter().take(12).map(|(n, (t, c))| format!("{n} {}k/{c}", t / 1000)).collect();
+        format!("{}k: {}", total / 1000, top.join(", "))
+    }
+}
+
+/// Прячет эффекты частиц, если они выключены для замера.
+fn hide_particles(mut effects: Query<&mut Visibility, Added<bevy_hanabi::prelude::ParticleEffect>>) {
+    if !off("particles") {
+        return;
+    }
+    for mut visibility in &mut effects {
+        *visibility = Visibility::Hidden;
+    }
+}
 
 /// Прогон для замера: параметр запуска `--bench` или `--bench=<секунд>`.
 #[derive(Resource, Debug, Clone, Copy, Default, PartialEq)]
@@ -186,7 +278,8 @@ impl Plugin for PerfPlugin {
                 (toggle_overlay, update_overlay, log_bench)
                     .chain()
                     .in_set(GameSet::Presentation),
-            );
+            )
+            .add_systems(PostUpdate, hide_particles);
         add_main_marks(app);
         if let Some(render) = app.get_sub_app_mut(RenderApp) {
             render.insert_resource(shared);
@@ -414,8 +507,11 @@ fn log_bench(
     mut clock: ResMut<BenchClock>,
     mut exit: MessageWriter<AppExit>,
     pipelines: Res<crate::prewarm::PipelineWatch>,
+    scale: Res<crate::render_scale::RenderScale>,
+    meshes: Query<(&ViewVisibility, Has<bevy::light::NotShadowCaster>), With<Mesh3d>>,
+    shadows: ShadowCasters,
 ) {
-    if !bench.on {
+    if !bench.on && !phone_log() {
         return;
     }
     clock.log += time.delta_secs();
@@ -430,13 +526,18 @@ fn log_bench(
         drop(t);
         let lit = lights.iter().filter(|v| v.get()).count();
         let (late, late_ms) = pipelines.late();
+        let visible = meshes.iter().filter(|(v, _)| v.get()).count();
+        let casters = meshes.iter().filter(|(_, no_shadow)| !no_shadow).count();
+        info!("  meshes {} (visible {visible}, shadow casters {casters})", meshes.iter().count());
+        info!("  shadow triangles {}", shadows.summary());
         info!(
-            "Bench {:.0} s: FPS {:.1}, frame {:.2} ms, worst {:.1} ms, quality {:?}; {}; late pipelines {late} ({late_ms:.0} ms)",
+            "Bench {:.0} s: FPS {:.1}, frame {:.2} ms, worst {:.1} ms, quality {:?}, scale {:.2}; {}; late pipelines {late} ({late_ms:.0} ms)",
             clock.total,
             s.fps,
             s.frame,
             s.worst,
             *quality,
+            scale.0,
             counts(entities, enemies.iter().count(), lit)
         );
         let main: Vec<String> = (0..MAIN_PARTS)

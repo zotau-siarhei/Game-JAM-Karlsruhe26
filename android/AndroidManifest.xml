@@ -12,6 +12,8 @@
         android:appCategory="game"
         android:hasCode="false"
         android:extractNativeLibs="false">
+        <!-- Профилирование simpleperf без root (ключ app у simpleperf record). -->
+        <profileable android:shell="true" />
         <!-- enableOnBackInvokedCallback="false": с target SDK 36 «назад» иначе закрывает игру сам,
              а она делает из неё Esc (src/gamepad/android.rs). -->
         <activity
