@@ -197,13 +197,27 @@ impl Plugin for SettingsPlugin {
     }
 }
 
+/// Ступень качества из отладочного переопределения (`SPACE_GUARD_QUALITY`, `debug.spaceguard.quality`,
+/// `?quality=`): действует в игре, а в файл вместо неё пишется ступень игрока.
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct ForcedQuality {
+    pub forced: Quality,
+    pub stored: Quality,
+}
+
 /// Записывает файл при каждом изменении настроек.
-fn save_settings(settings: Res<Settings>, file: Res<SettingsFile>) {
+fn save_settings(settings: Res<Settings>, file: Res<SettingsFile>, forced: Option<Res<ForcedQuality>>) {
     if settings.is_added() {
         return;
     }
+    let mut saved = settings.clone();
+    if let Some(forced) = forced
+        && saved.quality == forced.forced
+    {
+        saved.quality = forced.stored;
+    }
     if let Some(path) = file.0.as_deref()
-        && let Err(error) = settings.save(path)
+        && let Err(error) = saved.save(path)
     {
         warn!("Настройки: не записан {}: {error}", path.display());
     }

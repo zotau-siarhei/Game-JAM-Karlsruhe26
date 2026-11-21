@@ -74,9 +74,17 @@ impl Plugin for QualityPlugin {
         let quality = crate::settings::stored(app).quality;
         // Для замеров ступень сильнее файла настроек: `SPACE_GUARD_QUALITY=high`,
         // `adb shell setprop debug.spaceguard.quality high`, `?quality=high` (`profile::debug_value`).
-        let quality = crate::profile::debug_value("quality")
-            .and_then(|name| serde_json::from_value(serde_json::Value::String(name)).ok())
-            .unwrap_or(quality);
+        let forced: Option<Quality> = crate::profile::debug_value("quality")
+            .and_then(|name| serde_json::from_value(serde_json::Value::String(name.trim().to_owned())).ok());
+        let quality = match forced {
+            Some(forced) => {
+                // Меню берёт ступень из настроек, поэтому она ставится и туда, но в файл не пишется.
+                app.insert_resource(crate::settings::ForcedQuality { forced, stored: quality });
+                app.world_mut().resource_mut::<Settings>().quality = forced;
+                forced
+            }
+            None => quality,
+        };
         app.insert_resource(quality)
             .insert_resource(GlobalAmbientLight {
                 color: Color::srgb(0.7, 0.8, 1.0),
@@ -119,13 +127,8 @@ fn switch_quality(keys: Res<ButtonInput<KeyCode>>, mut quality: ResMut<Quality>)
 }
 
 /// Новая ступень — в настройки: они сохраняют её в файл. Ступень из отладочного переопределения
-/// (`quality`) в файл не попадает: после замера игрок остаётся на своей.
+/// (`quality`) в файл не попадает (`settings::ForcedQuality`): после замера игрок остаётся на своей.
 fn remember_quality(quality: Res<Quality>, mut settings: ResMut<Settings>) {
-    static FORCED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    let forced = *FORCED.get_or_init(|| crate::profile::debug_value("quality").is_some());
-    if forced && quality.is_added() {
-        return;
-    }
     if settings.quality != *quality {
         settings.quality = *quality;
     }
@@ -161,6 +164,11 @@ fn apply_quality(
     }
     let shadows = profile.shadows(q);
     let (size, cascades, far) = (shadows.map, shadows.cascades, shadows.far);
+    info!(
+        "Ступень {}: свечение {bloom}, MSAA {msaa:?}, тени {} (карта {size}, каскадов {cascades} до {far} м)",
+        q.name(),
+        if q == Quality::Low || crate::perf::off("shadows") { "нет" } else { "есть" },
+    );
     commands.insert_resource(DirectionalLightShadowMap { size });
     for (entity, mut sun) in &mut suns {
         sun.shadow_maps_enabled = q != Quality::Low && !crate::perf::off("shadows");
