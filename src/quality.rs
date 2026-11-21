@@ -7,8 +7,9 @@
 //! | Средняя | есть | карта 1024, два каскада до 70 м | нет |
 //! | Высокая | есть | карта 2048, три каскада до 110 м | MSAA 4× |
 //!
-//! На Android средняя ступень — один каскад до 60 м, высокая — два каскада до 70 м и без MSAA
-//! (с ним Adreno 810 теряет устройство), плотность кадра по ступени — `src/render_scale.rs`.
+//! Числа таблицы — для компьютера; у каждой платформы они свои, в профиле (`profile.rs`): на телефонах
+//! средняя ступень — один каскад до 60 м, высокая — два каскада до 70 м, на Android без MSAA
+//! (с ним Adreno 810 теряет устройство). Плотность кадра по ступени — `src/render_scale.rs`.
 //!
 //! Постоянные эффекты лунохода (пыль, дым) берут долю частиц ступени: 40, 70 и 100 %.
 //!
@@ -71,9 +72,9 @@ pub struct QualityPlugin;
 impl Plugin for QualityPlugin {
     fn build(&self, app: &mut App) {
         let quality = crate::settings::stored(app).quality;
-        // Для замеров на телефоне: `adb shell setprop debug.spaceguard.quality medium`.
-        #[cfg(target_os = "android")]
-        let quality = crate::android::system_property(c"debug.spaceguard.quality")
+        // Для замеров ступень сильнее файла настроек: `SPACE_GUARD_QUALITY=high`,
+        // `adb shell setprop debug.spaceguard.quality high`, `?quality=high` (`profile::debug_value`).
+        let quality = crate::profile::debug_value("quality")
             .and_then(|name| serde_json::from_value(serde_json::Value::String(name)).ok())
             .unwrap_or(quality);
         app.insert_resource(quality)
@@ -133,44 +134,27 @@ fn apply_quality(
     mut suns: Query<(Entity, &mut DirectionalLight)>,
 ) {
     let q = *quality;
+    let profile = crate::profile::get();
+    let bloom = profile.render.bloom.at(q) && !crate::perf::off("bloom");
+    // MSAA только на высокой ступени и сколько разрешает профиль (на Android — нет).
+    let msaa = match profile.render.msaa_high {
+        _ if q != Quality::High || crate::perf::off("msaa") => Msaa::Off,
+        2 => Msaa::Sample2,
+        4 => Msaa::Sample4,
+        8 => Msaa::Sample8,
+        _ => Msaa::Off,
+    };
     for camera in &camera {
         let mut c = commands.entity(camera);
-        match q {
-            Quality::Low => {
-                c.remove::<Bloom>().insert(Msaa::Off);
-            }
-            Quality::Medium if crate::perf::off("bloom") => {
-                c.remove::<Bloom>().insert(Msaa::Off);
-            }
-            Quality::Medium => {
-                c.insert((Bloom::NATURAL, Msaa::Off));
-            }
-            // На телефоне без MSAA: с ним Adreno 810 теряет устройство (DeviceLost) в первых кадрах.
-            Quality::High if cfg!(target_os = "android") || crate::perf::off("msaa") => {
-                c.insert((Bloom::NATURAL, Msaa::Off));
-            }
-            Quality::High => {
-                c.insert((Bloom::NATURAL, Msaa::Sample4));
-            }
+        if bloom {
+            c.insert(Bloom::NATURAL);
+        } else {
+            c.remove::<Bloom>();
         }
+        c.insert(msaa);
     }
-    let (size, cascades, far) = match q {
-        Quality::Low => (512, 1, 40.0),
-        // Тени — самая дорогая часть кадра на телефоне: каждый каскад заново рисует все меши,
-        // отбрасывающие тень. Один каскад до края кадра вдвое дешевле двух.
-        Quality::Medium if cfg!(target_os = "android") => (1024, 1, 60.0),
-        Quality::Medium => (1024, 2, 70.0),
-        Quality::High if cfg!(target_os = "android") => (2048, 2, 70.0),
-        Quality::High => (2048, 3, 110.0),
-    };
-    // Для замеров на телефоне: `adb shell setprop debug.spaceguard.shadows 1,60` — каскадов и дальность.
-    #[cfg(target_os = "android")]
-    let (cascades, far) = crate::android::system_property(c"debug.spaceguard.shadows")
-        .and_then(|text| {
-            let (count, distance) = text.split_once(',')?;
-            Some((count.trim().parse().ok()?, distance.trim().parse().ok()?))
-        })
-        .unwrap_or((cascades, far));
+    let shadows = profile.shadows(q);
+    let (size, cascades, far) = (shadows.map, shadows.cascades, shadows.far);
     commands.insert_resource(DirectionalLightShadowMap { size });
     for (entity, mut sun) in &mut suns {
         sun.shadow_maps_enabled = q != Quality::Low && !crate::perf::off("shadows");

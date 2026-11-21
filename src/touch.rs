@@ -92,12 +92,12 @@ impl Plugin for TouchPlugin {
             .init_resource::<TouchSwipe>()
             .init_resource::<LastTouch>()
             .add_systems(Startup, spawn_overlay)
-            // С `--touch` и на Android раскладка касаний видна сразу, до первого нажатия, а вступление
-            // и обучение не говорят о клавиатуре.
+            // С `--touch` и на телефонах (`input.touch_default` профиля: Android, iPhone, iPad) раскладка
+            // касаний видна сразу, до первого нажатия, а вступление и обучение не говорят о клавиатуре.
             .add_systems(
                 Startup,
                 (|mut device: ResMut<InputDevice>| *device = InputDevice::Touch)
-                    .run_if(|| mouse_touch_enabled() || cfg!(target_os = "android")),
+                    .run_if(|| mouse_touch_enabled() || crate::profile::get().input.touch_default),
             )
             .add_systems(
                 PreUpdate,

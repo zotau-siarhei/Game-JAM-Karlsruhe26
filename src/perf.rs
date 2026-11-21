@@ -66,16 +66,15 @@ const RENDER_SETS: [(RenderSystems, &str); 10] = [
 const RENDER_PARTS: usize = RENDER_SETS.len();
 
 /// Выключенные для замера части картинки: `adb shell setprop debug.spaceguard.off shadows,bloom`
-/// на Android или `SPACE_GUARD_OFF=shadows,bloom` на компьютере; читается при запуске.
+/// на Android, `SPACE_GUARD_OFF=shadows,bloom` на компьютере и iOS, `?off=shadows` в браузере;
+/// читается при запуске.
 /// Части: `shadows`, `bloom`, `hdr`, `grass`, `particles`, `lights`, `proxies`, `msaa`, `model:<id>`.
 /// Звёздочка в конце — начало имени: `model:tree*` — все деревья, `model:*` — все модели.
 pub fn off(part: &str) -> bool {
     static LIST: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
     LIST.get_or_init(|| {
-        #[cfg(target_os = "android")]
-        let text = crate::android::system_property(c"debug.spaceguard.off");
-        #[cfg(not(target_os = "android"))]
-        let text = std::env::var("SPACE_GUARD_OFF").ok();
+        // `SPACE_GUARD_OFF`, `debug.spaceguard.off` на Android, `?off=` в браузере (`profile::debug_value`).
+        let text = crate::profile::debug_value("off");
         let list: Vec<String> = text.unwrap_or_default().split(',').map(|p| p.trim().to_owned()).filter(|p| !p.is_empty()).collect();
         if !list.is_empty() {
             info!("Замер: выключено {list:?}");
@@ -86,18 +85,12 @@ pub fn off(part: &str) -> bool {
     .any(|p| p.strip_suffix('*').map_or(p == part, |prefix| part.starts_with(prefix)))
 }
 
-/// Сводка замера в logcat на телефоне, где нет аргументов запуска:
-/// `adb shell setprop debug.spaceguard.perf 1`, читается при запуске. Игра при этом не закрывается.
+/// Сводка замера в лог на телефоне, где нет аргументов запуска: `adb shell setprop
+/// debug.spaceguard.perf 1` на Android, `SPACE_GUARD_PERF=1` в окружении запуска на iOS
+/// (`scripts/build-ios.sh --run --env SPACE_GUARD_PERF=1`); читается при запуске. Игра не закрывается.
 fn phone_log() -> bool {
-    #[cfg(target_os = "android")]
-    {
-        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *ON.get_or_init(|| crate::android::system_property(c"debug.spaceguard.perf").is_some_and(|v| v == "1"))
-    }
-    #[cfg(not(target_os = "android"))]
-    {
-        false
-    }
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| crate::profile::debug_value("perf").is_some_and(|v| v == "1"))
 }
 
 /// Меши, отбрасывающие тень, для сводки: сколько треугольников у каких моделей.
@@ -526,7 +519,7 @@ fn update_overlay(
     drop(t);
     let lit = lights.iter().filter(|v| v.get()).count();
     let line = format!(
-        "FPS {:.0}  frame {:.1} ms (worst {:.1}), quality {:?}\n\
+        "FPS {:.0}  frame {:.1} ms (worst {:.1}), quality {:?}, profile {}\n\
          main thread {:.1} ms: {}\n\
          render thread {:.1} ms: {}\n\
          {}",
@@ -534,6 +527,7 @@ fn update_overlay(
         s.frame,
         s.worst,
         *quality,
+        crate::profile::get().describe(),
         s.main_total,
         top(&s.main, main_label, TOP),
         s.render_total,
@@ -582,12 +576,13 @@ fn log_bench(
         info!("  meshes {} (visible {visible}, shadow casters {casters})", meshes.iter().count());
         info!("  shadow triangles {}", shadows.summary());
         info!(
-            "Bench {:.0} s: FPS {:.1}, frame {:.2} ms, worst {:.1} ms, quality {:?}, scale {:.2}; {}; late pipelines {late} ({late_ms:.0} ms)",
+            "Bench {:.0} s: FPS {:.1}, frame {:.2} ms, worst {:.1} ms, quality {:?}, profile {}, scale {:.2}; {}; late pipelines {late} ({late_ms:.0} ms)",
             clock.total,
             s.fps,
             s.frame,
             s.worst,
             *quality,
+            crate::profile::get().describe(),
             scale.0,
             counts(entities, enemies.iter().count(), lit)
         );

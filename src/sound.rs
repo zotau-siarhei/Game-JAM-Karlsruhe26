@@ -119,6 +119,12 @@ impl Plugin for SoundPlugin {
             .add_systems(Startup, load_sounds)
             .add_systems(
                 Update,
+                pause_audio_in_background
+                    .run_if(|| crate::profile::get().audio.pause_in_background)
+                    .in_set(crate::frame::GameSet::Presentation),
+            )
+            .add_systems(
+                Update,
                 forget_world_sounds.in_set(crate::frame::GameSet::Reset),
             )
             .add_systems(
@@ -212,6 +218,30 @@ fn attach_ears(
 /// Громкости левого и правого каналов для звука, смещённого от слушателя на долю `side`:
 /// −1 — точно слева, 0 — прямо, 1 — точно справа. Повторяет расчёт звуковой библиотеки
 /// при наших настройках ушей и нужна тестам.
+
+/// Android и iOS не глушат приложение в фоне: уходя с экрана, игра ставит звук на паузу сама
+/// (`audio.pause_in_background` профиля платформы). Сообщения `AppLifecycle` шлёт winit.
+/// Звуки мира на паузе игры снова замрут сами (`sound::pause_world_sounds`).
+fn pause_audio_in_background(
+    mut lifecycle: MessageReader<bevy::window::AppLifecycle>,
+    sinks: Query<&AudioSink>,
+    spatial_sinks: Query<&SpatialAudioSink>,
+) {
+    for event in lifecycle.read() {
+        match event {
+            bevy::window::AppLifecycle::WillSuspend => {
+                sinks.iter().for_each(|sink| sink.pause());
+                spatial_sinks.iter().for_each(|sink| sink.pause());
+            }
+            bevy::window::AppLifecycle::WillResume => {
+                sinks.iter().for_each(|sink| sink.play());
+                spatial_sinks.iter().for_each(|sink| sink.play());
+            }
+            _ => {}
+        }
+    }
+}
+
 #[cfg(test)]
 fn channel_gains(side: f32) -> (f32, f32) {
     // Библиотека считает (расстояние до своего уха − до другого) / расстояние между ушами.

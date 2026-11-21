@@ -367,9 +367,9 @@ fn log_connections(mut events: MessageReader<GamepadConnectionEvent>) {
 }
 
 /// С геймпадом курсор мыши не виден: он только мешал бы.
-/// На Android курсора нет: смена его настроек только пишет в лог ошибку winit.
+/// На телефоне курсора нет (`input.cursor` профиля): смена его настроек только пишет в лог ошибку winit.
 fn show_cursor(device: Res<InputDevice>, mut cursor: Single<&mut CursorOptions, With<PrimaryWindow>>) {
-    if device.is_changed() && !cfg!(target_os = "android") {
+    if device.is_changed() && crate::profile::get().input.cursor {
         cursor.visible = *device == InputDevice::KeyboardMouse;
     }
 }

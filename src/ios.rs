@@ -28,7 +28,7 @@ pub struct IosPlugin;
 
 impl Plugin for IosPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(PreUpdate, read_view);
+        app.add_systems(PreUpdate, (read_view, watch_thermal));
     }
 }
 
@@ -48,6 +48,43 @@ pub fn data_dir() -> Option<PathBuf> {
             .join("Library")
             .join("Application Support"),
     )
+}
+
+/// iPad, а не iPhone: `UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad`.
+/// Спрашивать из главного потока: профиль платформы собирается в начале `main`.
+pub fn is_tablet() -> bool {
+    /// `UIUserInterfaceIdiomPad`.
+    const PAD: isize = 1;
+    // SAFETY: `UIDevice.currentDevice` есть всегда; вызов из главного потока до запуска цикла событий.
+    let idiom: isize = unsafe {
+        let device: *mut AnyObject = msg_send![objc2::class!(UIDevice), currentDevice];
+        msg_send![&*device, userInterfaceIdiom]
+    };
+    idiom == PAD
+}
+
+/// Слой нагрева профиля: раз в 2 с спрашивает `NSProcessInfo` о нагреве (`thermalState`) и режиме
+/// энергосбережения. При нагреве «serious» и выше или в энергосбережении плотность кадра на шаг ниже
+/// (`profile::set_throttled`), назад — когда остыл. iPhone 15 Pro Max в долгой нагрузке держит
+/// 60–76 % пиковой мощности видеокарты: лучше заранее рисовать меньше, чем терять кадры.
+fn watch_thermal(time: Res<Time<Real>>, mut next: Local<f32>) {
+    /// `NSProcessInfoThermalStateSerious`.
+    const SERIOUS: isize = 2;
+    let now = time.elapsed_secs();
+    if now < *next {
+        return;
+    }
+    *next = now + 2.0;
+    // SAFETY: `NSProcessInfo.processInfo` есть всегда, оба свойства только читаются.
+    let (thermal, low_power): (isize, bool) = unsafe {
+        let info: *mut AnyObject = msg_send![objc2::class!(NSProcessInfo), processInfo];
+        (msg_send![&*info, thermalState], msg_send![&*info, isLowPowerModeEnabled])
+    };
+    let throttle = thermal >= SERIOUS || low_power;
+    if throttle != crate::profile::throttled() {
+        info!("iOS: нагрев {thermal}, энергосбережение {low_power} → кадр {}", if throttle { "реже" } else { "как в профиле" });
+        crate::profile::set_throttled(throttle);
+    }
 }
 
 /// `UIEdgeInsets` из UIKit.

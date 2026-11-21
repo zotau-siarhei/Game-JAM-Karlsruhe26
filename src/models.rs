@@ -470,22 +470,13 @@ fn track_loading(
             warn!("Модели: «{id}» тяжелее бюджета: треугольников {triangles}, бюджет {budget}");
         }
         // На телефоне сетка упрощается до сцены: все экземпляры модели берут уже упрощённую.
-        // Для замеров на телефоне: `adb shell setprop debug.spaceguard.detail 0.4` умножает долю.
-        #[cfg(target_os = "android")]
-        let detail = model.entry.mobile_detail
-            * crate::android::system_property(c"debug.spaceguard.detail")
-                .and_then(|text| text.trim().parse::<f32>().ok())
-                .unwrap_or(1.0);
-        // На компьютере то же — `SPACE_GUARD_DETAIL=1.6` (вместе с `SPACE_GUARD_MOBILE=1`).
-        #[cfg(not(target_os = "android"))]
-        let detail = model.entry.mobile_detail
-            * std::env::var("SPACE_GUARD_DETAIL")
-                .ok()
-                .and_then(|text| text.trim().parse::<f32>().ok())
-                .unwrap_or(1.0);
+        // Доля — `mobile_detail` модели, умноженная на `models.detail` профиля платформы
+        // (для замера — `detail 0.4`, см. `profile.rs`).
+        let lod = &crate::profile::get().models;
+        let detail = model.entry.mobile_detail * lod.detail;
         // Силуэт для тени строится из полной сетки, до её упрощения.
         let shadow = model.entry.mobile_shadow;
-        if crate::platform::is_mobile()
+        if lod.shadow_proxies
             && shadow > 0.0
             && !crate::perf::off("proxies")
             && let Some(gltf) = gltfs.get(&handles.gltf)
@@ -503,7 +494,7 @@ fn track_loading(
             }
             info!("Модели: «{id}» отбрасывает тень силуэтом: треугольников {before} → {after}");
         }
-        if crate::platform::is_mobile() && detail < 1.0 && let Some(gltf) = gltfs.get(&handles.gltf) {
+        if lod.simplify && detail < 1.0 && let Some(gltf) = gltfs.get(&handles.gltf) {
             let (mut before, mut after) = (0, 0);
             for primitive in gltf.meshes.iter().filter_map(|m| gltf_meshes.get(m)).flat_map(|m| &m.primitives) {
                 if let Some(mesh) = meshes.get_mut(&primitive.mesh)

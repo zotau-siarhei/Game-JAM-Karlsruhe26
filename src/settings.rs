@@ -135,12 +135,12 @@ impl Settings {
     }
 
     /// Читает настройки из файла. Нет файла — по умолчанию с качеством, которое предлагает
-    /// страница браузера; испорченный файл — по умолчанию.
+    /// страница браузера, иначе — профиль платформы; испорченный файл — по умолчанию.
     pub fn load(path: Option<&Path>) -> Self {
         let Some(json) = path.and_then(|path| std::fs::read_to_string(path).ok()) else {
             let quality = crate::platform::quality_hint()
                 .and_then(|name| serde_json::from_value(serde_json::Value::String(name)).ok())
-                .unwrap_or_default();
+                .unwrap_or(crate::profile::get().default_quality);
             return Self { quality, ..default() };
         };
         Self::parse(&json).unwrap_or_else(|error| {

@@ -1,11 +1,11 @@
-//! Облегчение моделей для телефона (`platform::is_mobile`): мобильной видеокарте не по силам
+//! Облегчение моделей для телефона (профиль платформы, раздел `models`): мобильной видеокарте не по силам
 //! тысячи деревьев по 2,5 тысячи треугольников и текстуры 2048 без mip-уровней.
 //!
 //! - Сетки моделей с полем `mobile_detail` в `models.json` упрощает meshoptimizer: схлопывает
 //!   рёбра, следя за ошибкой формы, текстурных координат и нормалей; через швы текстуры —
 //!   тоже (`Permissive`), иначе сетка Meshy, где у каждой точки три-четыре копии вершины, почти
 //!   не упрощается. Вершины остаются прежними, меняется только список треугольников.
-//! - Текстуры моделей уменьшаются до [`MOBILE_TEXTURE`] и получают mip-уровни: без них каждый
+//! - Текстуры моделей уменьшаются до `models.texture_max` профиля и получают mip-уровни: без них каждый
 //!   пиксель далёкой модели читает случайное место большой текстуры, кэш видеокарты не работает.
 //!   Уровни усредняются в линейном цвете.
 //!
@@ -25,14 +25,12 @@ use bevy::render::render_resource::{TextureDimension, TextureFormat};
 /// Слой отрисовки силуэтов для тени: его видит солнце (`main.rs`), но не камера.
 pub const SHADOW_LAYER: usize = 1;
 
-/// Наибольшая сторона текстуры модели на телефоне.
-const MOBILE_TEXTURE: u32 = 1024;
 
 pub struct LodPlugin;
 
 impl Plugin for LodPlugin {
     fn build(&self, app: &mut App) {
-        if crate::platform::is_mobile() {
+        if crate::profile::get().models.texture_max.is_some() {
             app.add_systems(PostUpdate, shrink_model_textures.after(AssetEventSystems));
         }
     }
@@ -45,6 +43,9 @@ fn shrink_model_textures(
     mut images: ResMut<Assets<Image>>,
     asset_server: Res<AssetServer>,
 ) {
+    let Some(max_side) = crate::profile::get().models.texture_max else {
+        return;
+    };
     for event in events.read() {
         let AssetEvent::Added { id } = event else {
             continue;
@@ -57,7 +58,7 @@ fn shrink_model_textures(
         }
         if let Some(mut image) = images.get_mut(*id) {
             let before = image.texture_descriptor.size;
-            if shrink_texture(&mut image, MOBILE_TEXTURE) {
+            if shrink_texture(&mut image, max_side) {
                 let after = &image.texture_descriptor;
                 info!(
                     "Текстура модели для телефона: {}×{} → {}×{}, уровней {}",

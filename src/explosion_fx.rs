@@ -44,8 +44,6 @@ const LIGHT_FX_LIFETIME: f32 = 1.6;
 const MAX_FULL_FX: usize = 8;
 /// Сколько эффектов любого вида может жить одновременно; сверх него — только огненный шар.
 const MAX_FX: usize = 24;
-/// Сколько вспышек света может гореть одновременно.
-const MAX_FLASHES: usize = 6;
 /// Взрыв слабее этого получает упрощённый эффект: гибель врага (0,25), ракета (0,45),
 /// вражеская мортира (0,35), капсула (0,5).
 const LIGHT_POWER: f32 = 0.8;
@@ -655,8 +653,9 @@ fn spawn_explosions(
     let mut alive = roots.iter().count();
     let mut full_alive = roots.iter().filter(|fx| fx.full).count();
     let mut flashes = flashes.iter().count();
-    // На телефоне вспышек вдвое меньше: точечный свет — расчёт для каждого пикселя рядом.
-    let max_flashes = if crate::platform::is_mobile() { MAX_FLASHES / 2 } else { MAX_FLASHES };
+    // Сколько вспышек света может гореть одновременно — из профиля платформы: на телефоне меньше,
+    // точечный свет — расчёт для каждого пикселя рядом.
+    let max_flashes = crate::profile::get().lights.flashes;
     for (index, e) in explosions.read().enumerate() {
         let seed = explosion_seed(e.position, time.elapsed_secs() + index as f32);
         let mut rng = Rng::new(seed);

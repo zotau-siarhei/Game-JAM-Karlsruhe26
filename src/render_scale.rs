@@ -8,7 +8,9 @@
 //! Растягивает кадр на экран сама система: на Android цепочка кадров Vulkan меньше окна
 //! масштабируется компоновщиком бесплатно.
 //!
-//! Плотность кадра — пикселей на точку экрана (dp), по ступени качества; на компьютере масштаба нет.
+//! Плотность кадра — пикселей на точку экрана (dp), по ступени качества, из профиля платформы
+//! (`profile.rs`): на телефонах 1,25/1,5/2, на компьютере и в браузере масштаба нет (в браузере
+//! холст уменьшает страница). На iOS растягивает слой `CAMetalLayer`, тоже без затрат.
 
 use bevy::camera::NormalizedRenderTarget;
 use bevy::platform::collections::HashMap;
@@ -34,39 +36,13 @@ impl Default for RenderScale {
     }
 }
 
-/// Сколько пикселей кадра на точку экрана на этой ступени; `None` — экран как есть.
+/// Сколько пикселей кадра на точку экрана на этой ступени; `None` — экран как есть. Из профиля
+/// платформы (`render.density`), для замера — `density` (`0` — экран как есть) или
+/// `render.density`, см. `profile.rs`.
 fn density(quality: Quality) -> Option<f32> {
-    if !cfg!(target_os = "android") {
-        return None;
-    }
-    if let Some(density) = density_override() {
-        return (density > 0.0).then_some(density);
-    }
-    Some(match quality {
-        Quality::Low => 1.25,
-        Quality::Medium => 1.5,
-        Quality::High => 2.0,
-    })
-}
-
-/// Плотность из свойства Android `debug.spaceguard.density` для замеров без пересборки:
-/// `adb shell setprop debug.spaceguard.density 0` — полный экран, `2` — два пикселя на точку.
-/// Читается при запуске игры.
-fn density_override() -> Option<f32> {
-    #[cfg(target_os = "android")]
-    {
-        use std::sync::OnceLock;
-        static VALUE: OnceLock<Option<f32>> = OnceLock::new();
-        *VALUE.get_or_init(|| {
-            let text = crate::android::system_property(c"debug.spaceguard.density")?;
-            info!("Плотность кадра из debug.spaceguard.density: {text}");
-            text.trim().parse().ok()
-        })
-    }
-    #[cfg(not(target_os = "android"))]
-    {
-        None
-    }
+    let density = crate::profile::get().density(quality)?;
+    // Горячее устройство или энергосбережение (`profile::throttled`) — кадр реже на шаг.
+    Some(if crate::profile::throttled() { density * crate::profile::THROTTLE_DENSITY } else { density })
 }
 
 pub struct RenderScalePlugin;

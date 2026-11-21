@@ -107,10 +107,11 @@ enum Item {
     Back,
 }
 
-/// Пункты главного меню. «Выхода» в браузере нет: закрыть вкладку может только сама страница.
+/// Пункты главного меню. «Выход» — по профилю платформы (`menu.quit`): в браузере закрыть вкладку
+/// может только сама страница, а на iPhone и iPad приложения не закрывают сами (правила Apple).
 fn main_items() -> Vec<Item> {
     let mut items = vec![Item::Play, Item::OpenDifficulty, Item::OpenSettings, Item::OpenRecords, Item::OpenAuthors];
-    if !cfg!(target_arch = "wasm32") {
+    if crate::profile::get().menu.quit {
         items.push(Item::Quit);
     }
     items

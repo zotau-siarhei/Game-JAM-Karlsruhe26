@@ -571,15 +571,10 @@ fn prewarm_fire(
     *warm = Some((entity, now));
 }
 
-/// Пул света: столько источников, сколько разрешает ступень качества.
+/// Пул света: столько источников, сколько разрешают ступень качества и профиль платформы
+/// (`lights.fire`): на телефоне меньше, каждый источник добавляет расчёт света каждому пикселю рядом.
 fn lights_for(quality: Quality) -> usize {
-    let lights = match quality {
-        Quality::Low => 4,
-        Quality::Medium => 6,
-        Quality::High => 8,
-    };
-    // На телефоне вдвое меньше: каждый источник добавляет расчёт света каждому пикселю рядом с ним.
-    if crate::platform::is_mobile() { lights / 2 } else { lights }
+    crate::profile::get().lights.fire.at(quality)
 }
 
 /// Источники света пула: создаются один раз и переходят от огня к огню.

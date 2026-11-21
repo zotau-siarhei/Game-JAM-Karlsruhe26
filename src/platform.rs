@@ -60,29 +60,19 @@ pub fn asset_exists(dir: &str, file: &str) -> bool {
     }
 }
 
-/// Телефон или планшет: Android, iOS или мобильный браузер (`window.spaceGuardMobile` страницы).
+/// Браузер на телефоне или планшете (`window.spaceGuardMobile` страницы): по нему выбирается
+/// профиль `web-mobile`. Ограничения по железу берутся из профиля платформы (`profile.rs`).
+#[cfg(target_arch = "wasm32")]
 pub fn is_mobile() -> bool {
-    #[cfg(target_arch = "wasm32")]
-    {
-        js_sys::Reflect::get(&js_sys::global(), &"spaceGuardMobile".into())
-            .ok()
-            .and_then(|value| value.as_bool())
-            .unwrap_or(false)
-    }
-    #[cfg(any(target_os = "android", target_os = "ios"))]
-    {
-        true
-    }
-    // На компьютере облегчение для телефона включает `SPACE_GUARD_MOBILE=1`: так его видно на снимках.
-    #[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
-    {
-        std::env::var("SPACE_GUARD_MOBILE").is_ok_and(|v| v == "1")
-    }
+    js_sys::Reflect::get(&js_sys::global(), &"spaceGuardMobile".into())
+        .ok()
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
 }
 
 /// Ступень качества, которую предлагает страница браузерной версии (`window.spaceGuardQuality`:
-/// на телефоне — `low`, вручную — `?quality=`). Android и iOS — телефон, им тоже `low`.
-/// Остальной натив подсказок не получает.
+/// вручную — `?quality=`). Без подсказки ступень по умолчанию — из профиля платформы
+/// (`settings::Settings::load`).
 pub fn quality_hint() -> Option<String> {
     #[cfg(target_arch = "wasm32")]
     {
@@ -91,17 +81,7 @@ pub fn quality_hint() -> Option<String> {
             .as_string()
             .filter(|name| !name.is_empty())
     }
-    // Для замеров ступень задаёт `adb shell setprop debug.spaceguard.quality medium`
-    // (действует, пока нет файла настроек).
-    #[cfg(target_os = "android")]
-    {
-        Some(crate::android::system_property(c"debug.spaceguard.quality").unwrap_or_else(|| "low".to_owned()))
-    }
-    #[cfg(target_os = "ios")]
-    {
-        Some("low".to_owned())
-    }
-    #[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
+    #[cfg(not(target_arch = "wasm32"))]
     {
         None
     }

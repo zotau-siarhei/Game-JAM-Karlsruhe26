@@ -62,6 +62,7 @@ mod fonts;
 mod fragments;
 mod loading;
 mod prewarm;
+mod profile;
 mod puddles;
 mod quality;
 mod rails;
@@ -139,12 +140,12 @@ fn main() {
     let bench = perf::Bench::from_args(args.clone());
     // Проверка волн без гибели: `cargo run -- --immortal`; в замере луноход тоже бессмертен.
     let immortal = combat::Immortal(combat::Immortal::from_args(args).0 || bench.on);
-    // На Android аргументов запуска нет: развёртку для замера выключает
-    // `adb shell setprop debug.spaceguard.novsync 1`.
-    #[cfg(target_os = "android")]
-    let no_vsync = bench.on || android::system_property(c"debug.spaceguard.novsync").is_some_and(|v| v == "1");
-    #[cfg(not(target_os = "android"))]
-    let no_vsync = bench.on;
+    // Профиль платформы (`profile.rs`) — после `debug_launch`: переопределения могут прийти и
+    // переменными окружения, которые он ставит. На iOS класс устройства спрашивается здесь, в
+    // главном потоке.
+    let profile = profile::get();
+    // Развёртку для замера выключает и профиль: `novsync 1` или `render.vsync false`.
+    let no_vsync = bench.on || !profile.render.vsync;
     let plugins = DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
             title: "Space Guard".into(),
@@ -169,43 +170,16 @@ fn main() {
         meta_check: bevy::asset::AssetMetaCheck::Never,
         ..default()
     });
-    // Предобработка мешей только на процессоре, см. `android.rs`. Конвейеры собираются в пуле
-    // асинхронных задач, но кадр их ждёт (`prewarm::compile_pipelines`): фоновая сборка вперемешку
-    // с отрисовкой вешала GPU Adreno 810 (потеря устройства), а сборка по одному шла 15 с.
-    // Свойство `debug.spaceguard.sync 1` возвращает сборку по одному.
+    // Предобработка мешей только на процессоре, см. `android.rs`: обход драйвера Adreno, не профиль.
     #[cfg(target_os = "android")]
-    let synchronous = android::system_property(c"debug.spaceguard.sync").is_some_and(|v| v == "1");
-    // Вычислительный пул — системы игры и рендера, запись команд кадра. Bevy отдал бы ему только
-    // ядра, оставшиеся от других пулов (из восьми — два), и рендер ждал бы игру; число задано
-    // прямо, для замера — свойство `debug.spaceguard.compute`.
-    #[cfg(target_os = "android")]
-    let compute = android::system_property(c"debug.spaceguard.compute")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(4);
-    #[cfg(target_os = "android")]
-    let plugins = plugins
-        .set(bevy::pbr::PbrPlugin { use_gpu_instance_buffer_builder: false, ..default() })
-        .set(bevy::render::RenderPlugin { synchronous_pipeline_compilation: synchronous, ..default() })
-        // Половина ядер — на сборку конвейеров при загрузке; в игре этот пул почти не занят.
-        .set(bevy::app::TaskPoolPlugin {
-            task_pool_options: bevy::app::TaskPoolOptions {
-                async_compute: bevy::app::TaskPoolThreadAssignmentPolicy {
-                    min_threads: 2,
-                    max_threads: 6,
-                    percent: 0.5,
-                    on_thread_spawn: None,
-                    on_thread_destroy: None,
-                },
-                compute: bevy::app::TaskPoolThreadAssignmentPolicy {
-                    min_threads: compute,
-                    max_threads: compute,
-                    percent: 1.0,
-                    on_thread_spawn: None,
-                    on_thread_destroy: None,
-                },
-                ..default()
-            },
-        });
+    let plugins = plugins.set(bevy::pbr::PbrPlugin { use_gpu_instance_buffer_builder: false, ..default() });
+    // Сборка конвейеров по одному (`prewarm.sync_compile`, синоним `sync 1`); на Android кадр и так
+    // ждёт начатые конвейеры (`prewarm::compile_pipelines`).
+    let plugins = plugins.set(bevy::render::RenderPlugin {
+        synchronous_pipeline_compilation: profile.prewarm.sync_compile,
+        ..default()
+    });
+    let plugins = plugins.set(task_pools(&profile.threads));
     App::new()
         .insert_resource(ClearColor(SKY_COLOR))
         .insert_resource(RunSeed::from_clock())
@@ -229,6 +203,33 @@ fn main() {
     std::process::exit(0);
 }
 
+/// Пулы потоков по профилю. Вычислительный пул — системы игры и рендера, запись команд кадра:
+/// на телефоне Bevy отдал бы ему только ядра, оставшиеся от других пулов (из восьми — два), и рендер
+/// ждал бы игру, поэтому число задано прямо (`threads.compute`, синоним `compute`). Пул асинхронных
+/// задач собирает конвейеры при загрузке, в игре он почти не занят.
+fn task_pools(threads: &profile::Threads) -> bevy::app::TaskPoolPlugin {
+    let mut options = bevy::app::TaskPoolOptions::default();
+    if let Some([min, max]) = threads.async_compute {
+        options.async_compute = bevy::app::TaskPoolThreadAssignmentPolicy {
+            min_threads: min,
+            max_threads: max,
+            percent: 0.5,
+            on_thread_spawn: None,
+            on_thread_destroy: None,
+        };
+    }
+    if let Some(compute) = threads.compute {
+        options.compute = bevy::app::TaskPoolThreadAssignmentPolicy {
+            min_threads: compute,
+            max_threads: compute,
+            percent: 1.0,
+            on_thread_spawn: None,
+            on_thread_destroy: None,
+        };
+    }
+    bevy::app::TaskPoolPlugin { task_pool_options: options }
+}
+
 /// Частицы `bevy_hanabi`. В симуляторе iOS у GPU нет непрямой отрисовки (`INDIRECT_EXECUTION`),
 /// без неё плагин падает при старте: там частиц нет, эффекты остаются ассетами без рисования.
 fn particles(app: &mut App) {
@@ -245,6 +246,8 @@ fn game_plugins(app: &mut App) {
     app.add_plugins(android::AndroidPlugin);
     #[cfg(target_os = "ios")]
     app.add_plugins(ios::IosPlugin);
+    // Профиль платформы — первым: из него берут значения настройки, качество и меню.
+    app.add_plugins(profile::ProfilePlugin);
     // Настройки игрока и сложность: из них берут начальные значения качество и меню.
     app.add_plugins((settings::SettingsPlugin, difficulty::DifficultyPlugin, menu::MenuPlugin));
     // Порядок кадра и игровой генератор случайных чисел.

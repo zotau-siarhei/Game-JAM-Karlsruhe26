@@ -41,11 +41,13 @@ const EFFECT_DEPTH: f32 = 40.0;
 const QUIET_FRAMES: u32 = 10;
 /// Предел прогрева, с.
 const TIMEOUT: f32 = 30.0;
-/// Столько кадров прогрев ждёт перед началом. На Android конвейеры собираются синхронно (`main.rs`),
-/// и сборка всех занимает один кадр в 15 с: без ожидания всё это время был бы чёрный экран, а не
-/// экран загрузки. Дробить прогрев по кадрам нельзя: кадры между сборками теряли устройство GPU
-/// Adreno 810 (3 запуска из 6).
-const START_FRAMES: u32 = if cfg!(target_os = "android") { 3 } else { 0 };
+/// Столько кадров прогрев ждёт перед началом (`prewarm.start_frames` профиля платформы: на телефонах 3).
+/// На Android кадр ждёт сборки всех конвейеров (`compile_pipelines`), и сборка занимает один кадр
+/// в 15 с: без ожидания всё это время был бы чёрный экран, а не экран загрузки. Дробить прогрев по
+/// кадрам нельзя: кадры между сборками теряли устройство GPU Adreno 810 (3 запуска из 6).
+fn start_frames() -> u32 {
+    crate::profile::get().prewarm.start_frames
+}
 
 /// Плагин прогрева.
 pub struct PrewarmPlugin;
@@ -120,14 +122,15 @@ impl PipelineWatch {
 /// Рендер-мир: компилирует очередь конвейеров сам (позже это сделал бы Bevy в
 /// `RenderSystems::Render`), меряет время и замечает новые конвейеры.
 ///
-/// На Android конвейеры собираются параллельно в пуле асинхронных задач, но кадр ждёт, пока все
+/// Где профиль велит (`prewarm.wait_pipelines`, Android), конвейеры собираются параллельно в пуле
+/// асинхронных задач, но кадр ждёт, пока все
 /// начатые не соберутся: отрисовка вперемешку со сборкой вешала GPU Adreno 810 (DeviceLost),
 /// а по одному в рендер-потоке прогрев шёл 15 с.
 fn compile_pipelines(mut cache: ResMut<PipelineCache>, watch: Res<PipelineWatch>) {
     let start = Instant::now();
     cache.process_queue();
-    #[cfg(target_os = "android")]
-    {
+    // Ждать ли начатые конвейеры — `prewarm.wait_pipelines` профиля (Android).
+    if crate::profile::get().prewarm.wait_pipelines {
         use bevy::render::render_resource::CachedPipelineState;
         let creating = |cache: &PipelineCache| {
             cache.pipelines().any(|p| matches!(p.state, CachedPipelineState::Creating(_)))
@@ -402,7 +405,7 @@ fn warm(
     if prewarm.done {
         return;
     }
-    if *waited < START_FRAMES {
+    if *waited < start_frames() {
         *waited += 1;
         return;
     }

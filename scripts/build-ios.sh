@@ -7,6 +7,13 @@
 #   scripts/build-ios.sh --release      # профиль release: LTO, дольше собирается, быстрее и меньше
 #   scripts/build-ios.sh --install      # поставить: в загруженный симулятор или на подключённый iPhone
 #   scripts/build-ios.sh --run          # поставить и запустить
+#   scripts/build-ios.sh --run --env SPACE_GUARD_PERF=1 --env SPACE_GUARD_RENDER_DENSITY=1
+#                                       # переменные окружения запуска: замеры и переопределения
+#                                       # профиля платформы (`src/profile.rs`); можно несколько
+#   scripts/build-ios.sh --small-textures
+#                                       # текстуры моделей до 1024 при сборке (`scripts/web_textures.py`):
+#                                       # .app меньше, загрузка быстрее; в игре профиль iOS и так
+#                                       # уменьшает их до 1024 после загрузки
 #
 # Один раз поставить: Xcode и rustup target add aarch64-apple-ios aarch64-apple-ios-sim.
 # Для телефона нужны сертификат «Apple Development» в связке ключей и профиль подготовки с этим
@@ -24,8 +31,19 @@ profile_flag=()
 profile_dir=debug
 install=0
 run=0
+small_textures=0
+launch_env=()
+expect_env=0
 for arg in "$@"; do
+    if ((expect_env)); then
+        launch_env+=("$arg")
+        expect_env=0
+        continue
+    fi
     case "$arg" in
+        --env) expect_env=1 ;;
+        --env=*) launch_env+=("${arg#--env=}") ;;
+        --small-textures) small_textures=1 ;;
         --sim) sim=1 ;;
         --release) profile_flag=(--release); profile_dir=release ;;
         --install) install=1 ;;
@@ -98,6 +116,17 @@ plutil -convert binary1 "$plist"
 
 # Ассеты рядом с исполняемым файлом: загрузчик Bevy ищет `assets` в папке программы.
 rsync -a --exclude '.DS_Store' --exclude '*.md' assets "$app/"
+if ((small_textures)); then
+    textures=(scripts/web_textures.py "$app/assets" target/ios/textures 1024)
+    if python3 -c "import PIL" 2>/dev/null; then
+        python3 -I "${textures[@]}"
+    elif command -v uv >/dev/null; then
+        uv run --quiet --no-project --with pillow python -I "${textures[@]}"
+    else
+        echo "нужен Pillow: brew install uv (или pip install pillow)" >&2
+        exit 1
+    fi
+fi
 
 # Подпись. Симулятору хватает подписи без сертификата, телефону нужен профиль подготовки.
 if ((sim)); then
@@ -158,6 +187,11 @@ fi
 echo "готово: $app"
 
 ((install)) || exit 0
+# Окружение запуска: simctl и devicectl передают процессу переменные с приставкой.
+for pair in ${launch_env[@]+"${launch_env[@]}"}; do
+    [[ "$pair" == *=* ]] || { echo "--env: нужно КЛЮЧ=значение, а не «$pair»" >&2; exit 1; }
+    export "SIMCTL_CHILD_$pair" "DEVICECTL_CHILD_$pair"
+done
 if ((sim)); then
     if ! xcrun simctl list devices booted | grep -q Booted; then
         xcrun simctl boot "${IOS_SIM:-iPhone 15 Pro}"

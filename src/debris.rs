@@ -35,9 +35,6 @@ const GROUND_FRICTION: f32 = 0.45;
 /// Медленнее этого обломок на земле засыпает, м/с.
 const SLEEP_SPEED: f32 = 0.8;
 
-/// Обломки меньше этого не отбрасывают тени, м.
-const SHADOW_SIZE: f32 = 0.8;
-
 /// Сколько горящих обломков может быть одновременно.
 const MAX_BURNING: usize = 12;
 
@@ -52,27 +49,20 @@ const MAX_PUFFS: usize = 10;
 /// Сколько живёт облачко, с.
 const PUFF_SECONDS: f32 = 1.4;
 
-/// Сколько уснувших обломков лежит в забеге. Сверх этого убираются самые мелкие в самом дальнем
-/// от фокуса участке.
-const MAX_RESTING: usize = 1500;
-/// На телефоне лежит меньше обломков и тень бросают только крупные: каждый обломок — ещё одна
-/// сетка в проходах кадра и теней, а к концу долгого забега их набираются тысячи.
-const MOBILE_MAX_RESTING: usize = 600;
-const MOBILE_SHADOW_SIZE: f32 = 1.2;
+/// Сколько уснувших обломков лежит в забеге (`debris.max_resting` профиля платформы: 1500 на
+/// компьютере, 600 на телефоне). Сверх этого убираются самые мелкие в самом дальнем от фокуса участке.
+/// На телефоне лежит меньше обломков и тень бросают только крупные (`debris.shadow_min_size`):
+/// каждый обломок — ещё одна сетка в проходах кадра и теней, а к концу долгого забега их тысячи.
+fn max_resting() -> usize {
+    crate::profile::get().debris.max_resting
+}
 
 /// Обломок меньше этого тени не отбрасывает, м.
 fn shadow_size() -> f32 {
-    static SIZE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
-    *SIZE.get_or_init(|| if crate::platform::is_mobile() { MOBILE_SHADOW_SIZE } else { SHADOW_SIZE })
+    crate::profile::get().debris.shadow_min_size
 }
 
-/// Сколько уснувших обломков может лежать в забеге.
-fn max_resting() -> usize {
-    static COUNT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *COUNT.get_or_init(|| if crate::platform::is_mobile() { MOBILE_MAX_RESTING } else { MAX_RESTING })
-}
-
-/// Сколько обломков может лететь одновременно. Сверх этого мелкие (меньше [`SHADOW_SIZE`])
+/// Сколько обломков может лететь одновременно. Сверх этого мелкие (меньше [`shadow_size`])
 /// не появляются: в авиаудар по посёлку мелочь не видна за крупными кусками.
 const MAX_FLYING: usize = 400;
 
@@ -720,18 +710,19 @@ mod tests {
 
     #[test]
     fn лишние_обломки_уходят_мелкие_и_дальние() {
+        let max_resting = max_resting();
         let mut world = World::new();
         let mut store = DebrisStore::default();
         let near = chunk_coord_at(0.0, 0.0);
         let far = chunk_coord_at(500.0, 0.0);
-        store.chunks.insert(near, (0..MAX_RESTING).map(|_| piece(Vec3::ZERO, 0.1)).collect());
+        store.chunks.insert(near, (0..max_resting).map(|_| piece(Vec3::ZERO, 0.1)).collect());
         store.chunks.insert(far, vec![piece(Vec3::new(500.0, 0.0, 0.0), 2.0), piece(Vec3::new(500.0, 0.0, 0.0), 0.5)]);
-        store.count = MAX_RESTING + 2;
+        store.count = max_resting + 2;
         let mut commands = world.commands();
         limit_resting(&mut store, &mut commands, Vec3::ZERO);
-        assert_eq!(store.count, MAX_RESTING);
+        assert_eq!(store.count, max_resting);
         // Ушли оба дальних, ближние мелкие остались все.
-        assert_eq!(store.chunks[&near].len(), MAX_RESTING);
+        assert_eq!(store.chunks[&near].len(), max_resting);
         assert!(store.chunks[&far].is_empty());
 
         store.chunks.get_mut(&far).unwrap().extend([piece(Vec3::new(500.0, 0.0, 0.0), 2.0), piece(Vec3::new(500.0, 0.0, 0.0), 0.5)]);

@@ -4,16 +4,13 @@
 
 use std::borrow::Cow;
 
-use bevy::audio::{AudioSinkPlayback, SpatialAudioSink};
 use bevy::prelude::*;
 use bevy::render::batching::gpu_preprocessing::{GpuPreprocessingMode, GpuPreprocessingSupport};
 use bevy::render::error_handler::{RenderError, RenderErrorHandler, RenderErrorPolicy};
 use bevy::render::renderer::RenderDevice;
 use bevy::render::{Render, RenderApp, RenderStartup, init_gpu_resource};
 use bevy::shader::{Shader, Source};
-use bevy::window::AppLifecycle;
 
-use crate::frame::GameSet;
 
 /// Начало выборки, на которой падает компилятор шейдеров Adreno.
 const COMPARE_CALL: &str = "textureSampleCompareLevel(";
@@ -27,7 +24,6 @@ impl Plugin for AndroidPlugin {
         std::sync::LazyLock::force(&START);
         restart_on_panic();
         app.add_systems(Last, drop_point_shadow_sampling)
-            .add_systems(Update, pause_audio_in_background.in_set(GameSet::Presentation))
             .insert_resource(RenderErrorHandler(restart_on_render_error));
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app.add_systems(
@@ -214,28 +210,6 @@ fn without_point_shadow_sampling(text: &str) -> Option<String> {
     }
     result.push_str(rest);
     changed.then_some(result)
-}
-
-/// Система Android не глушит приложение в фоне: уходя с экрана, игра ставит звук на паузу сама.
-/// Звуки мира на паузе игры снова замрут сами (`sound::pause_world_sounds`).
-fn pause_audio_in_background(
-    mut lifecycle: MessageReader<AppLifecycle>,
-    sinks: Query<&AudioSink>,
-    spatial_sinks: Query<&SpatialAudioSink>,
-) {
-    for event in lifecycle.read() {
-        match event {
-            AppLifecycle::WillSuspend => {
-                sinks.iter().for_each(|sink| sink.pause());
-                spatial_sinks.iter().for_each(|sink| sink.pause());
-            }
-            AppLifecycle::WillResume => {
-                sinks.iter().for_each(|sink| sink.play());
-                spatial_sinks.iter().for_each(|sink| sink.play());
-            }
-            _ => {}
-        }
-    }
 }
 
 /// Аргументы запуска и переменные окружения для проверок на телефоне, где их не передать:
