@@ -182,6 +182,10 @@ cargo test                                  # тесты
   `platform::read_list`. Конвейеры на Android собираются параллельно в пуле асинхронных задач, но кадр ждёт
   их готовности (`prewarm::compile_pipelines`): отрисовка вперемешку со сборкой вешала GPU Adreno 810. Управление — касания (`src/touch.rs`), геймпад или клавиатура; вибрации нет.
   Иконка — ресурсы `android/res`; слои пересобирает `scripts/android-icon.py` из `android/icon/source.png` (нужен Pillow).
+  Пакет для Google Play — `scripts/build-aab.sh` (`--install` ставит его на телефон через bundletool):
+  `target/android/space-guard.aab`, скачивание ~120 МБ. Ключ загрузки — переменные `SPACE_GUARD_UPLOAD_KEYSTORE`,
+  `SPACE_GUARD_UPLOAD_ALIAS`, `SPACE_GUARD_UPLOAD_PASSWORD` (ключ и пароль в репозиторий не класть), без них —
+  отладочный ключ. Текстуры моделей в APK и AAB уменьшаются до 1024 при сборке (`scripts/web_textures.py`).
   Эмулятор (Android Studio, AVD `Medium_Phone_API_36.0`, arm64): `~/Library/Android/sdk/emulator/emulator -avd
   Medium_Phone_API_36.0 -gpu host -feature Vulkan -no-snapshot-save` — без `-gpu host` рисует программно и
   медленно. Сборка `--abi=arm64-v8a`, затем `adb install -r`; касания — `adb shell input tap|swipe|motionevent`,
