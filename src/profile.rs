@@ -284,7 +284,8 @@ pub fn get() -> &'static PlatformProfile {
     })
 }
 
-/// Слой нагрева: устройство горячее или в режиме энергосбережения (на iOS — `ios::watch_thermal`).
+/// Слой нагрева: устройство горячее или в режиме энергосбережения (на iOS — `ios::watch_thermal`,
+/// на Android — `android::watch_thermal` и Game Mode).
 /// Тогда плотность кадра ниже на [`THROTTLE_DENSITY`] (`render_scale.rs`).
 static THROTTLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -295,12 +296,13 @@ pub fn throttled() -> bool {
     THROTTLED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "ios", target_os = "android")), allow(dead_code))]
 pub fn set_throttled(on: bool) {
     THROTTLED.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Нагрев «critical»: кадров не больше [`OVERHEAT_FPS`], пока устройство не остынет (`ios.rs`).
+/// Нагрев «critical»: кадров не больше [`OVERHEAT_FPS`], пока устройство не остынет (`ios.rs`,
+/// `android.rs`).
 static OVERHEATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Предел кадров при критическом нагреве.
@@ -312,7 +314,7 @@ pub fn overheated() -> bool {
     OVERHEATED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "ios", target_os = "android")), allow(dead_code))]
 pub fn set_overheated(on: bool) {
     OVERHEATED.store(on, std::sync::atomic::Ordering::Relaxed);
 }
@@ -328,14 +330,20 @@ fn frame_limit(profile: Option<f32>, overheated: bool) -> Option<f32> {
     }
 }
 
-/// Мало памяти до предела процесса (`ios.rs`): лежащих обломков вдвое меньше (`debris.rs`).
+/// Предел кадров сейчас: из профиля и с учётом нагрева. `None` — без предела.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub fn current_frame_limit() -> Option<f32> {
+    frame_limit(get().render.frame_limit, overheated())
+}
+
+/// Мало памяти до предела процесса (`ios.rs`) или у системы (`android.rs`): лежащих обломков вдвое меньше (`debris.rs`).
 static LOW_MEMORY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub fn low_memory() -> bool {
     LOW_MEMORY.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "ios", target_os = "android")), allow(dead_code))]
 pub fn set_low_memory(on: bool) {
     LOW_MEMORY.store(on, std::sync::atomic::Ordering::Relaxed);
 }
@@ -381,6 +389,79 @@ fn ios_profile(tier: DeviceTier, tablet: bool) -> &'static str {
     }
 }
 
+/// Уровень устройства Android по имени GPU адаптера Vulkan, объёму памяти (`MemTotal`, 0 — неизвестно)
+/// и признаку слабого устройства `ro.config.low_ram`. Номер Adreno не растёт с мощностью (810 слабее
+/// 740), поэтому флагманы узнаются по второй цифре: 730, 740, 750, 830, 840. Неизвестный GPU — средний:
+/// у имён Android-GPU порядка нет, в отличие от семейств Metal.
+#[cfg_attr(not(any(target_os = "android", test)), allow(dead_code))]
+pub fn android_tier(gpu: &str, memory: u64, low_ram: bool) -> DeviceTier {
+    const GIB: u64 = 1 << 30;
+    // Телефон с 4 ГБ сообщает около 3,6 ГиБ, с 6 ГБ — около 5,4, с 8 ГБ — около 7,2.
+    let small = low_ram || (memory > 0 && memory < GIB * 5);
+    let big = memory >= GIB * 13 / 2;
+    // Номер модели после приставки: «Adreno (TM) 642L» → 642, «Mali-G715 MC11» → 715.
+    let model = |prefix: &str| -> Option<u32> {
+        let rest = gpu.find(prefix).map(|at| &gpu[at + prefix.len()..])?;
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        digits.parse().ok()
+    };
+    let weak_gpu = model("Adreno (TM) ").is_some_and(|n| n < 700)
+        // Mali-G31…G78 — Bifrost и ранний Valhall; G310 и новее — трёхзначные. Mali-T — ещё старее.
+        || model("Mali-G").is_some_and(|n| n < 100)
+        || gpu.contains("Mali-T")
+        || gpu.contains("PowerVR");
+    let strong_gpu = model("Adreno (TM) ").is_some_and(|n| (700..900).contains(&n) && n / 10 % 10 >= 3)
+        || gpu.contains("Immortalis")
+        || model("Xclipse ").is_some_and(|n| (900..1000).contains(&n));
+    if small || weak_gpu {
+        DeviceTier::Low
+    } else if big && strong_gpu {
+        DeviceTier::High
+    } else {
+        DeviceTier::Mid
+    }
+}
+
+/// Имя профиля Android по уровню.
+#[cfg_attr(not(any(target_os = "android", test)), allow(dead_code))]
+fn android_profile(tier: DeviceTier) -> &'static str {
+    match tier {
+        DeviceTier::Low => "android-low",
+        DeviceTier::Mid => "android",
+        DeviceTier::High => "android-high",
+    }
+}
+
+/// Нагрев устройства по запасу до троттлинга: слой поверх профиля.
+#[cfg_attr(not(any(target_os = "android", test)), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Heat {
+    Cool,
+    /// Кадр на шаг реже ([`THROTTLE_DENSITY`]).
+    Throttled,
+    /// Не больше [`OVERHEAT_FPS`] кадров.
+    Overheated,
+}
+
+/// Нагрев по запасу до троттлинга Android (`AThermal_getThermalHeadroom`: 0 — холодный, 1,0 —
+/// уровень SEVERE). Рекомендация Google: от 0,95 снижать нагрузку, от 1,0 — сразу. Назад — на 0,1
+/// ниже порога, иначе у порога кадр меняется каждые 10 с.
+#[cfg_attr(not(any(target_os = "android", test)), allow(dead_code))]
+pub fn heat_from_headroom(headroom: f32, was: Heat) -> Heat {
+    let level = |throttled: f32, overheated: f32| {
+        if headroom >= overheated {
+            Heat::Overheated
+        } else if headroom >= throttled {
+            Heat::Throttled
+        } else {
+            Heat::Cool
+        }
+    };
+    let up = level(0.95, 1.0);
+    let down = level(0.85, 0.9);
+    up.max(was.min(down))
+}
+
 /// Разобранный файл профилей.
 fn profiles() -> Map<String, Value> {
     serde_json::from_str(PROFILES).expect("assets/platform/profiles.json: не JSON-объект")
@@ -398,7 +479,7 @@ fn platform_profile() -> &'static str {
     }
     #[cfg(target_os = "android")]
     {
-        "android"
+        android_profile(crate::android::device().tier())
     }
     #[cfg(target_os = "ios")]
     {
@@ -657,7 +738,7 @@ fn url_parameter(key: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    const ALL: [&str; 15] = [
+    const ALL: [&str; 17] = [
         "base",
         "desktop",
         "macos",
@@ -667,6 +748,8 @@ mod tests {
         "web-mobile",
         "mobile",
         "android",
+        "android-low",
+        "android-high",
         "ios-phone",
         "ios-tablet",
         "ios-phone-low",
@@ -829,6 +912,83 @@ mod tests {
             // Не заданное у уровня — от профиля класса.
             assert_eq!((low.menu.quit, high.input.touch_default), (mid.menu.quit, mid.input.touch_default));
         }
+    }
+
+    #[test]
+    fn уровень_устройства_android_по_gpu_и_памяти() {
+        const GB: u64 = 1 << 30;
+        let tier = |gpu: &str| android_tier(gpu, 8 * GB - (700 << 20), false);
+        // Adreno 6xx и ниже — слабые, 720 и 810 — средние, 730/740/750/830 — сильные.
+        assert_eq!(tier("Adreno (TM) 610"), DeviceTier::Low);
+        assert_eq!(tier("Adreno (TM) 642L"), DeviceTier::Low);
+        assert_eq!(tier("Adreno (TM) 720"), DeviceTier::Mid);
+        assert_eq!(tier("Adreno (TM) 810"), DeviceTier::Mid);
+        assert_eq!(tier("Adreno (TM) 740"), DeviceTier::High);
+        assert_eq!(tier("Adreno (TM) 830"), DeviceTier::High);
+        // Mali Bifrost и ранний Valhall — слабые, новые — средние, Immortalis — сильный.
+        assert_eq!(tier("Mali-G57 MC2"), DeviceTier::Low);
+        assert_eq!(tier("Mali-G78 MP14"), DeviceTier::Low);
+        assert_eq!(tier("Mali-G715 MC7"), DeviceTier::Mid);
+        assert_eq!(tier("Immortalis-G720 MC12"), DeviceTier::High);
+        assert_eq!(tier("Samsung Xclipse 940"), DeviceTier::High);
+        assert_eq!(tier("Samsung Xclipse 540"), DeviceTier::Mid);
+        assert_eq!(tier("PowerVR B-Series BXM-8-256"), DeviceTier::Low);
+        // Неизвестный GPU — средний, даже с большой памятью.
+        assert_eq!(tier("Vulkan GPU 2030"), DeviceTier::Mid);
+        assert_eq!(android_tier("Vulkan GPU 2030", 16 * GB, false), DeviceTier::Mid);
+        // Флагман, но мало памяти или система считает его слабым.
+        assert_eq!(android_tier("Adreno (TM) 830", 4 * GB, false), DeviceTier::Low);
+        assert_eq!(android_tier("Adreno (TM) 830", 6 * GB, false), DeviceTier::Mid);
+        assert_eq!(android_tier("Adreno (TM) 830", 12 * GB, true), DeviceTier::Low);
+        // Память неизвестна — решает GPU.
+        assert_eq!(android_tier("Adreno (TM) 810", 0, false), DeviceTier::Mid);
+        assert_eq!(android_profile(DeviceTier::Low), "android-low");
+        assert_eq!(android_profile(DeviceTier::Mid), "android");
+        assert_eq!(android_profile(DeviceTier::High), "android-high");
+    }
+
+    /// Слабый Android легче среднего, средний легче сильного; средний — прежние числа и предел 60.
+    #[test]
+    fn уровни_android_упорядочены() {
+        let [low, mid, high] = ["android-low", "android", "android-high"].map(|n| build(n, &[]));
+        for q in [Quality::Low, Quality::Medium, Quality::High] {
+            assert!(low.density(q) <= mid.density(q) && mid.density(q) <= high.density(q), "{q:?}");
+            let shadow = |p: &PlatformProfile| (p.shadows(q).map, p.shadows(q).cascades);
+            assert!(shadow(&low) <= shadow(&mid) && shadow(&mid) <= shadow(&high), "{q:?}");
+            assert!(low.lights.fire.at(q) <= mid.lights.fire.at(q), "{q:?}");
+            assert!(mid.lights.fire.at(q) <= high.lights.fire.at(q), "{q:?}");
+            assert!(low.render.bloom.at(q) <= mid.render.bloom.at(q), "{q:?}");
+        }
+        assert!(low.debris.max_resting < mid.debris.max_resting);
+        assert!(mid.debris.max_resting < high.debris.max_resting);
+        assert!(low.lights.flashes <= mid.lights.flashes && mid.lights.flashes <= high.lights.flashes);
+        assert!(low.models.texture_max < mid.models.texture_max);
+        assert_eq!(mid.models.texture_max, high.models.texture_max);
+        assert_eq!((low.render.msaa_high, mid.render.msaa_high, high.render.msaa_high), (1, 1, 1));
+        assert_eq!(
+            (low.render.frame_limit, mid.render.frame_limit, high.render.frame_limit),
+            (Some(30.0), Some(60.0), Some(60.0))
+        );
+        // Не заданное у уровня — от android: потоки, ожидание конвейеров, касание.
+        for p in [&low, &high] {
+            assert_eq!((p.threads.compute, p.prewarm.wait_pipelines), (mid.threads.compute, true));
+            assert!(p.input.touch_default && p.audio.pause_in_background);
+        }
+    }
+
+    #[test]
+    fn нагрев_android_по_запасу_с_гистерезисом() {
+        use Heat::*;
+        assert_eq!(heat_from_headroom(0.5, Cool), Cool);
+        assert_eq!(heat_from_headroom(0.95, Cool), Throttled);
+        assert_eq!(heat_from_headroom(1.0, Cool), Overheated);
+        assert_eq!(heat_from_headroom(1.3, Throttled), Overheated);
+        // Остывание — на 0,1 ниже порога.
+        assert_eq!(heat_from_headroom(0.92, Overheated), Overheated);
+        assert_eq!(heat_from_headroom(0.89, Overheated), Throttled);
+        assert_eq!(heat_from_headroom(0.80, Overheated), Cool);
+        assert_eq!(heat_from_headroom(0.90, Throttled), Throttled);
+        assert_eq!(heat_from_headroom(0.84, Throttled), Cool);
     }
 
     #[test]

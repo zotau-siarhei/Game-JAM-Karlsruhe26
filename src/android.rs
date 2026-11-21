@@ -1,8 +1,10 @@
-//! Особенности нативной сборки под Android: обход ошибок драйвера Adreno и звук в фоне.
+//! Особенности нативной сборки под Android: обход ошибок драйвера Adreno, уровень устройства,
+//! реакция на нагрев, память и Game Mode, частота экрана.
 //!
 //! Сборка и упаковка APK — `scripts/build-android.sh`, крейт библиотеки — `android/Cargo.toml`.
 
 use std::borrow::Cow;
+use std::ffi::c_void;
 
 use bevy::prelude::*;
 use bevy::render::batching::gpu_preprocessing::{GpuPreprocessingMode, GpuPreprocessingSupport};
@@ -23,7 +25,20 @@ impl Plugin for AndroidPlugin {
     fn build(&self, app: &mut App) {
         std::sync::LazyLock::force(&START);
         restart_on_panic();
+        let device = device();
+        info!(
+            "Android: GPU «{}», памяти {:.1} ГБ, low_ram {}, SoC {} → уровень {:?} (опрос {:.0} мс)",
+            device.gpu,
+            device.memory as f64 / (1u64 << 30) as f64,
+            device.low_ram,
+            device.soc,
+            device.tier(),
+            device.probe_ms,
+        );
         app.add_systems(Last, drop_point_shadow_sampling)
+            .init_resource::<Load>()
+            .add_systems(PreUpdate, (watch_thermal, watch_memory, watch_game_mode, apply_load).chain())
+            .add_systems(Last, request_frame_rate)
             .insert_resource(RenderErrorHandler(restart_on_render_error));
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app.add_systems(
@@ -43,6 +58,307 @@ impl Plugin for AndroidPlugin {
             }
         }
     }
+}
+
+/// Что известно об устройстве до запуска Bevy: по этому выбирается профиль (`profile::android_tier`).
+pub struct Device {
+    /// Имя GPU у адаптера Vulkan: «Adreno (TM) 810», «Mali-G715», пусто — не узнали.
+    pub gpu: String,
+    /// `MemTotal` из `/proc/meminfo`, байт; 0 — не прочитали.
+    pub memory: u64,
+    /// Система считает устройство слабым (`ro.config.low_ram`).
+    pub low_ram: bool,
+    /// Производитель и модель SoC (`ro.soc.*`) — только для лога.
+    pub soc: String,
+    /// Сколько заняло определение, мс.
+    pub probe_ms: f32,
+}
+
+impl Device {
+    pub fn tier(&self) -> crate::profile::DeviceTier {
+        crate::profile::android_tier(&self.gpu, self.memory, self.low_ram)
+    }
+}
+
+/// Устройство; определяется один раз, при сборке профиля в начале `main`.
+pub fn device() -> &'static Device {
+    static DEVICE: std::sync::OnceLock<Device> = std::sync::OnceLock::new();
+    DEVICE.get_or_init(|| {
+        let start = bevy::platform::time::Instant::now();
+        let gpu = vulkan_gpu_name().unwrap_or_default();
+        let memory = std::fs::read_to_string("/proc/meminfo")
+            .ok()
+            .and_then(|text| {
+                let line = text.lines().find(|line| line.starts_with("MemTotal:"))?;
+                line.split_whitespace().nth(1)?.parse::<u64>().ok()
+            })
+            .map_or(0, |kib| kib << 10);
+        let low_ram = system_property(c"ro.config.low_ram").is_some_and(|value| value == "true");
+        let soc = [c"ro.soc.manufacturer", c"ro.soc.model"]
+            .into_iter()
+            .filter_map(system_property)
+            .collect::<Vec<_>>()
+            .join(" ");
+        Device { gpu, memory, low_ram, soc, probe_ms: start.elapsed().as_secs_f32() * 1000.0 }
+    })
+}
+
+/// Имя первого не программного GPU у временного экземпляра Vulkan: Bevy своё создаёт позже, а профиль
+/// нужен раньше — по нему настраиваются пулы потоков и окно.
+fn vulkan_gpu_name() -> Option<String> {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::VULKAN,
+        flags: wgpu::InstanceFlags::empty(),
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
+    });
+    let adapters = bevy::tasks::block_on(instance.enumerate_adapters(wgpu::Backends::VULKAN));
+    adapters
+        .iter()
+        .map(wgpu::Adapter::get_info)
+        .find(|info| info.device_type != wgpu::DeviceType::Cpu)
+        .map(|info| info.name)
+}
+
+/// Функции `libandroid.so` новее minSdk 29: ищутся при первом обращении, нет на телефоне — `None`.
+struct Ndk {
+    /// `AThermalManager*` (API 30); 0 — нет.
+    thermal_manager: usize,
+    /// `AThermal_getCurrentThermalStatus` (API 30).
+    thermal_status: Option<unsafe extern "C" fn(*mut c_void) -> i32>,
+    /// `AThermal_getThermalHeadroom` (API 31).
+    thermal_headroom: Option<unsafe extern "C" fn(*mut c_void, i32) -> f32>,
+    /// `ANativeWindow_setFrameRate` (API 30).
+    set_frame_rate: Option<unsafe extern "C" fn(*mut c_void, f32, i8) -> i32>,
+}
+
+
+fn ndk() -> &'static Ndk {
+    static NDK: std::sync::OnceLock<Ndk> = std::sync::OnceLock::new();
+    NDK.get_or_init(|| {
+        unsafe extern "C" {
+            fn dlopen(filename: *const std::ffi::c_char, flag: i32) -> *mut c_void;
+            fn dlsym(handle: *mut c_void, symbol: *const std::ffi::c_char) -> *mut c_void;
+        }
+        /// `RTLD_NOW` в bionic.
+        const RTLD_NOW: i32 = 2;
+        // SAFETY: имя — строка с нулём на конце; библиотека системная и не выгружается.
+        let library = unsafe { dlopen(c"libandroid.so".as_ptr(), RTLD_NOW) };
+        let symbol = |name: &std::ffi::CStr| -> *mut c_void {
+            if library.is_null() {
+                return std::ptr::null_mut();
+            }
+            // SAFETY: библиотека открыта, имя — строка с нулём на конце.
+            unsafe { dlsym(library, name.as_ptr()) }
+        };
+        let acquire = symbol(c"AThermal_acquireManager");
+        // SAFETY: у каждой функции сигнатура из заголовков NDK (`android/thermal.h`,
+        // `android/native_window.h`); указатель не нулевой.
+        unsafe {
+            let thermal_manager = if acquire.is_null() {
+                0
+            } else {
+                std::mem::transmute::<*mut c_void, unsafe extern "C" fn() -> *mut c_void>(acquire)() as usize
+            };
+            let status = symbol(c"AThermal_getCurrentThermalStatus");
+            let headroom = symbol(c"AThermal_getThermalHeadroom");
+            let frame_rate = symbol(c"ANativeWindow_setFrameRate");
+            Ndk {
+                thermal_manager,
+                thermal_status: (!status.is_null()).then(|| std::mem::transmute(status)),
+                thermal_headroom: (!headroom.is_null()).then(|| std::mem::transmute(headroom)),
+                set_frame_rate: (!frame_rate.is_null()).then(|| std::mem::transmute(frame_rate)),
+            }
+        }
+    })
+}
+
+/// Нагрузка, которую игра снимает с телефона сама: нагрев и режим Game Mode «экономия батареи».
+/// Источники объединяются — хватает одного (`apply_load`).
+#[derive(Resource, Default, PartialEq)]
+struct Load {
+    /// По запасу до троттлинга (`watch_thermal`); `None` — ещё не спрашивали.
+    headroom: Option<crate::profile::Heat>,
+    /// По статусу нагрева: у статуса свои ступени, без запаса на остывание.
+    status: Option<crate::profile::Heat>,
+    /// Game Mode «экономия батареи» (`watch_game_mode`).
+    battery: bool,
+}
+
+impl Load {
+    fn heat(&self) -> crate::profile::Heat {
+        use crate::profile::Heat;
+        let battery = if self.battery { Heat::Overheated } else { Heat::Cool };
+        [self.headroom, self.status].into_iter().flatten().fold(battery, Heat::max)
+    }
+}
+
+/// Раз в 10 с, как советует Google, — запас до троттлинга (ADPF Thermal): от 0,95 кадр реже, от 1,0 —
+/// не больше 30 кадров (`profile::heat_from_headroom`). Где запаса нет (Android 11, NaN), — статус
+/// нагрева: MODERATE — кадр реже, SEVERE и выше — 30 кадров. Нет ни того ни другого — профиль как есть.
+fn watch_thermal(time: Res<Time<Real>>, mut next: Local<f32>, mut load: ResMut<Load>) {
+    use crate::profile::Heat;
+    /// `ATHERMAL_STATUS_MODERATE`, `ATHERMAL_STATUS_SEVERE`.
+    const MODERATE: i32 = 2;
+    const SEVERE: i32 = 3;
+    let now = time.elapsed_secs();
+    if now < *next {
+        return;
+    }
+    *next = now + 10.0;
+    let ndk = ndk();
+    if ndk.thermal_manager == 0 {
+        return;
+    }
+    let manager = ndk.thermal_manager as *mut c_void;
+    // SAFETY: менеджер получен у системы и не освобождается; сигнатуры — из `android/thermal.h`.
+    let headroom = ndk.thermal_headroom.map(|f| unsafe { f(manager, 0) }).filter(|h| h.is_finite());
+    let status = ndk.thermal_status.map(|f| unsafe { f(manager) });
+    // Запас на остывание — только у своего источника: иначе нагрев по статусу держался бы,
+    // пока запас стоит в полосе 0,85–1,0.
+    let was = load.headroom.unwrap_or(Heat::Cool);
+    let by_headroom = headroom.map_or(Heat::Cool, |h| crate::profile::heat_from_headroom(h, was));
+    let by_status = match status {
+        Some(s) if s >= SEVERE => Heat::Overheated,
+        Some(s) if s >= MODERATE => Heat::Throttled,
+        _ => Heat::Cool,
+    };
+    if (load.headroom, load.status) != (Some(by_headroom), Some(by_status)) {
+        info!("Android: запас до нагрева {headroom:?} → {by_headroom:?}, статус {status:?} → {by_status:?}");
+        load.headroom = Some(by_headroom);
+        load.status = Some(by_status);
+    }
+}
+
+/// Раз в 10 с — `ActivityManager.getMemoryInfo`: с Android 14 `onLowMemory` не приходит, а
+/// `onTrimMemory` — только при уходе в фон. Система говорит «мало памяти» — обломков вдвое меньше;
+/// назад — когда свободно в полтора раза больше порога системы.
+fn watch_memory(time: Res<Time<Real>>, mut next: Local<f32>, mut logged: Local<bool>) {
+    use jni::objects::JValue;
+    let now = time.elapsed_secs();
+    if now < *next {
+        return;
+    }
+    *next = now + 10.0;
+    let Some((low, available, threshold)) = with_activity(|env, activity| {
+        let name = env.new_string("activity")?;
+        let manager = env
+            .call_method(activity, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;", &[JValue::Object(&name)])?
+            .l()?;
+        let info = env.new_object("android/app/ActivityManager$MemoryInfo", "()V", &[])?;
+        env.call_method(&manager, "getMemoryInfo", "(Landroid/app/ActivityManager$MemoryInfo;)V", &[JValue::Object(&info)])?;
+        Ok((
+            env.get_field(&info, "lowMemory", "Z")?.z()?,
+            env.get_field(&info, "availMem", "J")?.j()?,
+            env.get_field(&info, "threshold", "J")?.j()?,
+        ))
+    }) else {
+        return;
+    };
+    if !*logged {
+        *logged = true;
+        info!("Android: свободно {} МБ, порог системы {} МБ", available >> 20, threshold >> 20);
+    }
+    let was = crate::profile::low_memory();
+    let now_low = low || (was && available < threshold * 3 / 2);
+    if now_low != was {
+        warn!(
+            "Android: свободно {} МБ, порог системы {} МБ → обломков {}",
+            available >> 20,
+            threshold >> 20,
+            if now_low { "вдвое меньше" } else { "как в профиле" }
+        );
+        crate::profile::set_low_memory(now_low);
+    }
+}
+
+/// Режим Game Mode (Android 12+) — при запуске и при каждом возврате в игру: игрок меняет его в
+/// панели игр, пока игра в фоне. «Экономия батареи» — не больше 30 кадров и кадр на шаг реже.
+fn watch_game_mode(
+    mut lifecycle: MessageReader<bevy::window::AppLifecycle>,
+    mut checked: Local<bool>,
+    mut load: ResMut<Load>,
+) {
+    use jni::objects::JValue;
+    /// `GameManager.GAME_MODE_BATTERY`.
+    const BATTERY: i32 = 3;
+    // Bevy 0.20 шлёт при возврате `Running`, а не `WillResume` (см. `sound::pause_audio_in_background`).
+    let resumed = lifecycle.read().any(|event| {
+        matches!(event, bevy::window::AppLifecycle::WillResume | bevy::window::AppLifecycle::Running)
+    });
+    let first = !*checked;
+    if !first && !resumed {
+        return;
+    }
+    *checked = true;
+    let Some(mode) = with_activity(|env, activity| {
+        let name = env.new_string("game")?;
+        let manager = env
+            .call_method(activity, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;", &[JValue::Object(&name)])?
+            .l()?;
+        // До Android 12 службы игр нет.
+        if manager.is_null() {
+            return Ok(None);
+        }
+        env.call_method(&manager, "getGameMode", "()I", &[])?.i().map(Some)
+    })
+    .flatten() else {
+        return;
+    };
+    let battery = mode == BATTERY;
+    if battery != load.battery || first {
+        info!("Android: Game Mode {mode}{}", if battery { " — экономия батареи" } else { "" });
+    }
+    load.battery = battery;
+}
+
+/// Сводит источники нагрузки в флаги профиля: кадр реже (`throttled`) и не больше 30 кадров
+/// (`overheated`).
+fn apply_load(load: Res<Load>) {
+    use crate::profile::Heat;
+    if !load.is_changed() {
+        return;
+    }
+    let heat = load.heat();
+    if (heat >= Heat::Throttled) != crate::profile::throttled() || (heat == Heat::Overheated) != crate::profile::overheated() {
+        info!(
+            "Android: кадр {}, кадров {}",
+            if heat >= Heat::Throttled { "реже" } else { "как в профиле" },
+            if heat == Heat::Overheated { format!("не больше {}", crate::profile::OVERHEAT_FPS) } else { "как в профиле".into() }
+        );
+    }
+    crate::profile::set_throttled(heat >= Heat::Throttled);
+    crate::profile::set_overheated(heat == Heat::Overheated);
+}
+
+/// Частота экрана по пределу кадров: на экране 90/120 Гц игра с пределом 60 иначе рисует неровно,
+/// а экран зря тратит батарею. Окно пересоздаётся при каждом возврате в игру, а предел меняется при
+/// нагреве, поэтому раз в секунду проверяется, что системе сказано то, что нужно.
+fn request_frame_rate(time: Res<Time<Real>>, mut next: Local<f32>, mut applied: Local<(usize, Option<f32>)>) {
+    /// `ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT`.
+    const COMPATIBILITY_DEFAULT: i8 = 0;
+    let now = time.elapsed_secs();
+    if now < *next {
+        return;
+    }
+    *next = now + 1.0;
+    let Some(set_frame_rate) = ndk().set_frame_rate else {
+        return;
+    };
+    let Some(window) = bevy::android::ANDROID_APP.get().and_then(|app| app.native_window()) else {
+        // Игра в фоне: окна нет, после возврата частота просится заново.
+        *applied = (0, None);
+        return;
+    };
+    let pointer = window.ptr().as_ptr();
+    let wanted = crate::profile::current_frame_limit();
+    if *applied == (pointer as usize, wanted) {
+        return;
+    }
+    // 0 — частота на усмотрение системы.
+    // SAFETY: окно захвачено `native_window` и живо, пока жив `window`.
+    let result = unsafe { set_frame_rate(pointer.cast(), wanted.unwrap_or(0.0), COMPATIBILITY_DEFAULT) };
+    info!("Android: частота экрана {} (ответ {result})", wanted.map_or("системная".into(), |fps| format!("{fps} Гц")));
+    *applied = (pointer as usize, wanted);
 }
 
 /// Время запуска процесса для `debug.spaceguard.lose`.
@@ -106,7 +422,9 @@ fn with_activity<T>(
     let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }.ok()?;
     let mut env = vm.attach_current_thread_permanently().ok()?;
     let activity = unsafe { jni::objects::JObject::from_raw(app.activity_as_ptr().cast()) };
-    let result = call(&mut env, &activity);
+    // Локальные ссылки — в своём кадре: поток подключён навсегда, без кадра они копились бы при
+    // каждом опросе.
+    let result = env.with_local_frame(16, |env| call(env, &activity));
     if env.exception_check().unwrap_or(false) {
         let _ = env.exception_clear();
         return None;

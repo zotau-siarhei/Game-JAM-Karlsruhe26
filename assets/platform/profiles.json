@@ -60,11 +60,40 @@
 
   "android": {
     "parent": "mobile",
-    "render": { "msaa_high": 1 },
+    "render": { "msaa_high": 1, "frame_limit": 60.0 },
     "prewarm": { "wait_pipelines": true },
     "threads": { "compute": 4, "async_compute": [2, 6] },
     "input": { "touch_default": true, "cursor": false },
     "audio": { "pause_in_background": true }
+  },
+  "android-low": {
+    "parent": "android",
+    "render": {
+      "density": [1.0, 1.25, 1.5],
+      "bloom": [false, false, false],
+      "shadows": [
+        { "map": 512, "cascades": 1, "far": 40.0 },
+        { "map": 1024, "cascades": 1, "far": 50.0 },
+        { "map": 1024, "cascades": 1, "far": 60.0 }
+      ],
+      "frame_limit": 30.0
+    },
+    "debris": { "max_resting": 300 },
+    "lights": { "fire": [1, 2, 3], "flashes": 2 },
+    "models": { "texture_max": 512 }
+  },
+  "android-high": {
+    "parent": "android",
+    "render": {
+      "density": [1.5, 2.0, 2.5],
+      "shadows": [
+        { "map": 512, "cascades": 1, "far": 40.0 },
+        { "map": 1024, "cascades": 2, "far": 70.0 },
+        { "map": 2048, "cascades": 3, "far": 110.0 }
+      ]
+    },
+    "debris": { "max_resting": 900 },
+    "lights": { "fire": [3, 4, 6], "flashes": 4 }
   },
 
   "ios-phone": {

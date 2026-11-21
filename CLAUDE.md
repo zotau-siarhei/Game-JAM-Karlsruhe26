@@ -187,6 +187,8 @@ cargo test                                  # тесты
   `target/android/space-guard.aab`, скачивание ~120 МБ. Ключ загрузки — переменные `SPACE_GUARD_UPLOAD_KEYSTORE`,
   `SPACE_GUARD_UPLOAD_ALIAS`, `SPACE_GUARD_UPLOAD_PASSWORD` (ключ и пароль в репозиторий не класть), без них —
   отладочный ключ. Текстуры моделей в APK и AAB уменьшаются до 1024 при сборке (`scripts/web_textures.py`).
+  Play требует страниц 16 КБ: библиотека линкуется с `max-page-size=16384`, APK выравнивается `zipalign -P 16`,
+  а `BundleConfig.json` пакета объявляет `PAGE_ALIGNMENT_16K` — скрипт сверяет это `bundletool dump config`.
   Эмулятор (Android Studio, AVD `Medium_Phone_API_36.0`, arm64): `~/Library/Android/sdk/emulator/emulator -avd
   Medium_Phone_API_36.0 -gpu host -feature Vulkan -no-snapshot-save` — без `-gpu host` рисует программно и
   медленно. Сборка `--abi=arm64-v8a`, затем `adb install -r`; касания — `adb shell input tap|swipe|motionevent`,
@@ -228,8 +230,8 @@ cargo test                                  # тесты
   кадра, тени, MSAA, bloom, предел кадров, обломки, огни и вспышки, упрощение моделей, размер текстур,
   прогрев, пулы потоков, ступень и ввод по умолчанию, «Выход» в меню, звук в фоне. Профиль наследует
   `parent` и перечисляет только отличия; значение по ступеням — `[low, medium, high]`. Дерево: `base` →
-  `desktop` (`macos`, `linux`, `windows`), `web` (`web-desktop`, `web-mobile`), `mobile` (`android`,
-  `ios-phone`, `ios-tablet`). Код берёт числа только из `profile::get()`, а не из `cfg!(target_os)` или
+  `desktop` (`macos`, `linux`, `windows`), `web` (`web-desktop`, `web-mobile`), `mobile` (`android` с
+  `android-low|high`, `ios-phone`, `ios-tablet` и их `-low|-high`). Код берёт числа только из `profile::get()`, а не из `cfg!(target_os)` или
   «телефон ли»; условием платформы остаются лишь обходы драйверов и систем (Adreno, WebKit,
   NativeActivity, симулятор iOS). Переопределение любого значения без пересборки — одно имя, свой транспорт:
   `SPACE_GUARD_RENDER_DENSITY=1` (компьютер; iOS — `build-ios.sh --env`), `adb shell setprop
@@ -247,6 +249,19 @@ cargo test                                  # тесты
   30 кадров. Info.plist (`ios/Info.plist`) требует A12+ (`iphone-ipad-minimum-performance-a12`: ослабить
   можно, ужесточить в обновлении нельзя), заявляет категорию игры и Game Mode; полоска «Домой» скрыта,
   свайп снизу сворачивает игру только со второго раза (поля `Window` в `main.rs`).
+  Android выбирает уровень так же (`android::device`, `profile::android_tier`): имя GPU у временного
+  экземпляра Vulkan до запуска Bevy, `MemTotal`, `ro.config.low_ram` → `android-low|android|android-high`
+  (слабые — меньше 5 ГБ, Adreno 6xx, Mali-G31…G78, PowerVR; сильные — от 8 ГБ и Adreno 730/740/750/830/840,
+  Immortalis, Xclipse 9xx; неизвестный GPU — средний: номер Adreno не растёт с мощностью). Эмулятор
+  (1,9 ГБ) получает слабый уровень. Строка «Android: GPU…» в logcat. У `android` предел 60 кадров, и экран
+  просится на эту частоту (`ANativeWindow_setFrameRate`). Раз в 10 с — запас до нагрева ADPF
+  (`AThermal_getThermalHeadroom`; от 0,95 кадр реже, от 1,0 не больше 30 кадров, назад на 0,1 ниже) и
+  статус нагрева, а также `ActivityManager.getMemoryInfo` (`onLowMemory` с Android 14 не приходит) —
+  обломков вдвое меньше. Game Mode (`android/res/xml/game_mode_config.xml`) читается при запуске и
+  возврате: «экономия батареи» — 30 кадров. Функции NDK новее minSdk 29 — через `dlsym`. Проверка на
+  эмуляторе: `adb shell cmd thermalservice override-status 4` (сброс — `reset`), `adb shell cmd game mode
+  battery io.github.zotausiarhei.spaceguard`. При возврате Bevy 0.20 шлёт `AppLifecycle::Running`, при
+  уходе — `Suspended`: `WillResume` и `WillSuspend` сообщением не приходят.
 - Браузерная версия выкладывается на GitHub Pages: https://zotau-siarhei.github.io/Game-JAM-Karlsruhe26/
   Workflow `.github/workflows/web.yml` раз в 4 часа собирает main (`--release`), если после последней
   выкладки были коммиты. Сборка не чаще раза в 4 часа при любом запуске, ручной (Actions → web → Run

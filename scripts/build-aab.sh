@@ -75,20 +75,26 @@ with zipfile.ZipFile(os.path.join(os.path.dirname(base), "base.zip"), "w", zipfi
             module.write(path, os.path.relpath(path, base))
 PY
 
-# Уже сжатые форматы хранятся как есть (как -0 у APK), библиотека — несжатой.
+# Уже сжатые форматы хранятся как есть (как -0 у APK), библиотека — несжатой и выровненной по 16 КБ:
+# Google Play требует поддержки страниц 16 КБ у приложений с target SDK 35+, а без выравнивания в APK
+# из пакета система на таких устройствах библиотеку не отобразит.
 cat > "$out/BundleConfig.json" <<'JSON'
 {
   "compression": {
     "uncompressedGlob": ["assets/**/*.mp3", "assets/**/*.ogg", "assets/**/*.png", "assets/**/*.glb"]
   },
   "optimizations": {
-    "uncompressNativeLibraries": { "enabled": true }
+    "uncompressNativeLibraries": { "enabled": true, "alignment": "PAGE_ALIGNMENT_16K" }
   }
 }
 JSON
 aab=$target/space-guard.aab
 rm -f "$aab"
 java -jar "$bundletool" build-bundle --modules="$out/base.zip" --config="$out/BundleConfig.json" --output="$aab"
+if ! java -jar "$bundletool" dump config --bundle="$aab" | grep -q PAGE_ALIGNMENT_16K; then
+    echo "в $aab нет выравнивания библиотек по 16 КБ (PAGE_ALIGNMENT_16K)" >&2
+    exit 1
+fi
 
 if [[ -n "${SPACE_GUARD_UPLOAD_KEYSTORE:-}" ]]; then
     : "${SPACE_GUARD_UPLOAD_ALIAS:?нужно имя ключа: SPACE_GUARD_UPLOAD_ALIAS}"

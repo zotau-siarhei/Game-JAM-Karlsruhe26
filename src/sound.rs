@@ -216,7 +216,9 @@ fn attach_ears(
 }
 
 /// Android и iOS не глушат приложение в фоне: уходя с экрана, игра ставит звук на паузу сама
-/// (`audio.pause_in_background` профиля платформы). Сообщения `AppLifecycle` шлёт winit.
+/// (`audio.pause_in_background` профиля платформы). Сообщения `AppLifecycle` шлёт winit; Bevy 0.20
+/// переводит `WillSuspend` в `Suspended` и `WillResume` в `Running` раньше, чем отправит сообщение,
+/// поэтому приходят только они.
 /// Звуки мира на паузе игры снова замрут сами (`sound::pause_world_sounds`).
 fn pause_audio_in_background(
     mut lifecycle: MessageReader<bevy::window::AppLifecycle>,
@@ -225,11 +227,11 @@ fn pause_audio_in_background(
 ) {
     for event in lifecycle.read() {
         match event {
-            bevy::window::AppLifecycle::WillSuspend => {
+            bevy::window::AppLifecycle::WillSuspend | bevy::window::AppLifecycle::Suspended => {
                 sinks.iter().for_each(|sink| sink.pause());
                 spatial_sinks.iter().for_each(|sink| sink.pause());
             }
-            bevy::window::AppLifecycle::WillResume => {
+            bevy::window::AppLifecycle::WillResume | bevy::window::AppLifecycle::Running => {
                 sinks.iter().for_each(|sink| sink.play());
                 spatial_sinks.iter().for_each(|sink| sink.play());
             }
