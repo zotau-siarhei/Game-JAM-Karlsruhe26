@@ -28,7 +28,7 @@ pub struct IosPlugin;
 
 impl Plugin for IosPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(PreUpdate, (read_view, watch_thermal));
+        app.add_systems(PreUpdate, (read_view, watch_thermal, log_memory));
     }
 }
 
@@ -85,6 +85,40 @@ fn watch_thermal(time: Res<Time<Real>>, mut next: Local<f32>) {
         info!("iOS: нагрев {thermal}, энергосбережение {low_power} → кадр {}", if throttle { "реже" } else { "как в профиле" });
         crate::profile::set_throttled(throttle);
     }
+}
+
+/// Лог игры ещё и в файл `Library/Application Support/space_guard.log`: с iPhone системный лог
+/// без прав администратора не достать, а файл песочницы забирает
+/// `xcrun devicectl device copy from --domain-type appDataContainer --domain-identifier
+/// io.github.zotausiarhei.spaceguard --source "Library/Application Support/space_guard.log"`.
+/// Файл начинается заново при каждом запуске.
+pub fn file_log_layer(_app: &mut App) -> Option<bevy::log::BoxedLayer> {
+    use bevy::log::tracing_subscriber::{Layer, fmt};
+    let dir = data_dir()?;
+    std::fs::create_dir_all(&dir).ok()?;
+    let file = std::fs::File::create(dir.join("space_guard.log")).ok()?;
+    Some(
+        fmt::layer()
+            .with_ansi(false)
+            .with_writer(std::sync::Mutex::new(file))
+            .boxed(),
+    )
+}
+
+/// Раз в 10 с — сколько памяти ещё может взять игра, пока система её не закрыла (jetsam).
+fn log_memory(time: Res<Time<Real>>, mut next: Local<f32>) {
+    unsafe extern "C" {
+        /// libSystem, iOS 13+: байт до предела памяти процесса.
+        fn os_proc_available_memory() -> usize;
+    }
+    let now = time.elapsed_secs();
+    if now < *next {
+        return;
+    }
+    *next = now + 10.0;
+    // SAFETY: функция без аргументов, только читает счётчик процесса.
+    let available = unsafe { os_proc_available_memory() };
+    info!("iOS: памяти до предела {} МБ", available / (1024 * 1024));
 }
 
 /// `UIEdgeInsets` из UIKit.

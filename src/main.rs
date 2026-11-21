@@ -164,6 +164,11 @@ fn main() {
             ..default()
         }),
         ..default()
+    }).set(bevy::log::LogPlugin {
+        // На iOS лог ещё и в файл песочницы: с телефона системный лог не достать (`ios.rs`).
+        #[cfg(target_os = "ios")]
+        custom_layer: ios::file_log_layer,
+        ..default()
     }).set(AssetPlugin {
         // В браузере каждый ненайденный файл `.meta` — лишний запрос с ошибкой 404,
         // а файлов `.meta` у игры нет.
