@@ -104,7 +104,7 @@ impl Default for Settings {
             music: 100,
             effects: 100,
             voice: 100,
-            subtitles: true,
+            subtitles: false,
             vibration: true,
             difficulty: Difficulty::default(),
             touch_size: TouchSize::default(),
@@ -225,7 +225,7 @@ mod tests {
         );
         assert_eq!(settings.gain(SoundGroup::Voice), 1.0);
         assert!(settings.vibration);
-        assert!(settings.subtitles);
+        assert!(!settings.subtitles);
         assert_eq!(settings.difficulty, Difficulty::Normal);
     }
 

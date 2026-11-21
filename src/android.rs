@@ -7,7 +7,9 @@ use std::borrow::Cow;
 use bevy::audio::{AudioSinkPlayback, SpatialAudioSink};
 use bevy::prelude::*;
 use bevy::render::batching::gpu_preprocessing::{GpuPreprocessingMode, GpuPreprocessingSupport};
-use bevy::render::{RenderApp, RenderStartup, init_gpu_resource};
+use bevy::render::error_handler::{RenderError, RenderErrorHandler, RenderErrorPolicy};
+use bevy::render::renderer::RenderDevice;
+use bevy::render::{Render, RenderApp, RenderStartup, init_gpu_resource};
 use bevy::shader::{Shader, Source};
 use bevy::window::AppLifecycle;
 
@@ -22,15 +24,132 @@ pub struct AndroidPlugin;
 
 impl Plugin for AndroidPlugin {
     fn build(&self, app: &mut App) {
+        std::sync::LazyLock::force(&START);
+        restart_on_panic();
         app.add_systems(Last, drop_point_shadow_sampling)
-            .add_systems(Update, pause_audio_in_background.in_set(GameSet::Presentation));
+            .add_systems(Update, pause_audio_in_background.in_set(GameSet::Presentation))
+            .insert_resource(RenderErrorHandler(restart_on_render_error));
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app.add_systems(
                 RenderStartup,
                 disable_gpu_preprocessing.after(init_gpu_resource::<GpuPreprocessingSupport>),
             );
+            // Проверка перезапуска: `adb shell setprop debug.spaceguard.lose <секунд>` — через
+            // столько секунд после запуска видеокарта «теряется».
+            if let Some(seconds) = system_property(c"debug.spaceguard.lose").and_then(|v| v.parse::<f32>().ok()) {
+                render_app.add_systems(Render, move |device: Res<RenderDevice>, mut done: Local<bool>| {
+                    if !*done && START.elapsed().as_secs_f32() > seconds {
+                        *done = true;
+                        warn!("Проверка: видеокарта теряется нарочно");
+                        device.wgpu_device().destroy();
+                    }
+                });
+            }
         }
     }
+}
+
+/// Время запуска процесса для `debug.spaceguard.lose`.
+static START: std::sync::LazyLock<bevy::platform::time::Instant> =
+    std::sync::LazyLock::new(bevy::platform::time::Instant::now);
+
+/// Потеря видеокарты (DeviceLost): драйвер Adreno изредка сбрасывает устройство, чаще всего при
+/// сборке шейдеров в загрузке. Тогда wgpu паникует в пуле задач, а если успеет Bevy — закрывает игру
+/// ошибкой рендера; игра выглядит упавшей. Вместо этого она открывается заново: новая активность
+/// в живом процессе завершает его (`main`), и система поднимает её в новом процессе с новым устройством.
+fn restart_on_render_error(error: &RenderError, main_world: &mut World, _: &mut World) -> RenderErrorPolicy {
+    if restart_once() {
+        error!("Ошибка рендера {:?}: игра открывается заново", error.ty);
+    } else {
+        error!("Ошибка рендера {:?}: игра закрывается", error.ty);
+    }
+    main_world.write_message(AppExit::error());
+    RenderErrorPolicy::StopRendering
+}
+
+/// Паника тоже перезапускает игру: при потере видеокарты wgpu паникует раньше обработчика ошибок рендера.
+fn restart_on_panic() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        default(info);
+        if restart_once() {
+            error!("Паника: игра открывается заново");
+        }
+    }));
+}
+
+/// Дополнение запуска, по которому новый процесс знает, что он — перезапуск.
+const RESTARTED_EXTRA: &str = "space_guard.restarted";
+/// Перезапуск, упавший раньше этого срока, игру уже не перезапускает: так не будет круга запусков.
+const RESTART_GRACE_SECONDS: f32 = 60.0;
+
+/// Перезапускает игру один раз за процесс. `false` — не стал или не вышло.
+fn restart_once() -> bool {
+    static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if DONE.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return true;
+    }
+    if START.elapsed().as_secs_f32() < RESTART_GRACE_SECONDS && with_activity(|env, activity| {
+        let intent = env.call_method(activity, "getIntent", "()Landroid/content/Intent;", &[])?.l()?;
+        let name = env.new_string(RESTARTED_EXTRA)?;
+        env.call_method(&intent, "getBooleanExtra", "(Ljava/lang/String;Z)Z", &[jni::objects::JValue::Object(&name), false.into()])?
+            .z()
+    }) != Some(false)
+    {
+        return false;
+    }
+    relaunch()
+}
+
+/// Вызов Java с активностью игры; `None` — JNI недоступен или вызов бросил исключение.
+fn with_activity<T>(
+    call: impl FnOnce(&mut jni::JNIEnv, &jni::objects::JObject) -> jni::errors::Result<T>,
+) -> Option<T> {
+    let app = bevy::android::ANDROID_APP.get()?;
+    // SAFETY: указатели на JavaVM и активность выдаёт система, они действуют, пока жив процесс.
+    let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }.ok()?;
+    let mut env = vm.attach_current_thread_permanently().ok()?;
+    let activity = unsafe { jni::objects::JObject::from_raw(app.activity_as_ptr().cast()) };
+    let result = call(&mut env, &activity);
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
+        return None;
+    }
+    result.ok()
+}
+
+/// Запускает свою активность заново в новой задаче, прежнюю закрывает. `false` — не вышло.
+fn relaunch() -> bool {
+    use jni::objects::JValue;
+    with_activity(|env, activity| {
+        let manager = env
+            .call_method(activity, "getPackageManager", "()Landroid/content/pm/PackageManager;", &[])?
+            .l()?;
+        let package = env.call_method(activity, "getPackageName", "()Ljava/lang/String;", &[])?.l()?;
+        let intent = env
+            .call_method(
+                &manager,
+                "getLaunchIntentForPackage",
+                "(Ljava/lang/String;)Landroid/content/Intent;",
+                &[JValue::Object(&package)],
+            )?
+            .l()?;
+        if intent.is_null() {
+            return Ok(false);
+        }
+        // FLAG_ACTIVITY_NEW_TASK | FLAG_ACTIVITY_CLEAR_TASK.
+        env.call_method(&intent, "addFlags", "(I)Landroid/content/Intent;", &[JValue::Int(0x1000_0000 | 0x0000_8000)])?;
+        let name = env.new_string(RESTARTED_EXTRA)?;
+        env.call_method(
+            &intent,
+            "putExtra",
+            "(Ljava/lang/String;Z)Landroid/content/Intent;",
+            &[JValue::Object(&name), true.into()],
+        )?;
+        env.call_method(activity, "startActivity", "(Landroid/content/Intent;)V", &[JValue::Object(&intent)])?;
+        Ok(true)
+    })
+    .unwrap_or(false)
 }
 
 /// Выключает предобработку и отсечение мешей на видеокарте, как Bevy делает сам на Adreno до 730:

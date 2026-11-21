@@ -179,7 +179,8 @@ cargo test                                  # тесты
   `NativeActivity`, поэтому новую зависимость добавляй и в `android/Cargo.toml`. Нужны Android SDK, NDK и
   таргеты Rust (список — в начале скрипта). Особенности платформы — `src/android.rs` (выборка тени для
   Adreno, звук в фоне) и `src/platform.rs`: ассеты лежат в APK, поэтому новый JSON-список надо вшить в
-  `platform::read_list`. Конвейеры на Android собираются параллельно в пуле асинхронных задач, но кадр ждёт
+  `platform::read_list`. Потеря видеокарты (DeviceLost) или паника открывают игру заново (`android::restart_once`,
+  перезапуск в первую минуту после перезапуска не повторяется); проверка — `setprop debug.spaceguard.lose <секунд>`. Конвейеры на Android собираются параллельно в пуле асинхронных задач, но кадр ждёт
   их готовности (`prewarm::compile_pipelines`): отрисовка вперемешку со сборкой вешала GPU Adreno 810. Управление — касания (`src/touch.rs`), геймпад или клавиатура; вибрации нет.
   Иконка — ресурсы `android/res`; слои пересобирает `scripts/android-icon.py` из `android/icon/source.png` (нужен Pillow).
   Пакет для Google Play — `scripts/build-aab.sh` (`--install` ставит его на телефон через bundletool):

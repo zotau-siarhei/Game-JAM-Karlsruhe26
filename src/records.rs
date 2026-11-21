@@ -14,11 +14,11 @@ use crate::difficulty::Difficulty;
 /// Сколько мест в таблице.
 pub const MAX_RECORDS: usize = 10;
 
-/// Длина имени игрока.
-pub const NAME_LENGTH: usize = 3;
+/// Наибольшая длина имени игрока.
+pub const NAME_LENGTH: usize = 5;
 
 /// Имя по умолчанию при первом запуске.
-pub const DEFAULT_NAME: &str = "LUN";
+pub const DEFAULT_NAME: &str = "ROVER";
 
 /// Имя файла рекордов.
 const FILE_NAME: &str = "records.json";
@@ -36,7 +36,7 @@ pub struct RecordPlaced {
 /// Один результат забега.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Record {
-    /// Имя из трёх букв или цифр.
+    /// Имя до пяти букв или цифр.
     pub name: String,
     /// Время выживания в секундах.
     pub seconds: f64,
@@ -65,9 +65,9 @@ impl Default for Records {
     }
 }
 
-/// Годится ли имя: ровно три латинские буквы или цифры.
+/// Годится ли имя: от одной до пяти латинских букв или цифр. Прежние имена из трёх тоже годятся.
 pub fn is_valid_name(name: &str) -> bool {
-    name.len() == NAME_LENGTH && name.bytes().all(|byte| byte.is_ascii_alphanumeric())
+    (1..=NAME_LENGTH).contains(&name.len()) && name.bytes().all(|byte| byte.is_ascii_alphanumeric())
 }
 
 impl Records {
@@ -255,7 +255,7 @@ mod tests {
         let json = r#"{ "last_name": "слишком длинное", "records": [
             { "name": "IVA", "seconds": 187.25 },
             { "name": "TOOLONG", "seconds": 300.0 },
-            { "name": "AB", "seconds": 200.0 },
+            { "name": "", "seconds": 200.0 },
             { "name": "NEG", "seconds": -5.0 },
             { "name": "SER", "seconds": 250.5 }
         ] }"#;
@@ -269,8 +269,9 @@ mod tests {
     fn name_is_three_letters_or_digits() {
         assert!(is_valid_name("LUN"));
         assert!(is_valid_name("A1b"));
-        assert!(!is_valid_name("LU"));
-        assert!(!is_valid_name("LUNO"));
+        assert!(is_valid_name("ROVER"));
+        assert!(!is_valid_name(""));
+        assert!(!is_valid_name("ROVERS"));
         assert!(!is_valid_name("L N"));
         assert!(!is_valid_name("ЛУН"));
         let mut table = Records::default();

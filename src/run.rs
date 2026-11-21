@@ -161,7 +161,7 @@ struct RunResult {
     input_delay: f32,
 }
 
-/// Ввод имени из трёх символов: буква или цифра встаёт в ячейку под курсором и двигает его.
+/// Ввод имени до пяти символов: буква или цифра встаёт в ячейку под курсором и двигает его.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NameEntry {
     cells: [Option<char>; records::NAME_LENGTH],
@@ -193,9 +193,10 @@ impl NameEntry {
         }
     }
 
-    /// Имя, если заполнены все ячейки.
+    /// Имя — заполненные ячейки от первой до первой пустой; `None`, если первая пуста.
     fn name(&self) -> Option<String> {
-        self.cells.iter().copied().collect()
+        let name: String = self.cells.iter().map_while(|cell| *cell).collect();
+        (!name.is_empty()).then_some(name)
     }
 }
 
@@ -700,7 +701,7 @@ fn rank_line(place: Option<usize>) -> String {
 
 /// Строка таблицы рекордов.
 pub(crate) fn table_row(place: usize, record: &Record) -> String {
-    format!("{:>2}. {}  {:>7}", place + 1, record.name, format_time(record.seconds as f32))
+    format!("{:>2}. {:<5}  {:>7}", place + 1, record.name, format_time(record.seconds as f32))
 }
 
 /// Перерисовывает экран конца забега, когда итог изменился: ввод имени или таблица.
@@ -979,8 +980,8 @@ mod tests {
             name: "IVA".to_string(),
             seconds: 187.25,
         };
-        assert_eq!(table_row(0, &record), " 1. IVA   3:07.2");
-        assert_eq!(table_row(9, &record), "10. IVA   3:07.2");
+        assert_eq!(table_row(0, &record), " 1. IVA     3:07.2");
+        assert_eq!(table_row(9, &record), "10. IVA     3:07.2");
     }
 
     #[test]
@@ -992,22 +993,27 @@ mod tests {
         entry.type_char('v');
         assert_eq!(entry.name().as_deref(), Some("IVN"));
         entry.type_char('a');
+        entry.type_char('n');
         entry.type_char('x');
-        assert_eq!(entry.name().as_deref(), Some("IVA"));
+        entry.type_char('y');
+        assert_eq!(entry.name().as_deref(), Some("IVANX"));
     }
 
     #[test]
-    fn backspace_clears_the_cell_and_incomplete_name_is_not_a_name() {
+    fn backspace_clears_the_cell_and_name_ends_at_first_empty_cell() {
         let mut entry = NameEntry::new("LUN");
         entry.backspace();
         assert_eq!(entry.name().as_deref(), Some("LUN"));
         entry.type_char('A');
         entry.type_char('B');
         entry.backspace();
-        assert_eq!(entry.name(), None);
+        assert_eq!(entry.name().as_deref(), Some("A"));
         assert_eq!(entry.cursor, 1);
         entry.type_char('7');
         assert_eq!(entry.name().as_deref(), Some("A7N"));
+        entry.backspace();
+        entry.backspace();
+        assert_eq!(entry.name(), None);
     }
 
     #[test]
