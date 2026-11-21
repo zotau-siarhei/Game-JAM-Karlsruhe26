@@ -146,6 +146,40 @@ impl ShadowCasters<'_, '_> {
     }
 }
 
+/// Рендер-мир, раз в [`LOG_WINDOW`]: сколько пакетов отрисовки в основном проходе и в тенях.
+/// Корзина — один вызов отрисовки на все свои сущности (меш и материал общие), несливаемые
+/// сущности рисуются по одной. Без предобработки на видеокарте (Android) пакеты собирает процессор.
+fn log_batches(
+    bench: Res<Bench>,
+    opaque: Res<bevy::render::render_phase::ViewBinnedRenderPhases<bevy::core_pipeline::core_3d::Opaque3d>>,
+    shadow: Res<bevy::render::render_phase::ViewBinnedRenderPhases<bevy::pbr::Shadow>>,
+    mut last: Local<Option<Instant>>,
+) {
+    if !bench.on && !phone_log() {
+        return;
+    }
+    let now = Instant::now();
+    if last.is_some_and(|at| now.duration_since(at).as_secs_f32() < LOG_WINDOW) {
+        return;
+    }
+    *last = Some(now);
+    fn count<B: bevy::render::render_phase::BinnedPhaseItem>(
+        phases: &bevy::render::render_phase::ViewBinnedRenderPhases<B>,
+    ) -> String {
+        let (mut views, mut bins, mut batched, mut single_bins, mut single, mut multi) = (0, 0, 0, 0, 0, 0);
+        for phase in phases.0.values() {
+            views += 1;
+            bins += phase.batchable_meshes.len();
+            batched += phase.batchable_meshes.values().map(|bin| bin.entities().len()).sum::<usize>();
+            single_bins += phase.unbatchable_meshes.len();
+            single += phase.unbatchable_meshes.values().map(|bin| bin.entities.len()).sum::<usize>();
+            multi += phase.multidrawable_meshes.len();
+        }
+        format!("views {views}, bins {bins} ({batched} entities), unbatchable {single_bins} ({single}), multidraw sets {multi}")
+    }
+    info!("  batches: opaque {}; shadow {}", count(&opaque), count(&shadow));
+}
+
 /// Прячет эффекты частиц, если они выключены для замера.
 fn hide_particles(mut effects: Query<&mut Visibility, Added<bevy_hanabi::prelude::ParticleEffect>>) {
     if !off("particles") {
@@ -281,7 +315,11 @@ impl Plugin for PerfPlugin {
             )
             .add_systems(PostUpdate, hide_particles);
         add_main_marks(app);
+        let bench = *app.world().resource::<Bench>();
         if let Some(render) = app.get_sub_app_mut(RenderApp) {
+            render
+                .insert_resource(bench)
+                .add_systems(Render, log_batches.after(RenderSystems::PrepareResources).before(RenderSystems::Render));
             render.insert_resource(shared);
             render.add_systems(
                 Render,

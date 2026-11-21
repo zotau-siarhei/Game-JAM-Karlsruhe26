@@ -463,6 +463,13 @@ fn track_loading(
             warn!("Модели: «{id}» тяжелее бюджета: треугольников {triangles}, бюджет {budget}");
         }
         // На телефоне сетка упрощается до сцены: все экземпляры модели берут уже упрощённую.
+        // Для замеров на телефоне: `adb shell setprop debug.spaceguard.detail 0.4` умножает долю.
+        #[cfg(target_os = "android")]
+        let detail = model.entry.mobile_detail
+            * crate::android::system_property(c"debug.spaceguard.detail")
+                .and_then(|text| text.trim().parse::<f32>().ok())
+                .unwrap_or(1.0);
+        #[cfg(not(target_os = "android"))]
         let detail = model.entry.mobile_detail;
         if crate::platform::is_mobile() && detail < 1.0 && let Some(gltf) = gltfs.get(&handles.gltf) {
             let (mut before, mut after) = (0, 0);
