@@ -176,7 +176,12 @@ pub struct Part {
 pub struct Breaker<'w, 's> {
     pieces: Res<'w, ModelPieces>,
     children: Query<'w, 's, &'static Children>,
-    meshes: Query<'w, 's, (&'static Mesh3d, &'static GlobalTransform, Option<&'static MeshMaterial3d<StandardMaterial>>)>,
+    meshes: Query<
+        'w,
+        's,
+        (&'static Mesh3d, &'static GlobalTransform, Option<&'static MeshMaterial3d<StandardMaterial>>),
+        Without<crate::models::ShadowProxy>,
+    >,
     /// Обломки: система с `Breaker` пишет их только сюда, второй писатель того же сообщения
     /// в системе недопустим.
     pub debris: MessageWriter<'w, SpawnDebris>,

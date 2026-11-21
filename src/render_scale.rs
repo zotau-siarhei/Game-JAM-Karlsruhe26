@@ -77,9 +77,14 @@ impl Plugin for RenderScalePlugin {
             .add_plugins(ExtractResourcePlugin::<RenderScale>::default())
             .add_systems(Update, choose_scale.in_set(crate::frame::GameSet::Presentation));
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
+            // После набора `ExtractCommands`: в нём применяются команды передачи кадра, которые
+            // вставляют свежие компоненты камер и новых окон с полными размерами.
             render_app.add_systems(
                 Render,
-                shrink_views.in_set(RenderSystems::ExtractCommands).before(create_surfaces),
+                shrink_views
+                    .after(RenderSystems::ExtractCommands)
+                    .before(RenderSystems::PrepareAssets)
+                    .before(create_surfaces),
             );
         }
     }
@@ -131,7 +136,12 @@ fn shrink_views(
         let size = scaled(full, k);
         window.physical_width = size.x;
         window.physical_height = size.y;
-        window.size_changed = before.is_some_and(|b| b.scaled != size) || (before.is_none() && window.size_changed);
+        // Поверхность настроена на размер, оставленный здесь в прошлом кадре: перенастройка нужна,
+        // только когда он меняется. В первом кадре поверхность ещё создаётся.
+        window.size_changed = before.is_none_or(|b| b.scaled != size);
+        if before.is_none_or(|b| b.scaled != size || b.full != full) {
+            info!("Разрешение кадра: окно {}×{}, кадр {}×{}", full.x, full.y, size.x, size.y);
+        }
         sizes.insert(entity, WindowSizes { full, scaled: size });
     }
     if k >= 1.0 {

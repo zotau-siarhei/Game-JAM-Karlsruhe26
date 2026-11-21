@@ -7,6 +7,9 @@
 //! | Средняя | есть | карта 1024, два каскада до 70 м | нет |
 //! | Высокая | есть | карта 2048, три каскада до 110 м | MSAA 4× |
 //!
+//! На Android средняя ступень — один каскад до 60 м, высокая — два каскада до 70 м и без MSAA
+//! (с ним Adreno 810 теряет устройство), плотность кадра по ступени — `src/render_scale.rs`.
+//!
 //! Постоянные эффекты лунохода (пыль, дым) берут долю частиц ступени: 40, 70 и 100 %.
 //!
 //! На всех ступенях камера в HDR с тональной коррекцией: огонь, вспышки и лазер ярче единицы
@@ -142,6 +145,10 @@ fn apply_quality(
             Quality::Medium => {
                 c.insert((Bloom::NATURAL, Msaa::Off));
             }
+            // На телефоне без MSAA: с ним Adreno 810 теряет устройство (DeviceLost) в первых кадрах.
+            Quality::High if cfg!(target_os = "android") || crate::perf::off("msaa") => {
+                c.insert((Bloom::NATURAL, Msaa::Off));
+            }
             Quality::High => {
                 c.insert((Bloom::NATURAL, Msaa::Sample4));
             }
@@ -153,6 +160,7 @@ fn apply_quality(
         // отбрасывающие тень. Один каскад до края кадра вдвое дешевле двух.
         Quality::Medium if cfg!(target_os = "android") => (1024, 1, 60.0),
         Quality::Medium => (1024, 2, 70.0),
+        Quality::High if cfg!(target_os = "android") => (2048, 2, 70.0),
         Quality::High => (2048, 3, 110.0),
     };
     // Для замеров на телефоне: `adb shell setprop debug.spaceguard.shadows 1,60` — каскадов и дальность.

@@ -9,6 +9,11 @@
 //!   пиксель далёкой модели читает случайное место большой текстуры, кэш видеокарты не работает.
 //!   Уровни усредняются в линейном цвете.
 //!
+//! - Модели с полем `mobile_shadow` отбрасывают тень грубым силуэтом ([`shadow_proxy`]): проход
+//!   теней рисует каждое дерево заново, а для тени мелкие детали листвы не нужны. Силуэт лежит на слое
+//!   [`SHADOW_LAYER`], который видит только солнце, а сама модель тени не отбрасывает
+//!   (`models::attach_shadow_proxies`).
+//!
 //! Упрощение сеток — только в нативной сборке: meshoptimizer написан на C++.
 
 use bevy::asset::AssetEventSystems;
@@ -16,6 +21,9 @@ use bevy::asset::AssetEventSystems;
 use bevy::mesh::{Indices, VertexAttributeValues};
 use bevy::prelude::*;
 use bevy::render::render_resource::{TextureDimension, TextureFormat};
+
+/// Слой отрисовки силуэтов для тени: его видит солнце (`main.rs`), но не камера.
+pub const SHADOW_LAYER: usize = 1;
 
 /// Наибольшая сторона текстуры модели на телефоне.
 const MOBILE_TEXTURE: u32 = 1024;
@@ -234,6 +242,71 @@ pub fn simplify(_mesh: &mut Mesh, _detail: f32) -> Option<(usize, usize)> {
     None
 }
 
+/// Допустимая ошибка силуэта для тени относительно размера модели.
+#[cfg(not(target_arch = "wasm32"))]
+const SHADOW_ERROR: f32 = 0.2;
+
+/// Грубый силуэт сетки для прохода теней: доля `detail` треугольников. Вершины берутся из исходной сетки со всеми её признаками, поэтому
+/// раскладка та же и конвейер тени тот же, что у модели: прогреву ничего нового не нужно.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn shadow_proxy(mesh: &Mesh, detail: f32) -> Option<Mesh> {
+    use bevy::asset::RenderAssetUsages;
+    use meshopt::VertexDataAdapter;
+
+    let Ok(Some(VertexAttributeValues::Float32x3(positions))) = mesh.try_attribute_option(Mesh::ATTRIBUTE_POSITION)
+    else {
+        return None;
+    };
+    let indices: Vec<u32> = match mesh.try_indices_option().ok()?? {
+        Indices::U16(list) => list.iter().map(|&i| u32::from(i)).collect(),
+        Indices::U32(list) => list.clone(),
+    };
+    if indices.len() < 3 || indices.len() % 3 != 0 {
+        return None;
+    }
+    let vertices = VertexDataAdapter::new(meshopt::typed_to_bytes(positions), 12, 0).ok()?;
+    let target = ((indices.len() as f32 * detail) as usize / 3 * 3).max(3);
+    // Тени не нужны швы текстуры: вершины свариваются по положению, и сетка упрощается
+    // как сплошная, сохраняя силуэт.
+    let remap = meshopt::generate_position_remap(&vertices);
+    let welded: Vec<u32> = indices.iter().map(|&i| remap[i as usize]).collect();
+    let options = meshopt::SimplifyOptions::Permissive | meshopt::SimplifyOptions::Prune;
+    let picked = meshopt::simplify(&welded, &vertices, target, SHADOW_ERROR, options, None);
+    if picked.is_empty() {
+        return None;
+    }
+    // Только вершины, на которые ссылаются оставшиеся треугольники.
+    let mut remap = vec![u32::MAX; positions.len()];
+    let mut order = Vec::new();
+    let mut compact = Vec::with_capacity(picked.len());
+    for &old in &picked {
+        let slot = &mut remap[old as usize];
+        if *slot == u32::MAX {
+            *slot = order.len() as u32;
+            order.push(old as usize);
+        }
+        compact.push(*slot);
+    }
+    let mut proxy = Mesh::new(mesh.primitive_topology(), RenderAssetUsages::default());
+    for (attribute, values) in mesh.try_attributes().ok()? {
+        let values = match values {
+            VertexAttributeValues::Float32x2(v) => VertexAttributeValues::Float32x2(order.iter().map(|&i| v[i]).collect()),
+            VertexAttributeValues::Float32x3(v) => VertexAttributeValues::Float32x3(order.iter().map(|&i| v[i]).collect()),
+            VertexAttributeValues::Float32x4(v) => VertexAttributeValues::Float32x4(order.iter().map(|&i| v[i]).collect()),
+            // Других признаков у моделей с силуэтом нет; с ними раскладка не совпала бы.
+            _ => return None,
+        };
+        proxy.insert_attribute(attribute.clone(), values);
+    }
+    proxy.insert_indices(Indices::U32(compact));
+    Some(proxy)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn shadow_proxy(_mesh: &Mesh, _detail: f32) -> Option<Mesh> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,6 +320,20 @@ mod tests {
         assert!(before > 1000);
         assert!(after <= before / 3, "{before} → {after}");
         assert!(after > 0);
+    }
+
+    #[test]
+    fn силуэт_грубее_и_с_той_же_раскладкой() {
+        let mut mesh = Sphere::new(1.0).mesh().ico(20).unwrap();
+        mesh.asset_usage = RenderAssetUsages::all();
+        let before = mesh.indices().unwrap().len() / 3;
+        let proxy = shadow_proxy(&mesh, 0.05).unwrap();
+        let after = proxy.indices().unwrap().len() / 3;
+        assert!(after * 10 < before, "{before} → {after}");
+        let ids = |m: &Mesh| m.attributes().map(|(a, values)| (a.id, values.len() > 0)).collect::<Vec<_>>();
+        assert_eq!(ids(&proxy), ids(&mesh));
+        // Вершин не больше, чем нужно оставшимся треугольникам.
+        assert!(proxy.count_vertices() <= after * 3);
     }
 
     #[test]

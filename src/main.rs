@@ -290,5 +290,7 @@ fn spawn_light(mut commands: Commands) {
             ..default()
         },
         Transform::from_translation(SUN_POSITION).looking_at(Vec3::ZERO, Vec3::Y),
+        // Солнце видит и слой силуэтов для тени (`lod::SHADOW_LAYER`), камера — только обычный.
+        bevy::camera::visibility::RenderLayers::from_layers(&[0, lod::SHADOW_LAYER]),
     ));
 }

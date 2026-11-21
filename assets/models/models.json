@@ -68,6 +68,7 @@
       "offset_y": 3.0,
       "budget": 3000,
       "mobile_detail": 0.25,
+      "mobile_shadow": 0.06,
       "colors": ["#3b5d12", "#496730", "#294a05", "#544b2e"],
       "top_colors": ["#375909", "#486730"]
     },
@@ -79,6 +80,7 @@
       "offset_y": 3.0,
       "budget": 3000,
       "mobile_detail": 0.25,
+      "mobile_shadow": 0.06,
       "colors": ["#40571c", "#4e6540", "#54432d"],
       "top_colors": ["#42571b", "#4b6136"]
     },
@@ -90,6 +92,7 @@
       "offset_y": 3.5,
       "budget": 3000,
       "mobile_detail": 0.25,
+      "mobile_shadow": 0.06,
       "colors": ["#505e02", "#596625"],
       "top_colors": ["#515f01", "#596723"]
     },
@@ -101,6 +104,7 @@
       "offset_y": 3.25,
       "budget": 3000,
       "mobile_detail": 0.25,
+      "mobile_shadow": 0.06,
       "colors": ["#2c430c", "#3d5026", "#4e5c47"],
       "top_colors": ["#2c410b"]
     },

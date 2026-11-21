@@ -36,7 +36,7 @@ impl Plugin for ModelsPlugin {
             .init_resource::<ShadeCache>()
             .add_systems(
                 Update,
-                (track_loading, swap_fallbacks, apply_shade, strip_shadows)
+                (track_loading, swap_fallbacks, attach_shadow_proxies, apply_shade, strip_shadows)
                     .chain()
                     .in_set(crate::frame::GameSet::Presentation),
             );
@@ -67,6 +67,10 @@ pub struct ModelEntry {
     /// Доля треугольников модели на телефоне (`src/lod.rs`): 0,25 — четверть. Без поля — вся сетка.
     #[serde(default = "full_detail")]
     pub mobile_detail: f32,
+    /// Доля треугольников грубого силуэта, которым модель отбрасывает тень на телефоне
+    /// (`src/lod.rs`). Без поля тень отбрасывает сама модель.
+    #[serde(default)]
+    pub mobile_shadow: f32,
     /// Главные цвета нижних 70 % высоты модели, sRGB `#rrggbb`, по убыванию площади: для обломков.
     /// Считает `scripts/model_colors.py`.
     #[serde(default)]
@@ -151,6 +155,8 @@ pub fn parse_list(json: &str) -> Result<Vec<ModelEntry>, serde_json::Error> {
 struct Handles {
     gltf: Handle<Gltf>,
     scene: Handle<WorldAsset>,
+    /// Силуэты для тени на телефоне (`mobile_shadow`): меш модели → его силуэт.
+    shadow_proxies: HashMap<AssetId<Mesh>, Handle<Mesh>>,
 }
 
 /// Что сейчас с моделью.
@@ -451,9 +457,10 @@ fn track_loading(
             model.state = ModelState::Failed;
             continue;
         };
-        let handles = Handles {
+        let mut handles = Handles {
             gltf: gltf_handle.clone(),
             scene,
+            shadow_proxies: HashMap::new(),
         };
         let triangles = gltfs
             .get(&handles.gltf)
@@ -469,8 +476,33 @@ fn track_loading(
             * crate::android::system_property(c"debug.spaceguard.detail")
                 .and_then(|text| text.trim().parse::<f32>().ok())
                 .unwrap_or(1.0);
+        // На компьютере то же — `SPACE_GUARD_DETAIL=1.6` (вместе с `SPACE_GUARD_MOBILE=1`).
         #[cfg(not(target_os = "android"))]
-        let detail = model.entry.mobile_detail;
+        let detail = model.entry.mobile_detail
+            * std::env::var("SPACE_GUARD_DETAIL")
+                .ok()
+                .and_then(|text| text.trim().parse::<f32>().ok())
+                .unwrap_or(1.0);
+        // Силуэт для тени строится из полной сетки, до её упрощения.
+        let shadow = model.entry.mobile_shadow;
+        if crate::platform::is_mobile()
+            && shadow > 0.0
+            && !crate::perf::off("proxies")
+            && let Some(gltf) = gltfs.get(&handles.gltf)
+        {
+            let (mut before, mut after) = (0, 0);
+            for primitive in gltf.meshes.iter().filter_map(|m| gltf_meshes.get(m)).flat_map(|m| &m.primitives) {
+                let Some(proxy) = meshes.get(&primitive.mesh).and_then(|mesh| {
+                    before += mesh_triangles(mesh);
+                    crate::lod::shadow_proxy(mesh, shadow)
+                }) else {
+                    continue;
+                };
+                after += mesh_triangles(&proxy);
+                handles.shadow_proxies.insert(primitive.mesh.id(), meshes.add(proxy));
+            }
+            info!("Модели: «{id}» отбрасывает тень силуэтом: треугольников {before} → {after}");
+        }
         if crate::platform::is_mobile() && detail < 1.0 && let Some(gltf) = gltfs.get(&handles.gltf) {
             let (mut before, mut after) = (0, 0);
             for primitive in gltf.meshes.iter().filter_map(|m| gltf_meshes.get(m)).flat_map(|m| &m.primitives) {
@@ -531,6 +563,46 @@ fn swap_fallbacks(
             Some(ModelState::Failed) | None => commands.entity(entity).try_despawn(),
             _ => {}
         }
+    }
+}
+
+/// Силуэт модели для тени: дочерний к мешу сцены, на слое [`crate::lod::SHADOW_LAYER`].
+/// Его не видит камера и не трогают обломки (`fragments::Breaker`).
+#[derive(Component)]
+pub struct ShadowProxy;
+
+/// Меш модели с силуэтом (`mobile_shadow`) перестаёт отбрасывать тень сам: под ним встаёт силуэт
+/// с тем же материалом. Меши сцены появляются, когда модель разложилась, поэтому их ловит `Added`.
+fn attach_shadow_proxies(
+    mut commands: Commands,
+    bank: Res<ModelBank>,
+    added: Query<(Entity, &Mesh3d, &MeshMaterial3d<StandardMaterial>), (Added<Mesh3d>, Without<ShadowProxy>)>,
+    parents: Query<&ChildOf>,
+    visuals: Query<&ModelVisual>,
+    no_shadow: Query<(), With<NoShadow>>,
+) {
+    for (entity, mesh, material) in &added {
+        let Some(visual) = parents.iter_ancestors(entity).find_map(|a| visuals.get(a).ok()) else {
+            continue;
+        };
+        let Some(ModelState::Ready(handles)) = bank.models.get(&visual.0).map(|model| &model.state) else {
+            continue;
+        };
+        let Some(proxy) = handles.shadow_proxies.get(&mesh.0.id()) else {
+            continue;
+        };
+        // Мелочь без тени остаётся без тени и без силуэта.
+        if parents.iter_ancestors(entity).any(|a| no_shadow.contains(a)) {
+            continue;
+        }
+        commands.entity(entity).try_insert(bevy::light::NotShadowCaster).with_child((
+            ShadowProxy,
+            Mesh3d(proxy.clone()),
+            MeshMaterial3d(material.0.clone()),
+            Transform::IDENTITY,
+            Visibility::Inherited,
+            bevy::camera::visibility::RenderLayers::layer(crate::lod::SHADOW_LAYER),
+        ));
     }
 }
 
@@ -603,7 +675,7 @@ pub struct NoShadow;
 /// она загрузится, поэтому метка ставится на корень, а не на меши.
 fn strip_shadows(
     mut commands: Commands,
-    meshes: Query<Entity, (Added<Mesh3d>, Without<bevy::light::NotShadowCaster>)>,
+    meshes: Query<Entity, (Added<Mesh3d>, Without<bevy::light::NotShadowCaster>, Without<ShadowProxy>)>,
     parents: Query<&ChildOf>,
     marked: Query<(), With<NoShadow>>,
 ) {
