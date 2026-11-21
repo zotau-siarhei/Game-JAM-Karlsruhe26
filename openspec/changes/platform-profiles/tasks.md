@@ -3,7 +3,7 @@
 ## 1. Профили и ресурс
 
 - [x] 1.1 `assets/platform/profiles.json` с профилями base, desktop, macos, linux, windows, web, web-mobile, mobile, android, ios-phone, ios-tablet и числами из таблицы Context в design.md; `src/profile.rs`: разбор, глубокое слияние по `parent`, значения со ступенями `[low, medium, high]`, ресурс `PlatformProfile`, `ProfilePlugin` первым в `main.rs`; проверка: `cargo test` — каждый профиль собирается, все поля заданы
-- [ ] 1.2 Определение платформы и класса устройства: iOS — `UIDevice.userInterfaceIdiom` через `objc2` в `src/ios.rs`, браузер — `window.spaceGuardMobile`, Android — телефон; `SPACE_GUARD_MOBILE=1` на компьютере выбирает профиль mobile; проверка: `cargo test`, имя профиля в логе на Mac и в симуляторе iPhone
+- [x] 1.2 Определение платформы и класса устройства: iOS — `UIDevice.userInterfaceIdiom` через `objc2` в `src/ios.rs`, браузер — `window.spaceGuardMobile`, Android — телефон; `SPACE_GUARD_MOBILE=1` на компьютере выбирает профиль mobile; проверка: `cargo test`, имя профиля в логе на Mac и в симуляторе iPhone
 - [x] 1.3 Переопределения: путь ключа → `SPACE_GUARD_<ПУТЬ>` (компьютер, iOS), `debug.spaceguard.<путь>` (Android), `?<путь>=` (браузер); синонимы старых ручек (`density`, `shadows`, `detail`, `quality`, `off`, `SPACE_GUARD_OFF`, `SPACE_GUARD_DETAIL`, `?quality=`); строка в лог со всеми действующими; проверка: `cargo test` на разбор ключей, запуск с `SPACE_GUARD_RENDER_DENSITY=1`
 - [x] 1.4 Тест равенства: профили macos, linux, windows, web, web-mobile, android дают ровно сегодняшние числа (таблица Context); проверка: `cargo test`
 
@@ -18,9 +18,9 @@
 
 ## 3. iOS
 
-- [ ] 3.1 Профили ios-phone и ios-tablet по таблице решения 6 в design.md; проверка: `cargo test`, лог в симуляторе iPhone и iPad — плотность 1,5 на medium
-- [ ] 3.2 `scripts/build-ios.sh`: текстуры моделей до 1024 при сборке (`scripts/web_textures.py`, как у Android), ключ `--env КЛЮЧ=значение` для запуска на телефоне; проверка: размер `.app` меньше, игра грузится на iPhone
-- [ ] 3.3 Пауза звука в фоне по `AppLifecycle` общим кодом для Android и iOS; ограничитель кадров `frame_limit` (iPad ProMotion — 60); проверка: iPhone — свернуть и вернуться во время забега; симулятор iPad — 60 кадров в F3
+- [x] 3.1 Профили ios-phone и ios-tablet по таблице решения 6 в design.md; проверка: `cargo test`, лог в симуляторе iPhone и iPad — плотность 1,5 на medium
+- [x] 3.2 `scripts/build-ios.sh`: текстуры моделей до 1024 при сборке (`scripts/web_textures.py`, как у Android), ключ `--env КЛЮЧ=значение` для запуска на телефоне; проверка: размер `.app` меньше, игра грузится на iPhone
+- [x] 3.3 Пауза звука в фоне по `AppLifecycle` общим кодом для Android и iOS; ограничитель кадров `frame_limit` (iPad ProMotion — 60); проверка: iPhone — свернуть и вернуться во время забега; симулятор iPad — 60 кадров в F3
 - [ ] 3.4 Замер на iPhone 15 Pro Max: 5 минут забега на low, medium, high — FPS из F3, нагрев, память (`os_proc_available_memory` в лог раз в 10 с); числа профиля iPhone поправить по замеру; проверка: `scripts/build-ios.sh --release --run`
 - [ ] 3.5 Слой нагрева: при `ProcessInfo.thermalState` ≥ serious или в режиме энергосбережения плотность кадра на шаг ниже, в лог; проверка: iPhone, долгий забег на high до нагрева
 
