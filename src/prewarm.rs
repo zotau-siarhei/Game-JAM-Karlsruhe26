@@ -119,9 +119,25 @@ impl PipelineWatch {
 
 /// Рендер-мир: компилирует очередь конвейеров сам (позже это сделал бы Bevy в
 /// `RenderSystems::Render`), меряет время и замечает новые конвейеры.
+///
+/// На Android конвейеры собираются параллельно в пуле асинхронных задач, но кадр ждёт, пока все
+/// начатые не соберутся: отрисовка вперемешку со сборкой вешала GPU Adreno 810 (DeviceLost),
+/// а по одному в рендер-потоке прогрев шёл 15 с.
 fn compile_pipelines(mut cache: ResMut<PipelineCache>, watch: Res<PipelineWatch>) {
     let start = Instant::now();
     cache.process_queue();
+    #[cfg(target_os = "android")]
+    {
+        use bevy::render::render_resource::CachedPipelineState;
+        let creating = |cache: &PipelineCache| {
+            cache.pipelines().any(|p| matches!(p.state, CachedPipelineState::Creating(_)))
+        };
+        // Предел на случай зависшей задачи: кадр пойдёт, Bevy доберёт её сам.
+        while creating(&cache) && start.elapsed().as_secs_f32() < 120.0 {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            cache.process_queue();
+        }
+    }
     let ms = start.elapsed().as_secs_f32() * 1000.0;
     let total = cache.pipelines().count();
     let mut state = watch.lock();

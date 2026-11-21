@@ -160,12 +160,29 @@ fn main() {
         meta_check: bevy::asset::AssetMetaCheck::Never,
         ..default()
     });
-    // Предобработка мешей только на процессоре, см. `android.rs`. Конвейеры собираются синхронно:
-    // фоновая сборка при пустом кэше шейдеров драйвера вешала GPU Adreno 810 (потеря устройства).
+    // Предобработка мешей только на процессоре, см. `android.rs`. Конвейеры собираются в пуле
+    // асинхронных задач, но кадр их ждёт (`prewarm::compile_pipelines`): фоновая сборка вперемешку
+    // с отрисовкой вешала GPU Adreno 810 (потеря устройства), а сборка по одному шла 15 с.
+    // Свойство `debug.spaceguard.sync 1` возвращает сборку по одному.
+    #[cfg(target_os = "android")]
+    let synchronous = android::system_property(c"debug.spaceguard.sync").is_some_and(|v| v == "1");
     #[cfg(target_os = "android")]
     let plugins = plugins
         .set(bevy::pbr::PbrPlugin { use_gpu_instance_buffer_builder: false, ..default() })
-        .set(bevy::render::RenderPlugin { synchronous_pipeline_compilation: true, ..default() });
+        .set(bevy::render::RenderPlugin { synchronous_pipeline_compilation: synchronous, ..default() })
+        // Половина ядер — на сборку конвейеров при загрузке; в игре этот пул почти не занят.
+        .set(bevy::app::TaskPoolPlugin {
+            task_pool_options: bevy::app::TaskPoolOptions {
+                async_compute: bevy::app::TaskPoolThreadAssignmentPolicy {
+                    min_threads: 2,
+                    max_threads: 6,
+                    percent: 0.5,
+                    on_thread_spawn: None,
+                    on_thread_destroy: None,
+                },
+                ..default()
+            },
+        });
     App::new()
         .insert_resource(ClearColor(SKY_COLOR))
         .insert_resource(RunSeed::from_clock())
