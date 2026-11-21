@@ -187,6 +187,18 @@ cargo test                                  # тесты
   медленно. Сборка `--abi=arm64-v8a`, затем `adb install -r`; касания — `adb shell input tap|swipe|motionevent`,
   снимок — `adb exec-out screencap -p`. С target SDK 36 окно идёт под вырез камеры, а «назад» система закрывала
   бы сама: в манифесте `enableOnBackInvokedCallback="false"`.
+  Скорость на телефоне (A059, Adreno 810): кадр рисуется не плотнее 1,25/1,5/2 пикселя на точку по ступени
+  качества (`src/render_scale.rs`: в рендер-мире уменьшаются цепочка кадров окна и цели камер, растягивает
+  система); на medium один каскад теней. Главная нагрузка — модели: на телефоне (`platform::is_mobile`,
+  на компьютере `SPACE_GUARD_MOBILE=1`) сетки моделей с полем `mobile_detail` в `models.json` упрощает
+  meshoptimizer (`src/lod.rs`, крейт `meshopt` на C++, не в WASM; для Android C++ собирается без исключений),
+  текстуры моделей уменьшаются до 1024 и получают mip-уровни. Сцену модели запрашивай только после загрузки
+  её glTF (`models.rs`): запрос `x.glb` и `x.glb#Scene0` в одном кадре грузит файл дважды.
+  Замеры без пересборки — свойства `adb shell setprop debug.spaceguard.<имя>`, читаются при запуске:
+  `perf 1` (сводка `--bench` в logcat: FPS, потоки, треугольники теней по моделям, пакеты отрисовки),
+  `quality low|medium|high`, `density <пикселей на точку>` (0 — экран как есть), `novsync 1`,
+  `shadows <каскадов>,<метров>`, `detail <множитель mobile_detail>`, `off shadows,bloom,hdr,grass,particles,model:<id>`
+  (на компьютере — `SPACE_GUARD_OFF`). APK профилируется simpleperf (`profileable` в манифесте).
 - Браузерная версия выкладывается на GitHub Pages: https://zotau-siarhei.github.io/Game-JAM-Karlsruhe26/
   Workflow `.github/workflows/web.yml` раз в 4 часа собирает main (`--release`), если после последней
   выкладки были коммиты. Сборка не чаще раза в 4 часа при любом запуске, ручной (Actions → web → Run
