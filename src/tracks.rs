@@ -363,9 +363,12 @@ impl Tracks {
     }
 }
 
-/// Общие ресурсы следов: материал ленты.
+/// Общие ресурсы следов: материал ленты и образец меша. Образец (раскладка с цветом вершин)
+/// создаётся при старте, чтобы прогрев (`src/prewarm.rs`) собрал его конвейер с материалом
+/// ленты: иначе первый след в забеге стоил кадра компиляции (на телефоне — четверть секунды).
 #[derive(Resource)]
-struct TrackMaterial(Handle<StandardMaterial>);
+#[allow(dead_code)]
+struct TrackMaterial(Handle<StandardMaterial>, Handle<Mesh>);
 
 /// Меш следов участка.
 #[derive(Component)]
@@ -385,6 +388,7 @@ fn create_assets(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut effects: ResMut<Assets<EffectAsset>>,
+    mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let texture = images.add(track_image());
     let material = materials.add(StandardMaterial {
@@ -395,7 +399,7 @@ fn create_assets(
         depth_bias: DEPTH_BIAS,
         ..default()
     });
-    commands.insert_resource(TrackMaterial(material));
+    commands.insert_resource(TrackMaterial(material, meshes.add(empty_mesh())));
     commands.insert_resource(DustEffect(effects.add(crate::rover_look::dust_effect())));
 }
 

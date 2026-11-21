@@ -229,10 +229,17 @@ fn attach_players(
                 .0
                 .entry((model, skin))
                 .or_insert_with(|| {
-                    let mut look = materials.get(&material.0).cloned().unwrap_or_default();
-                    look.base_color_texture =
-                        Some(asset_server.load(format!("models/skins/{model}_{skin}.png")));
-                    materials.add(look)
+                    // Материал модели живёт только в рендер-мире (`models::texture_in_gpu_only`),
+                    // скопировать его нельзя: свойства — как у материала жителей в glTF.
+                    // Иначе материал выходит односторонним и глянцевым, а его конвейер — поздним.
+                    materials.add(StandardMaterial {
+                        base_color_texture: Some(asset_server.load(format!("models/skins/{model}_{skin}.png"))),
+                        perceptual_roughness: 1.0,
+                        metallic: 0.0,
+                        double_sided: true,
+                        cull_mode: None,
+                        ..default()
+                    })
                 })
                 .clone();
             material.0 = handle;

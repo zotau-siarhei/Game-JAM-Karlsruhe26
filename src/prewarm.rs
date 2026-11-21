@@ -127,7 +127,9 @@ fn compile_pipelines(mut cache: ResMut<PipelineCache>, watch: Res<PipelineWatch>
     let mut state = watch.lock();
     let fresh = total.saturating_sub(state.total);
     if fresh > 0 && state.warm {
-        let labels: Vec<String> = cache.pipelines().skip(state.total).map(|p| label(&p.descriptor)).collect();
+        let all: Vec<&PipelineDescriptor> = cache.pipelines().map(|p| &p.descriptor).collect();
+        let (old, new) = all.split_at(state.total.min(all.len()));
+        let labels: Vec<String> = new.iter().map(|d| format!("{} [{}]", label(d), difference(d, old))).collect();
         warn!("Поздний конвейер: {} за {ms:.1} мс", labels.join(", "));
         state.late += fresh;
         state.late_ms += ms;
@@ -144,6 +146,45 @@ fn label(descriptor: &PipelineDescriptor) -> String {
         PipelineDescriptor::MeshPipelineDescriptor(d) => d.label.as_deref(),
     };
     label.unwrap_or("без метки").to_owned()
+}
+
+/// Чем конвейер отличается от ближайшего прогретого с той же меткой: шейдер-дефы и вершины.
+/// По этой строке видно, какого сочетания прогрев не покрыл.
+fn difference(descriptor: &PipelineDescriptor, warmed: &[&PipelineDescriptor]) -> String {
+    let features = |d: &PipelineDescriptor| -> HashSet<String> {
+        let mut set = HashSet::new();
+        if let PipelineDescriptor::RenderPipelineDescriptor(d) = d {
+            set.extend(d.vertex.shader_defs.iter().map(|def| format!("{def:?}")));
+            if let Some(fragment) = &d.fragment {
+                set.extend(fragment.shader_defs.iter().map(|def| format!("{def:?}")));
+                set.extend(fragment.targets.iter().map(|t| format!("target {:?}", t.as_ref().map(|t| (t.format, t.blend.is_some())))));
+            }
+            for buffer in &d.vertex.buffers {
+                set.extend(buffer.attributes.iter().map(|a| format!("attribute {} {:?}", a.shader_location, a.format)));
+            }
+            set.insert(format!("primitive {:?} cull {:?}", d.primitive.topology, d.primitive.cull_mode));
+            set.insert(format!("depth {:?}", d.depth_stencil.as_ref().map(|s| (s.format, s.depth_write_enabled, s.depth_compare))));
+            set.insert(format!("msaa {}", d.multisample.count));
+        }
+        set
+    };
+    let mine = features(descriptor);
+    let name = label(descriptor);
+    let closest = warmed
+        .iter()
+        .filter(|d| label(d) == name)
+        .map(|d| features(d))
+        .min_by_key(|other| mine.symmetric_difference(other).count());
+    let Some(other) = closest else {
+        return "нет прогретого с этой меткой".to_owned();
+    };
+    let mut added: Vec<&String> = mine.difference(&other).collect();
+    let mut missing: Vec<&String> = other.difference(&mine).collect();
+    added.sort();
+    missing.sort();
+    let mut attributes: Vec<&String> = mine.iter().filter(|f| f.starts_with("attribute")).collect();
+    attributes.sort();
+    format!("есть {added:?}, нет {missing:?}; вершины {attributes:?}")
 }
 
 /// Класс меша для конвейера: топология, атрибуты вершин и морф-цели.
