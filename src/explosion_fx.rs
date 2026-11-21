@@ -655,6 +655,8 @@ fn spawn_explosions(
     let mut alive = roots.iter().count();
     let mut full_alive = roots.iter().filter(|fx| fx.full).count();
     let mut flashes = flashes.iter().count();
+    // На телефоне вспышек вдвое меньше: точечный свет — расчёт для каждого пикселя рядом.
+    let max_flashes = if crate::platform::is_mobile() { MAX_FLASHES / 2 } else { MAX_FLASHES };
     for (index, e) in explosions.read().enumerate() {
         let seed = explosion_seed(e.position, time.elapsed_secs() + index as f32);
         let mut rng = Rng::new(seed);
@@ -687,7 +689,7 @@ fn spawn_explosions(
             .id();
 
         // Вспышка.
-        if tier != FxTier::Minimal && flashes < MAX_FLASHES {
+        if tier != FxTier::Minimal && flashes < max_flashes {
             flashes += 1;
             commands.spawn((
                 FlashLayer,

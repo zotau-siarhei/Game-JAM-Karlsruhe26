@@ -55,6 +55,23 @@ const PUFF_SECONDS: f32 = 1.4;
 /// Сколько уснувших обломков лежит в забеге. Сверх этого убираются самые мелкие в самом дальнем
 /// от фокуса участке.
 const MAX_RESTING: usize = 1500;
+/// На телефоне лежит меньше обломков и тень бросают только крупные: каждый обломок — ещё одна
+/// сетка в проходах кадра и теней, а к концу долгого забега их набираются тысячи.
+const MOBILE_MAX_RESTING: usize = 600;
+const MOBILE_SHADOW_SIZE: f32 = 1.2;
+
+/// Обломок меньше этого тени не отбрасывает, м.
+fn shadow_size() -> f32 {
+    static SIZE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *SIZE.get_or_init(|| if crate::platform::is_mobile() { MOBILE_SHADOW_SIZE } else { SHADOW_SIZE })
+}
+
+/// Сколько уснувших обломков может лежать в забеге.
+fn max_resting() -> usize {
+    static COUNT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *COUNT.get_or_init(|| if crate::platform::is_mobile() { MOBILE_MAX_RESTING } else { MAX_RESTING })
+}
+
 /// Сколько обломков может лететь одновременно. Сверх этого мелкие (меньше [`SHADOW_SIZE`])
 /// не появляются: в авиаудар по посёлку мелочь не видна за крупными кусками.
 const MAX_FLYING: usize = 400;
@@ -346,7 +363,7 @@ fn spawn_debris(
     let mut flying_count = flying.iter().count();
     let mut trail_count = trails.iter().count();
     for (i, request) in requests.read().enumerate() {
-        if flying_count >= MAX_FLYING && extent(&request.shape, request.size) < SHADOW_SIZE {
+        if flying_count >= MAX_FLYING && extent(&request.shape, request.size) < shadow_size() {
             continue;
         }
         flying_count += 1;
@@ -380,7 +397,7 @@ fn spawn_debris(
                 .with_rotation(request.rotation.unwrap_or(Quat::from_euler(EulerRot::XYZ, k, k * 0.5, k * 0.3)))
                 .with_scale(request.size),
         ));
-        if size < SHADOW_SIZE {
+        if size < shadow_size() {
             entity.insert(NotShadowCaster);
         }
         let parent = entity.id();
@@ -596,10 +613,10 @@ fn fly_debris(
     limit_resting(&mut store, &mut commands, focus);
 }
 
-/// Держит число лежащих обломков не больше [`MAX_RESTING`]: убирает самый мелкий обломок
+/// Держит число лежащих обломков не больше [`max_resting`]: убирает самый мелкий обломок
 /// в самом дальнем от фокуса участке, пока лишние не кончатся.
 fn limit_resting(store: &mut DebrisStore, commands: &mut Commands, focus: Vec3) {
-    while store.count > MAX_RESTING {
+    while store.count > max_resting() {
         let far = store
             .chunks
             .iter()
@@ -679,7 +696,7 @@ fn stream_debris(
             .map(|piece| {
                 let (mesh, material) = assets.look(&piece.shape, piece.color, &mut materials);
                 let mut e = commands.spawn((RunScoped, mesh, material, piece.transform));
-                if extent(&piece.shape, piece.transform.scale) < SHADOW_SIZE {
+                if extent(&piece.shape, piece.transform.scale) < shadow_size() {
                     e.insert(NotShadowCaster);
                 }
                 e.id()

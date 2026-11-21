@@ -79,7 +79,13 @@ for abi in "${abis[@]}"; do
     # Страницы по 16 КБ: без этого библиотека не загрузится на новых устройствах.
     export "CARGO_TARGET_${upper}_RUSTFLAGS=-C link-arg=-Wl,-z,max-page-size=16384"
 done
-cargo build --manifest-path android/Cargo.toml --release "${targets[@]}"
+# SPACE_GUARD_SYMBOLS=1 — библиотека с именами функций для отчёта simpleperf (`--symdir`), одна ABI:
+# перекомпилируется только крейт игры, зависимости остаются прежними.
+if [[ ${SPACE_GUARD_SYMBOLS:-} == 1 ]]; then
+    cargo rustc --manifest-path android/Cargo.toml --release --lib "${targets[@]}" -- -C strip=none
+else
+    cargo build --manifest-path android/Cargo.toml --release "${targets[@]}"
+fi
 
 out=$CARGO_TARGET_DIR/apk
 rm -rf "$out"

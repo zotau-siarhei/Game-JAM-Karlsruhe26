@@ -196,16 +196,21 @@ cargo test                                  # тесты
   система); на medium один каскад теней. Главная нагрузка — модели: на телефоне (`platform::is_mobile`,
   на компьютере `SPACE_GUARD_MOBILE=1`) сетки моделей с полем `mobile_detail` в `models.json` упрощает
   meshoptimizer (`src/lod.rs`, крейт `meshopt` на C++, не в WASM; для Android C++ собирается без исключений),
-  текстуры моделей уменьшаются до 1024 и получают mip-уровни. Модели с полем `mobile_shadow` (деревья) отбрасывают
+  текстуры моделей уменьшаются до 1024 и получают mip-уровни; новой модели сразу ставь `mobile_detail`. К концу
+  долгого забега кадр упирается в видеокарту (20+ врагов, тысячи обломков): на телефоне вдвое меньше точечных
+  источников (огонь, вспышки взрывов), лежит до 600 обломков, тень бросают обломки от 1,2 м. Модели с полем `mobile_shadow` (деревья) отбрасывают
   тень грубым силуэтом (`models::ShadowProxy`) на слое `lod::SHADOW_LAYER`, который видит только солнце; обломки и
   снятие теней силуэты обходят. Сцену модели запрашивай только после загрузки
   её glTF (`models.rs`): запрос `x.glb` и `x.glb#Scene0` в одном кадре грузит файл дважды. Размеры кадра в
   рендер-мире меняй после набора `RenderSystems::ExtractCommands`: в нём применяются команды передачи кадра.
   Замеры без пересборки — свойства `adb shell setprop debug.spaceguard.<имя>`, читаются при запуске:
-  `perf 1` (сводка `--bench` в logcat: FPS, потоки, треугольники теней по моделям, пакеты отрисовки),
-  `quality low|medium|high`, `density <пикселей на точку>` (0 — экран как есть), `novsync 1`,
-  `shadows <каскадов>,<метров>`, `detail <множитель mobile_detail>`, `off shadows,bloom,hdr,grass,particles,model:<id>`
-  (на компьютере — `SPACE_GUARD_OFF`). APK профилируется simpleperf (`profileable` в манифесте).
+  `perf 1` (сводка `--bench` в logcat: FPS, потоки, проходы на видеокарте, треугольники теней по моделям,
+  пакеты отрисовки), `quality low|medium|high`, `density <пикселей на точку>` (0 — экран как есть), `novsync 1`,
+  `shadows <каскадов>,<метров>`, `detail <множитель mobile_detail>`, `compute <потоков пула>`,
+  `off shadows,bloom,hdr,grass,particles,model:<id>` (`model:tree*` — по началу имени; на компьютере —
+  `SPACE_GUARD_OFF`). Загрузку видеокарты в процентах показывает `/sys/class/kgsl/kgsl-3d0/gpubusy`.
+  APK профилируется simpleperf (`profileable` в манифесте); имена функций в отчёте — сборка
+  `SPACE_GUARD_SYMBOLS=1 scripts/build-android.sh` и `simpleperf report --symfs` с этим APK по пути с телефона.
 - Браузерная версия выкладывается на GitHub Pages: https://zotau-siarhei.github.io/Game-JAM-Karlsruhe26/
   Workflow `.github/workflows/web.yml` раз в 4 часа собирает main (`--release`), если после последней
   выкладки были коммиты. Сборка не чаще раза в 4 часа при любом запуске, ручной (Actions → web → Run

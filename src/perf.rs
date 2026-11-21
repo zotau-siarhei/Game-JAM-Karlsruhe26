@@ -68,6 +68,7 @@ const RENDER_PARTS: usize = RENDER_SETS.len();
 /// Выключенные для замера части картинки: `adb shell setprop debug.spaceguard.off shadows,bloom`
 /// на Android или `SPACE_GUARD_OFF=shadows,bloom` на компьютере; читается при запуске.
 /// Части: `shadows`, `bloom`, `hdr`, `grass`, `particles`, `lights`, `proxies`, `msaa`, `model:<id>`.
+/// Звёздочка в конце — начало имени: `model:tree*` — все деревья, `model:*` — все модели.
 pub fn off(part: &str) -> bool {
     static LIST: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
     LIST.get_or_init(|| {
@@ -82,7 +83,7 @@ pub fn off(part: &str) -> bool {
         list
     })
     .iter()
-    .any(|p| p == part)
+    .any(|p| p.strip_suffix('*').map_or(p == part, |prefix| part.starts_with(prefix)))
 }
 
 /// Сводка замера в logcat на телефоне, где нет аргументов запуска:
@@ -323,6 +324,10 @@ impl Plugin for PerfPlugin {
             .add_systems(PostUpdate, hide_particles);
         add_main_marks(app);
         let bench = *app.world().resource::<Bench>();
+        // Время проходов на видеокарте (метки времени GPU) — только в замере: они не бесплатны.
+        if bench.on || phone_log() {
+            app.add_plugins(bevy::render::diagnostic::RenderDiagnosticsPlugin);
+        }
         if let Some(render) = app.get_sub_app_mut(RenderApp) {
             render
                 .insert_resource(bench)
@@ -555,6 +560,7 @@ fn log_bench(
     scale: Res<crate::render_scale::RenderScale>,
     meshes: Query<(&ViewVisibility, Has<bevy::light::NotShadowCaster>), With<Mesh3d>>,
     shadows: ShadowCasters,
+    diagnostics: Res<bevy::diagnostic::DiagnosticsStore>,
 ) {
     if !bench.on && !phone_log() {
         return;
@@ -589,6 +595,19 @@ fn log_bench(
             .map(|i| format!("{} {:.2}", main_label(i), s.main[i]))
             .collect();
         info!("  main thread {:.2} ms: {}", s.main_total, main.join(", "));
+        let mut gpu: Vec<(String, f64)> = diagnostics
+            .iter()
+            .filter_map(|d| {
+                let path = d.path().as_str();
+                let pass = path.strip_suffix("/elapsed_gpu")?.trim_start_matches("render/");
+                Some((pass.to_owned(), d.average()?))
+            })
+            .collect();
+        gpu.sort_by(|a, b| b.1.total_cmp(&a.1));
+        if !gpu.is_empty() {
+            let parts: Vec<String> = gpu.iter().take(14).map(|(pass, ms)| format!("{pass} {ms:.2}")).collect();
+            info!("  gpu ms: {}", parts.join(", "));
+        }
         let render: Vec<String> = (0..RENDER_PARTS)
             .map(|i| format!("{} {:.2}", RENDER_SETS[i].1, s.render[i]))
             .collect();

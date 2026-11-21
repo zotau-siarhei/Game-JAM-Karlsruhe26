@@ -166,6 +166,13 @@ fn main() {
     // Свойство `debug.spaceguard.sync 1` возвращает сборку по одному.
     #[cfg(target_os = "android")]
     let synchronous = android::system_property(c"debug.spaceguard.sync").is_some_and(|v| v == "1");
+    // Вычислительный пул — системы игры и рендера, запись команд кадра. Bevy отдал бы ему только
+    // ядра, оставшиеся от других пулов (из восьми — два), и рендер ждал бы игру; число задано
+    // прямо, для замера — свойство `debug.spaceguard.compute`.
+    #[cfg(target_os = "android")]
+    let compute = android::system_property(c"debug.spaceguard.compute")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(4);
     #[cfg(target_os = "android")]
     let plugins = plugins
         .set(bevy::pbr::PbrPlugin { use_gpu_instance_buffer_builder: false, ..default() })
@@ -177,6 +184,13 @@ fn main() {
                     min_threads: 2,
                     max_threads: 6,
                     percent: 0.5,
+                    on_thread_spawn: None,
+                    on_thread_destroy: None,
+                },
+                compute: bevy::app::TaskPoolThreadAssignmentPolicy {
+                    min_threads: compute,
+                    max_threads: compute,
+                    percent: 1.0,
                     on_thread_spawn: None,
                     on_thread_destroy: None,
                 },
