@@ -44,6 +44,11 @@ else
     kind=device
 fi
 
+# Минимальная iOS — одна для Rust и для C++ зависимостей (meshoptimizer), как в Info.plist: иначе
+# C++ собирается под новейшую систему и ссылается на `___chkstk_darwin`, которой нет при
+# линковке под iOS 10 по умолчанию у Rust.
+export IPHONEOS_DEPLOYMENT_TARGET=16.0
+
 # Цель сборки — в обычном target этого worktree: зависимости для iOS собираются один раз.
 cargo build --target "$triple" "${profile_flag[@]}"
 binary=target/$triple/$profile_dir/space_guard

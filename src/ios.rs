@@ -17,6 +17,12 @@ use objc2::msg_send;
 use objc2::runtime::AnyObject;
 use raw_window_handle::RawWindowHandle;
 
+// Среда C++ для meshoptimizer (`src/lod.rs`): сборочный скрипт крейта `meshopt` подключает libc++
+// только для целей `*-darwin`, а цель iOS — `aarch64-apple-ios`, и без этого не находятся
+// `operator new` и `__gxx_personality_v0`.
+#[link(name = "c++")]
+unsafe extern "C" {}
+
 /// Плагин iOS: размер окна и безопасная область по виду UIKit.
 pub struct IosPlugin;
 
