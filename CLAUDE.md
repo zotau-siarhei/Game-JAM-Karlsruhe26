@@ -178,7 +178,7 @@ cargo test                                  # тесты
   `target/android/space-guard.apk` без Gradle. Пакет `android/` компилирует `src/main.rs` библиотекой для
   `NativeActivity`, поэтому новую зависимость добавляй и в `android/Cargo.toml`. Нужны Android SDK, NDK и
   таргеты Rust (список — в начале скрипта). Особенности платформы — `src/android.rs` (выборка тени для
-  Adreno, звук в фоне) и `src/platform.rs`: ассеты лежат в APK, поэтому новый JSON-список надо вшить в
+  Adreno) и `src/platform.rs`: ассеты лежат в APK, поэтому новый JSON-список надо вшить в
   `platform::read_list`. Потеря видеокарты (DeviceLost) или паника открывают игру заново (`android::restart_once`,
   перезапуск в первую минуту после перезапуска не повторяется); проверка — `setprop debug.spaceguard.lose <секунд>`. Конвейеры на Android собираются параллельно в пуле асинхронных задач, но кадр ждёт
   их готовности (`prewarm::compile_pipelines`): отрисовка вперемешку со сборкой вешала GPU Adreno 810. Управление — касания (`src/touch.rs`), геймпад или клавиатура; вибрации нет.
@@ -194,8 +194,9 @@ cargo test                                  # тесты
   бы сама: в манифесте `enableOnBackInvokedCallback="false"`.
   Скорость на телефоне (A059, Adreno 810): кадр рисуется не плотнее 1,25/1,5/2 пикселя на точку по ступени
   качества (`src/render_scale.rs`: в рендер-мире уменьшаются цепочка кадров окна и цели камер, растягивает
-  система); на medium один каскад теней. Главная нагрузка — модели: на телефоне (`platform::is_mobile`,
-  на компьютере `SPACE_GUARD_MOBILE=1`) сетки моделей с полем `mobile_detail` в `models.json` упрощает
+  система); на medium один каскад теней. Все эти числа — в профиле платформы (см. «Профили платформ» ниже).
+  Главная нагрузка — модели: на телефоне (`models.simplify` профиля, на компьютере `SPACE_GUARD_MOBILE=1`)
+  сетки моделей с полем `mobile_detail` в `models.json` упрощает
   meshoptimizer (`src/lod.rs`, крейт `meshopt` на C++, не в WASM; для Android C++ собирается без исключений),
   текстуры моделей уменьшаются до 1024 и получают mip-уровни; новой модели сразу ставь `mobile_detail`. К концу
   долгого забега кадр упирается в видеокарту (20+ врагов, тысячи обломков): на телефоне вдвое меньше точечных
@@ -204,14 +205,38 @@ cargo test                                  # тесты
   снятие теней силуэты обходят. Сцену модели запрашивай только после загрузки
   её glTF (`models.rs`): запрос `x.glb` и `x.glb#Scene0` в одном кадре грузит файл дважды. Размеры кадра в
   рендер-мире меняй после набора `RenderSystems::ExtractCommands`: в нём применяются команды передачи кадра.
-  Замеры без пересборки — свойства `adb shell setprop debug.spaceguard.<имя>`, читаются при запуске:
-  `perf 1` (сводка `--bench` в logcat: FPS, потоки, проходы на видеокарте, треугольники теней по моделям,
-  пакеты отрисовки), `quality low|medium|high`, `density <пикселей на точку>` (0 — экран как есть), `novsync 1`,
-  `shadows <каскадов>,<метров>`, `detail <множитель mobile_detail>`, `compute <потоков пула>`,
-  `off shadows,bloom,hdr,grass,particles,model:<id>` (`model:tree*` — по началу имени; на компьютере —
-  `SPACE_GUARD_OFF`). Загрузку видеокарты в процентах показывает `/sys/class/kgsl/kgsl-3d0/gpubusy`.
+  Замеры без пересборки — свойства `adb shell setprop debug.spaceguard.<имя>`, читаются при запуске: любой
+  путь профиля (`render.density 1`) и прежние имена — `perf 1` (сводка `--bench` в logcat: FPS, потоки, проходы
+  на видеокарте, треугольники теней по моделям, пакеты отрисовки), `quality low|medium|high`,
+  `density <пикселей на точку>` (0 — экран как есть), `novsync 1`, `shadows <каскадов>,<метров>`,
+  `detail <множитель mobile_detail>`, `compute <потоков пула>`, `sync 1`,
+  `off shadows,bloom,hdr,grass,particles,model:<id>` (`model:tree*` — по началу имени). Загрузку видеокарты в процентах показывает `/sys/class/kgsl/kgsl-3d0/gpubusy`.
   APK профилируется simpleperf (`profileable` в манифесте); имена функций в отчёте — сборка
   `SPACE_GUARD_SYMBOLS=1 scripts/build-android.sh` и `simpleperf report --symfs` с этим APK по пути с телефона.
+- Сборка под iOS: `scripts/build-ios.sh` (`--sim`, `--release`, `--install`, `--run`, `--env КЛЮЧ=значение`,
+  `--small-textures`) собирает `target/ios/<sim|device>/SpaceGuard.app` без проекта Xcode. Нужны Xcode и
+  `rustup target add aarch64-apple-ios aarch64-apple-ios-sim`; для телефона — сертификат Apple Development и
+  профиль подготовки с этим устройством (создаётся в Xcode, скрипт находит его сам). Особенности — `src/ios.rs`:
+  размер окна и безопасная область из UIKit, класс устройства (iPhone/iPad), слой нагрева, лог ещё и в файл
+  песочницы `Library/Application Support/space_guard.log` (с телефона: `xcrun devicectl device copy from
+  --domain-type appDataContainer --domain-identifier io.github.zotausiarhei.spaceguard --source …`).
+  Версия SDK в исполняемом файле — 18 (`vtool`): iOS 27 закрывает приложения без сцен UIKit, а winit 0.30
+  их не умеет. В симуляторе нет частиц (`bevy_hanabi` нужна непрямая отрисовка). meshoptimizer требует
+  libc++ (`ios.rs`) и `IPHONEOS_DEPLOYMENT_TARGET=16.0` (скрипт). Бесплатная команда Apple: если с устройства
+  удалить последнее её приложение, доверие разработчику пропадает и его надо дать заново в настройках.
+- Профили платформ — `src/profile.rs`, значения в `assets/platform/profiles.json` (вшит в сборку): плотность
+  кадра, тени, MSAA, bloom, предел кадров, обломки, огни и вспышки, упрощение моделей, размер текстур,
+  прогрев, пулы потоков, ступень и ввод по умолчанию, «Выход» в меню, звук в фоне. Профиль наследует
+  `parent` и перечисляет только отличия; значение по ступеням — `[low, medium, high]`. Дерево: `base` →
+  `desktop` (`macos`, `linux`, `windows`), `web` (`web-desktop`, `web-mobile`), `mobile` (`android`,
+  `ios-phone`, `ios-tablet`). Код берёт числа только из `profile::get()`, а не из `cfg!(target_os)` или
+  «телефон ли»; условием платформы остаются лишь обходы драйверов и систем (Adreno, WebKit,
+  NativeActivity, симулятор iOS). Переопределение любого значения без пересборки — одно имя, свой транспорт:
+  `SPACE_GUARD_RENDER_DENSITY=1` (компьютер; iOS — `build-ios.sh --env`), `adb shell setprop
+  debug.spaceguard.render.density 1` (Android), `?render.density=1` (браузер); профиль целиком —
+  `profile` (`SPACE_GUARD_PROFILE=ios-phone` показывает облик iPhone на Mac). Профиль и переопределения
+  видны в логе при запуске, в F3 и в сводке `--bench`. Тест `profile::tests` сверяет профили компьютера,
+  браузера и Android с прежними числами: меняешь число — меняй и тест.
 - Браузерная версия выкладывается на GitHub Pages: https://zotau-siarhei.github.io/Game-JAM-Karlsruhe26/
   Workflow `.github/workflows/web.yml` раз в 4 часа собирает main (`--release`), если после последней
   выкладки были коммиты. Сборка не чаще раза в 4 часа при любом запуске, ручной (Actions → web → Run

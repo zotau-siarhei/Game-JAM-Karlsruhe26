@@ -1,9 +1,11 @@
+в работе: Sergei Zotov
+
 ## 1. Профили и ресурс
 
-- [ ] 1.1 `assets/platform/profiles.json` с профилями base, desktop, macos, linux, windows, web, web-mobile, mobile, android, ios-phone, ios-tablet и числами из таблицы Context в design.md; `src/profile.rs`: разбор, глубокое слияние по `parent`, значения со ступенями `[low, medium, high]`, ресурс `PlatformProfile`, `ProfilePlugin` первым в `main.rs`; проверка: `cargo test` — каждый профиль собирается, все поля заданы
+- [x] 1.1 `assets/platform/profiles.json` с профилями base, desktop, macos, linux, windows, web, web-mobile, mobile, android, ios-phone, ios-tablet и числами из таблицы Context в design.md; `src/profile.rs`: разбор, глубокое слияние по `parent`, значения со ступенями `[low, medium, high]`, ресурс `PlatformProfile`, `ProfilePlugin` первым в `main.rs`; проверка: `cargo test` — каждый профиль собирается, все поля заданы
 - [ ] 1.2 Определение платформы и класса устройства: iOS — `UIDevice.userInterfaceIdiom` через `objc2` в `src/ios.rs`, браузер — `window.spaceGuardMobile`, Android — телефон; `SPACE_GUARD_MOBILE=1` на компьютере выбирает профиль mobile; проверка: `cargo test`, имя профиля в логе на Mac и в симуляторе iPhone
 - [ ] 1.3 Переопределения: путь ключа → `SPACE_GUARD_<ПУТЬ>` (компьютер, iOS), `debug.spaceguard.<путь>` (Android), `?<путь>=` (браузер); синонимы старых ручек (`density`, `shadows`, `detail`, `quality`, `off`, `SPACE_GUARD_OFF`, `SPACE_GUARD_DETAIL`, `?quality=`); строка в лог со всеми действующими; проверка: `cargo test` на разбор ключей, запуск с `SPACE_GUARD_RENDER_DENSITY=1`
-- [ ] 1.4 Тест равенства: профили macos, linux, windows, web, web-mobile, android дают ровно сегодняшние числа (таблица Context); проверка: `cargo test`
+- [x] 1.4 Тест равенства: профили macos, linux, windows, web, web-mobile, android дают ровно сегодняшние числа (таблица Context); проверка: `cargo test`
 
 ## 2. Перенос модулей на профиль
 
