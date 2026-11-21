@@ -86,12 +86,33 @@ rm -rf "$out"
 mkdir -p "$out"
 "$tools/aapt2" compile --dir android/res -o "$out/res.zip"
 
+# Ассеты APK: текстуры моделей не больше 1024 пикселей, как в браузерной сборке. Телефон всё равно
+# рисует их не крупнее 1024 (src/lod.rs), а так APK втрое меньше и картинки при загрузке декодируются
+# быстрее. Исходники в assets/ не меняются, готовые текстуры кэшируются по хэшу.
+assets_dir=$CARGO_TARGET_DIR/assets
+rm -rf "$assets_dir"
+if [[ $(uname) == Darwin ]]; then
+    cp -cR assets "$assets_dir"
+else
+    cp -R assets "$assets_dir"
+fi
+rm -rf "$assets_dir/voice/raw"
+textures=(scripts/web_textures.py "$assets_dir" "$CARGO_TARGET_DIR/textures" 1024)
+if python3 -c "import PIL" 2>/dev/null; then
+    python3 -I "${textures[@]}"
+elif command -v uv >/dev/null; then
+    uv run --quiet --no-project --with pillow python -I "${textures[@]}"
+else
+    echo "нужен Pillow: brew install uv (или pip install pillow), на Linux python-pillow" >&2
+    exit 1
+fi
+
 # Уже сжатые форматы хранятся как есть: чтение из APK быстрее, размер почти тот же.
 "$tools/aapt2" link -o "$out/unsigned.apk" -I "$platform" \
     --manifest android/AndroidManifest.xml \
     --min-sdk-version "$min_sdk" --target-sdk-version "$target_sdk" \
     --version-code "$(git rev-list --count HEAD)" --version-name 0.1.0 \
-    -A assets -0 mp3 -0 ogg -0 png -0 glb \
+    -A "$assets_dir" -0 mp3 -0 ogg -0 png -0 glb \
     "$out/res.zip"
 
 # Библиотека лежит в APK несжатой: система отображает её в память прямо оттуда.
