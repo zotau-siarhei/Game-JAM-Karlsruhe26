@@ -45,7 +45,7 @@
 - [x] 7.3 `SPACE_GUARD_UPLOAD_KEY_PASSWORD`, без жёсткого `-sigalg` для ключа загрузки, `jarsigner -verify`
 - [x] 7.4 Лишние ассеты (`*.md`, `preview.html`, вшитые в бинарник файлы) не попадают в APK и AAB
 - [x] 7.5 bash 3.2: `build-android.sh` без `${x^^}`, `build-web.sh` с пустым массивом при `set -u`
-- [ ] 7.6 Сборка AAB: `bundletool` видит символы, `dump config` — 16 КБ, установка на эмулятор (нужно разрешение скачать bundletool)
+- [x] 7.6 Сборка AAB: `bundletool` видит символы, `dump config` — 16 КБ, установка на эмулятор
 
 ## 8. Проверка и review
 
