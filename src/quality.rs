@@ -211,6 +211,7 @@ fn apply_quality(
 fn spawn_label(mut commands: Commands) {
     commands.spawn((
         QualityLabel,
+        crate::hud::SafeAnchor { left: Some(16.0), bottom: Some(16.0), ..default() },
         Text::new(""),
         TextFont {
             font_size: FontSize::Px(20.0),

@@ -310,6 +310,7 @@ fn spawn_panel(mut commands: Commands) {
     commands
         .spawn((
             Panel,
+            crate::hud::SafeAnchor { bottom: Some(14.0), ..default() },
             Node {
                 position_type: PositionType::Absolute,
                 bottom: Val::Px(14.0),

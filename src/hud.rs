@@ -31,7 +31,7 @@ impl Plugin for HudPlugin {
         app.add_systems(Startup, spawn_hud)
             .add_systems(
                 Update,
-                (update_health_bar, update_time, update_weapon, place_hud, hide_run_ui_in_menu)
+                (update_health_bar, update_time, update_weapon, place_hud, place_safe_anchors, hide_run_ui_in_menu)
                     .in_set(GameSet::Presentation),
             );
     }
@@ -69,6 +69,34 @@ struct TimeRow;
 /// забега их обходит, как и сенсорные кнопки (`platform::safe_area`).
 pub fn safe_area_ui(ui_scale: &UiScale) -> Vec4 {
     crate::platform::safe_area() / crate::platform::canvas_scale() / ui_scale.0.max(f32::EPSILON)
+}
+
+/// Узел интерфейса, прижатый к краю экрана: отступы от края в пикселях интерфейса, к ним
+/// прибавляется вырез экрана с той же стороны (`place_safe_anchors`). Задавай только стороны,
+/// которые отсчитываются от края; `None` — сторону не трогать.
+#[derive(Component, Clone, Copy, Default)]
+pub struct SafeAnchor {
+    pub left: Option<f32>,
+    pub top: Option<f32>,
+    pub right: Option<f32>,
+    pub bottom: Option<f32>,
+}
+
+fn place_safe_anchors(ui_scale: Res<UiScale>, mut nodes: Query<(&SafeAnchor, &mut Node)>) {
+    let safe = safe_area_ui(&ui_scale);
+    for (anchor, mut node) in &mut nodes {
+        let node = &mut *node;
+        for (side, inset, field) in [
+            (anchor.left, safe.x, &mut node.left),
+            (anchor.top, safe.y, &mut node.top),
+            (anchor.right, safe.z, &mut node.right),
+            (anchor.bottom, safe.w, &mut node.bottom),
+        ] {
+            if let Some(margin) = side {
+                set_px(field, margin + inset);
+            }
+        }
+    }
 }
 
 /// Меняет поле узла, только если значение другое: иначе узел каждый кадр считался бы изменённым.

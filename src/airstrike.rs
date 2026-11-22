@@ -428,6 +428,7 @@ fn show_targeting_ui(
         .spawn((
             TargetingUi,
             RunScoped,
+            crate::hud::SafeAnchor { top: Some(80.0), ..default() },
             Node {
                 position_type: PositionType::Absolute,
                 left: Val::Percent(10.0),

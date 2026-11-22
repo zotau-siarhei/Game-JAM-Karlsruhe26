@@ -460,6 +460,7 @@ fn spawn_health_bar(commands: &mut Commands) {
         .spawn((
             HealthBar,
             RunScoped,
+            crate::hud::SafeAnchor { top: Some(64.0), ..default() },
             Node {
                 position_type: PositionType::Absolute,
                 // Под временем забега (`hud.rs`: отступ 16 px, плашка около 40 px).

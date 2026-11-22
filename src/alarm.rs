@@ -169,6 +169,7 @@ fn spawn_indicator(mut commands: Commands) {
     commands
         .spawn((
             AlarmIndicator { shown: 0, flash: 0.0 },
+            crate::hud::SafeAnchor { left: Some(POSITION.x), top: Some(POSITION.y), ..default() },
             Node {
                 position_type: PositionType::Absolute,
                 left: Val::Px(POSITION.x),

@@ -48,6 +48,7 @@ pub mod prelude {
 }
 
 pub use audio::*;
+pub use audio_output::AudioOutputSuspended;
 pub use audio_source::*;
 pub use pitch::*;
 pub use volume::*;
@@ -92,7 +93,8 @@ impl Plugin for AudioPlugin {
                 PostUpdate,
                 (update_emitter_positions, update_listener_positions).in_set(AudioPlaybackSystems),
             )
-            .init_resource::<AudioOutput>();
+            .init_resource::<AudioOutput>()
+            .init_resource::<AudioOutputSuspended>();
 
         // Space Guard: the output follows the system default device (see `PATCH.md`).
         #[cfg(not(target_arch = "wasm32"))]

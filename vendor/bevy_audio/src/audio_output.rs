@@ -102,6 +102,13 @@ fn open_default(lost: &Arc<AtomicBool>) -> (Option<MixerDeviceSink>, Option<rodi
     (stream, id)
 }
 
+/// Space Guard: while `true`, the output stream is closed. A mobile game sets it when it goes to the
+/// background: a paused sink still leaves the device stream running and mixing silence (on Android
+/// the AAudio stream keeps the audio path awake). Looping sounds restart when the stream reopens,
+/// other playing sounds stop, as on a device change.
+#[derive(Resource, Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AudioOutputSuspended(pub bool);
+
 /// How often the default output device is checked.
 #[cfg(not(target_arch = "wasm32"))]
 const DEVICE_CHECK: core::time::Duration = core::time::Duration::from_secs(1);
@@ -111,6 +118,7 @@ const DEVICE_CHECK: core::time::Duration = core::time::Duration::from_secs(1);
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn follow_output_device(
     mut audio_output: ResMut<AudioOutput>,
+    suspended: Res<AudioOutputSuspended>,
     mut commands: Commands,
     sinks: Query<(
         Entity,
@@ -121,7 +129,14 @@ pub(crate) fn follow_output_device(
 ) {
     use rodio::cpal::traits::{DeviceTrait, HostTrait};
 
-    if audio_output.checked.elapsed() < DEVICE_CHECK {
+    if suspended.0 {
+        if audio_output.stream.take().is_some() {
+            release_sinks(&mut commands, &sinks);
+            info!("Audio output closed while the app is in the background.");
+        }
+        return;
+    }
+    if audio_output.checked.elapsed() < DEVICE_CHECK && audio_output.stream.is_some() {
         return;
     }
     audio_output.checked = std::time::Instant::now();
@@ -147,7 +162,22 @@ pub(crate) fn follow_output_device(
     };
     audio_output.stream = stream;
     info!("Audio output reopened on the current default device.");
-    for (entity, settings, sink, spatial) in &sinks {
+    release_sinks(&mut commands, &sinks);
+}
+
+/// Sinks of a closed stream: looping sounds lose their sink and are queued again for the next
+/// stream, the others stop and are cleaned up as finished.
+#[cfg(not(target_arch = "wasm32"))]
+fn release_sinks(
+    commands: &mut Commands,
+    sinks: &Query<(
+        Entity,
+        &PlaybackSettings,
+        Option<&AudioSink>,
+        Option<&SpatialAudioSink>,
+    )>,
+) {
+    for (entity, settings, sink, spatial) in sinks {
         if sink.is_none() && spatial.is_none() {
             continue;
         }
