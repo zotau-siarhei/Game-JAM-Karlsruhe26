@@ -1,0 +1,83 @@
+# Design
+
+## Context
+
+Android-версия — `NativeActivity` без Java-кода (`hasCode="false"`), библиотека собирается
+`scripts/build-android.sh`, пакет для Play — `scripts/build-aab.sh`. Ввод геймпада и «назад» забирает
+фильтр очереди ввода (`src/gamepad/android.rs`), вызовы Java — через JNI (`android::with_env`).
+android-activity 0.6.1 даёт `AndroidApp::run_on_java_main_thread` (замыкание в главном потоке Java) и
+`set_window_flags` (`ANativeActivity_setWindowFlags`). Review Antigravity
+(`code_review_android_publish.md`) — источник задач; с чем не согласен, записано ниже.
+
+## Goals / Non-Goals
+
+**Goals:** закрыть то, что увидит внутренний тест Play и Pre-launch Report: панели, ANR, «назад»,
+экран, конфигурация, звонок, геймпад, вёрстка клавиатуры рекорда, пакет с символами.
+
+**Non-Goals:** переход на GameActivity; вибрация геймпада на Android (пункт прячется); оптимизации
+процессора из блока 2 review (сначала замер simpleperf: телефон упирается в видеокарту);
+`allowBackup="false"` (см. решения).
+
+## Decisions
+
+1. **Immersive через главный поток Java.** `WindowInsetsController` и `View.setSystemUiVisibility` можно
+   звать только из потока интерфейса. `run_on_java_main_thread` ставит замыкание в его очередь:
+   API 30+ — `getInsetsController().hide(systemBars())` и `BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE`;
+   API 29 — флаги `IMMERSIVE_STICKY | HIDE_NAVIGATION | FULLSCREEN | LAYOUT_*`. Зовётся при старте и при
+   каждом `WindowFocused { focused: true }`. Альтернатива — свой класс на Java (`javac` + `d8`) — лишняя
+   сборка ради одного вызова.
+2. **Безопасная область = вырез ∪ видимые панели.** Вырез по-прежнему из `Display.getCutout()` (любой
+   поток). Видимые системные панели читает то же замыкание в главном потоке:
+   `getRootWindowInsets().getInsets(systemBars())` (API 30+) или `getSystemWindowInset*` (29) — и кладёт
+   в статическую переменную; `cutout_insets` берёт по каждой стороне максимум. Спрятанные панели дают 0.
+3. **Экран не гаснет** — `set_window_flags(KEEP_SCREEN_ON)` один раз при старте: флаг живёт у окна
+   активности и действует, только пока оно на экране.
+4. **«Назад».** «Выход» на Android убран профилем (`menu.quit: false`, как на iOS). Esc в главном меню на
+   Android зовёт `Activity.moveTaskToBack(true)` через главный поток. Процесс живёт: `exit(0)` после
+   конца цикла остаётся только для выхода самой системы. Утверждение review, что «назад» переключает
+   управление на клавиатуру, проверяется на эмуляторе (по коду Esc нажимается после `read_pad`, а
+   `just_pressed` сбрасывается в начале следующего кадра).
+5. **Ожидание конвейеров — не дольше 2 с за кадр.** Порог ANR для ввода — 5 с; 2 с оставляют запас на
+   сам кадр. Несобранное ждёт в следующем кадре. Кадр между ожиданиями рисуется, пока часть конвейеров
+   ещё собирается; на Adreno 810 вешала GPU долгая сборка вперемешку с отрисовкой, а не одна граница
+   кадра, — это надо подтвердить на A059 (отдельная задача). Число — в профиле:
+   `prewarm.wait_limit` (секунды), у `android` 2.0.
+6. **Смена качества под занавесом.** Где `wait_pipelines`, `restart_on_quality` закрывает `fade::Curtain`
+   и показывает надпись «COMPILING SHADERS», `Prewarm::done` открывает его. На компьютере — как раньше.
+7. **Аудиофокус без слушателя.** Слушатель `OnAudioFocusChangeListener` — Java-интерфейс, без своего
+   класса его не реализовать. Поэтому: `requestAudioFocus(AudioFocusRequest(GAIN, USAGE_GAME))` без
+   слушателя при старте и возврате (чужая музыка встаёт на паузу), а звонок — опрос
+   `AudioManager.getMode()` раз в секунду (`RINGTONE`, `IN_CALL`, `IN_COMMUNICATION`) → звук молчит тем же
+   путём, что в фоне (`AudioOutputSuspended`). Переход голосового ассистента не ловится — приемлемо.
+8. **Геймпад.** Фильтр возвращает `true` только для известных кнопок (B и так среди них, поэтому
+   система не сделает из неё «назад»). Крестовина `SOURCE_DPAD` (0x201) принимается для кодов `Dpad*`.
+   Отключение — раз в секунду `InputDevice.getDevice(id) == null` → состояние обнуляется,
+   `GamepadConnectionEvent::Disconnected`, следующий ввод подключит заново. Слушатель InputManager —
+   снова Java-интерфейс. Вибрация: флаг профиля `input.rumble` (у `android` false) прячет пункт меню.
+9. **Пакет.** `build-aab.sh` собирает библиотеку с символами (`SPACE_GUARD_SYMBOLS=1`), копию без символов
+   (`llvm-strip --strip-all` из NDK) кладёт в base, исходную — как `libspace_guard.so.sym` в
+   `--metadata-file` bundletool. `SPACE_GUARD_VERSION_CODE` переопределяет код; без него в мелком клоне —
+   ошибка. `SPACE_GUARD_UPLOAD_KEY_PASSWORD` — пароль ключа (по умолчанию — хранилища), `-sigalg` для
+   ключа загрузки не задаётся (jarsigner выбирает по типу ключа), после подписи `jarsigner -verify`.
+   Из ассетов пакета удаляются `*.md`, `assets/voice/preview.html` и файлы, которые игра берёт из
+   бинарника (`include_*`), — список сверяется грепом. `${x^^}` → `tr`.
+
+### С чем не согласен (review)
+
+- `allowBackup="false"`: резервная копия рекордов и настроек полезна игроку; оставляем по умолчанию.
+- `debug.spaceguard.*` «бэкдоры»: свойства `debug.*` ставятся только через `adb shell`; на них держатся
+  замеры release-сборки на телефоне. Не выключаем.
+- `restart_on_panic`: стандартный обработчик паники вызывается первым, процесс всё равно падает, и
+  Play Vitals видит падение; повтор ограничен разом в минуту. `startActivity` из фона система просто
+  не выполнит. Не меняем.
+- `attach_current_thread_permanently`: jni 0.21 отсоединяет такой поток при его завершении сам.
+- `minImageExtent` в `render_scale`: на A059 и эмуляторе кадр рисуется верно; без устройства с такой
+  поверхностью не чиним вслепую. `size_changed |=` — берём (безвредно).
+
+## Risks / Trade-offs
+
+- [Граница кадра между ожиданиями на Adreno 810] → проверка на A059 холодным стартом со стёртыми данными;
+  если DeviceLost вернётся — сохраняется перезапуск `restart_once`, а предел можно поднять профилем.
+- [`run_on_java_main_thread` до прикрепления окна] → `getRootWindowInsets` вернёт null; значение
+  остаётся прежним и обновится через секунду.
+- [Опрос `getMode` раз в секунду] → один JNI-вызов в секунду, тот же порядок, что у нагрева.
