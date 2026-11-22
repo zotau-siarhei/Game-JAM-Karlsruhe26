@@ -293,15 +293,22 @@ fn update_health_bar(
         return;
     };
     let fraction = health.fraction();
+    // Пишется только изменившееся: запись в `Node` пересчитывает вёрстку интерфейса.
+    let width = Val::Percent(fraction * 100.0);
+    let base = health_color(fraction);
+    // Пока здоровье само растёт, полоса мягко пульсирует светлее своего цвета.
+    let wanted = if regen.active {
+        Color::from(base.to_srgba().mix(&Srgba::WHITE, regen_glow(time.elapsed_secs())))
+    } else {
+        base
+    };
     for (mut node, mut color) in &mut fill {
-        node.width = Val::Percent(fraction * 100.0);
-        let base = health_color(fraction);
-        // Пока здоровье само растёт, полоса мягко пульсирует светлее своего цвета.
-        color.0 = if regen.active {
-            Color::from(base.to_srgba().mix(&Srgba::WHITE, regen_glow(time.elapsed_secs())))
-        } else {
-            base
-        };
+        if node.width != width {
+            node.width = width;
+        }
+        if color.0 != wanted {
+            color.0 = wanted;
+        }
     }
     for mut text in &mut text {
         let label = format!("{:.0}", health.current.ceil());

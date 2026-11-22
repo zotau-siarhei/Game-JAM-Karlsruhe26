@@ -905,8 +905,11 @@ fn update_health_bar(
         }
         return;
     };
+    let width = Val::Percent(health.fraction() * 100.0);
     for mut fill in &mut fills {
-        fill.width = Val::Percent(health.fraction() * 100.0);
+        if fill.width != width {
+            fill.width = width;
+        }
     }
 }
 

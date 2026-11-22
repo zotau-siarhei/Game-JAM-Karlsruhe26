@@ -424,20 +424,35 @@ fn fly_shells(
     }
 }
 
-/// Кладёт вершины отметок падения на рельеф: под отметкой рельеф может измениться.
+/// Отметка падения уже лежит на рельефе.
+#[derive(Component)]
+struct Drawn;
+
+/// Кладёт вершины отметок падения на рельеф: новой отметке и той, под которой рельеф изменился
+/// (`TerrainChanged`), а не всем каждый кадр.
 fn update_impact_markers(
+    mut commands: Commands,
     terrain: Res<Terrain>,
     mut meshes: ResMut<Assets<Mesh>>,
-    markers: Query<(&ImpactMarker, &Mesh3d)>,
+    mut changed: MessageReader<crate::subsidence::TerrainChanged>,
+    markers: Query<(Entity, &ImpactMarker, &Mesh3d, Has<Drawn>)>,
 ) {
-    for (marker, mesh) in &markers {
+    let changes: Vec<(Vec3, f32)> = changed.read().map(|change| (change.center.with_y(0.0), change.radius)).collect();
+    for (entity, marker, mesh, drawn) in &markers {
         let center = marker.position;
+        let dug = changes
+            .iter()
+            .any(|&(at, radius)| at.distance(center.with_y(0.0)) < radius + aim::MARKER_OUTER_RADIUS);
+        if drawn && !dug {
+            continue;
+        }
         if let Some(mut mesh) = meshes.get_mut(&mesh.0) {
             *mesh = aim::marker_mesh(|offset| {
                 terrain.height_at(center.x + offset.x, center.z + offset.y) - center.y
                     + aim::MARKER_LIFT
                     + IMPACT_MARKER_EXTRA_LIFT
             });
+            commands.entity(entity).try_insert(Drawn);
         }
     }
 }

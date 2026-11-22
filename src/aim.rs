@@ -26,7 +26,7 @@ const RAY_MAX_STEPS: usize = 400;
 const RAY_REFINE_STEPS: usize = 6;
 
 /// Внешний радиус кольца: примерный радиус кратера мортиры, м.
-const MARKER_OUTER_RADIUS: f32 = 5.0;
+pub(crate) const MARKER_OUTER_RADIUS: f32 = 5.0;
 
 /// Толщина кольца, м.
 const MARKER_WIDTH: f32 = 0.35;
@@ -217,6 +217,8 @@ fn spawn_marker(
 /// Двигает маркер в точку прицела, кладёт его вершины на рельеф и красит по дальности.
 /// Маркер виден только в забеге и только у мортиры: остальному оружию точка падения не нужна.
 /// С геймпадом курсора нет, и маркер виден у любого оружия: он показывает, куда смотрит стик.
+/// Вершины пересчитываются, только когда маркер сдвинулся или под ним изменился рельеф.
+#[allow(clippy::too_many_arguments)]
 fn update_marker(
     state: Res<State<GameState>>,
     device: Res<crate::gamepad::InputDevice>,
@@ -234,6 +236,8 @@ fn update_marker(
         ),
         With<AimMarker>,
     >,
+    mut changed: MessageReader<crate::subsidence::TerrainChanged>,
+    mut drawn_at: Local<Option<Vec3>>,
 ) {
     let (mut transform, mesh, mut material, mut visibility) = marker.into_inner();
     let mortar = *state.get() == GameState::Playing
@@ -243,10 +247,16 @@ fn update_marker(
     } else {
         Visibility::Hidden
     });
+    let center = aim.position;
+    let dug = changed
+        .read()
+        .any(|change| change.center.with_y(0.0).distance(center.with_y(0.0)) < change.radius + MARKER_OUTER_RADIUS);
+    if dug {
+        *drawn_at = None;
+    }
     if !mortar {
         return;
     }
-    let center = aim.position;
     transform.translation = center;
     let wanted = if aim.locked {
         &materials.locked
@@ -258,10 +268,14 @@ fn update_marker(
     if material.0 != *wanted {
         material.0 = wanted.clone();
     }
+    if *drawn_at == Some(center) {
+        return;
+    }
     if let Some(mut mesh) = meshes.get_mut(&mesh.0) {
         *mesh = marker_mesh(|offset| {
             terrain.height_at(center.x + offset.x, center.z + offset.y) - center.y + MARKER_LIFT
         });
+        *drawn_at = Some(center);
     }
 }
 

@@ -483,11 +483,21 @@ fn update_panel(
         } else {
             Color::NONE
         };
-        *border = BorderColor::all(color);
+        // Пишется только изменившееся: запись в `Node` пересчитывает вёрстку интерфейса.
+        let frame = BorderColor::all(color);
+        if *border != frame {
+            *border = frame;
+        }
         // Текущая ячейка приподнята, пустая — прозрачнее.
-        node.margin.bottom = Val::Px(if current { 8.0 } else { 0.0 });
+        let lift = Val::Px(if current { 8.0 } else { 0.0 });
+        if node.margin.bottom != lift {
+            node.margin.bottom = lift;
+        }
         let alpha = if usable { 0.65 } else { 0.26 };
-        background.0 = Color::srgba(0.0, 0.0, 0.0, alpha);
+        let fill = Color::srgba(0.0, 0.0, 0.0, alpha);
+        if background.0 != fill {
+            background.0 = fill;
+        }
     }
     // Отметки уровня: горят до уровня оружия, при улучшении вспыхивают вместе с рамкой.
     let flashing: Vec<CurrentWeapon> = cells.iter().filter(|c| c.0.flash > 0.0).map(|c| c.0.weapon).collect();
