@@ -237,6 +237,7 @@ fn update_marker(
         With<AimMarker>,
     >,
     mut changed: MessageReader<crate::subsidence::TerrainChanged>,
+    mut rebuilt: MessageReader<crate::run::WorldRebuilt>,
     mut drawn_at: Local<Option<Vec3>>,
 ) {
     let (mut transform, mesh, mut material, mut visibility) = marker.into_inner();
@@ -248,10 +249,14 @@ fn update_marker(
         Visibility::Hidden
     });
     let center = aim.position;
-    let dug = changed
-        .read()
-        .any(|change| change.center.with_y(0.0).distance(center.with_y(0.0)) < change.radius + MARKER_OUTER_RADIUS);
-    if dug {
+    // Меш лежит на рельефе под точкой, где его построили: рельеф там изменился или мир новый —
+    // строить заново.
+    let dug = changed.read().fold(false, |dug, change| {
+        dug || drawn_at.is_some_and(|at| {
+            change.center.with_y(0.0).distance(at.with_y(0.0)) < change.radius + MARKER_OUTER_RADIUS
+        })
+    });
+    if dug || rebuilt.read().count() > 0 {
         *drawn_at = None;
     }
     if !mortar {

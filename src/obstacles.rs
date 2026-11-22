@@ -43,8 +43,9 @@ impl Plugin for ObstaclesPlugin {
         app.init_resource::<ObstacleGrid>().add_run_message::<Rammed>().add_systems(
             Update,
             (
-                // До симуляции: машины, жители и пули этого кадра обходят свежую сетку.
-                index_obstacles.in_set(GameSet::Input),
+                // До ввода и прицела стиком, в любом состоянии: машины, жители, пули и прицел
+                // этого кадра обходят свежую сетку, а трава в меню видит дома нового мира.
+                index_obstacles.after(GameSet::Reset).before(GameSet::Input),
                 // После того как машины сдвинулись в этом кадре.
                 (ram_obstacles, push_vehicles_out)
                     .chain()
@@ -223,7 +224,7 @@ fn point_segment_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
 }
 
 /// Пересобирает сетку, если препятствия появились, изменились или исчезли.
-fn index_obstacles(
+pub(crate) fn index_obstacles(
     mut grid: ResMut<ObstacleGrid>,
     changed: Query<(), Changed<Obstacle>>,
     mut removed: RemovedComponents<Obstacle>,

@@ -219,6 +219,8 @@ pub struct LavaPools {
     pools: Vec<Pool>,
     /// Сколько накопилось времени до следующего тика урона, с.
     burn_clock: f32,
+    /// Растёт при каждом изменении ячеек лавы, не сбрасывается и при перестройке мира.
+    revision: u64,
 }
 
 impl LavaPools {
@@ -262,12 +264,24 @@ impl LavaFires {
 }
 
 impl LavaPools {
-    /// Уровень лавы в точке плана, если она в озере.
-    /// Сколько озёр и сколько в них ячеек: изменилось — изменилась и площадь лавы.
-    pub fn extent(&self) -> (usize, usize) {
-        (self.pools.len(), self.pools.iter().map(|p| p.cells.len()).sum())
+    /// Номер версии ячеек лавы: изменился — изменилось, где лава.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
+    /// Есть ли озеро, рамка которого (с запасом в ячейку) задевает прямоугольник плана `lo..hi`.
+    pub fn touches(&self, lo: Vec2, hi: Vec2) -> bool {
+        self.pools.iter().any(|p| {
+            let (a, b) = p.bounds;
+            a.x as f32 - 1.0 <= hi.x && b.x as f32 + 1.0 >= lo.x && a.y as f32 - 1.0 <= hi.y && b.y as f32 + 1.0 >= lo.y
+        })
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pools.is_empty()
+    }
+
+    /// Уровень лавы в точке плана, если она в озере.
     pub fn lava_at(&self, x: f32, z: f32) -> Option<f32> {
         let cell = IVec2::new(x.round() as i32, z.round() as i32);
         self.pools.iter().find(|p| p.cells.contains(&cell)).map(|p| p.level)
@@ -413,7 +427,8 @@ fn reset_lava(
 ) {
     if started.read().last().is_some() {
         // Плоскости, капли, дым и огонь — сущности забега, удалены через RunScoped.
-        *pools = LavaPools::default();
+        let revision = pools.revision + 1;
+        *pools = LavaPools { revision, ..default() };
         *spots = HotSpots::default();
         *fires = LavaFires::default();
     }
@@ -501,6 +516,7 @@ fn watch_crust(
         // Прорыв: извержение и новое озеро.
         info!("Лава: прорыв коры на глубине {d:.1} м");
         pools.pools.push(Pool::new(cell, bottom.y, terrain.original_height(cell.x, cell.y)));
+        pools.revision += 1;
         spots.spots.retain(|s| s.distance(bottom) > 10.0);
         // Взрыв прорыва — от того, кто пробил кору: вражеский снаряд угрозу не растит.
         let team = breacher(&blasts, bottom);
@@ -605,7 +621,12 @@ fn grow_pools(
     mut track: ResMut<TrackDamage>,
     mut changed: MessageReader<crate::subsidence::TerrainChanged>,
 ) {
+    if pools.pools.is_empty() {
+        changed.clear();
+        return;
+    }
     let dt = time.delta_secs();
+    let mut reshaped = false;
     let dug: Vec<(Vec2, f32)> = changed
         .read()
         .map(|change| (Vec2::new(change.center.x, change.center.z), change.radius))
@@ -640,6 +661,7 @@ fn grow_pools(
         let cells = flood_all(&pool.origins, pool.level, POOL_REACH, |x, z| terrain.vertex_height(x, z));
         if cells != pool.cells {
             pool.set_cells(cells);
+            reshaped = true;
         }
     }
     // Слияние: общие ячейки — одно озеро с наибольшим уровнем.
@@ -655,6 +677,7 @@ fn grow_pools(
                 let mut cells = std::mem::take(&mut pool.cells);
                 cells.extend(other.cells);
                 pool.set_cells(cells);
+                reshaped = true;
                 pool.flooded_level = None;
                 pool.level = pool.level.max(other.level);
                 pool.target_level = pool.target_level.max(other.target_level);
@@ -667,6 +690,9 @@ fn grow_pools(
             j += 1;
         }
         i += 1;
+    }
+    if reshaped {
+        pools.revision += 1;
     }
     // Звенья путей в лаве рвутся.
     for pool in &pools.pools {
@@ -1206,7 +1232,7 @@ mod tests {
         app.add_message::<Explosion>()
             .insert_resource(LavaPools {
                 pools: vec![filled_pool()],
-                burn_clock: 0.0,
+                ..default()
             })
             .insert_resource(LavaAssets {
                 ball: Handle::default(),

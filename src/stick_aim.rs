@@ -75,6 +75,7 @@ impl Plugin for StickAimPlugin {
                 aim_with_stick
                     .run_if(in_state(GameState::Playing))
                     .after(crate::aim::update_aim_point)
+                    .after(crate::obstacles::index_obstacles)
                     .after(GameSet::Reset)
                     .before(GameSet::Input),
             ),

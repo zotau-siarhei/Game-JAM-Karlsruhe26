@@ -1125,7 +1125,6 @@ fn spawn_stump(commands: &mut Commands, assets: &PropAssets, chunk: IVec2, index
 /// Ударная волна: мелочь в радиусе разлетается, деревья ломаются, крупным — урон;
 /// чуть дальше деревья качаются.
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn shockwave_props(
     mut commands: Commands,
     mut explosions: MessageReader<Explosion>,

@@ -484,13 +484,18 @@ fn toggle_overlay(
         return;
     }
     overlay.shown = !overlay.shown;
-    MEASURING.store(overlay.shown || bench.on || phone_log(), Ordering::Relaxed);
-    // Отметки с прошлого включения устарели: первый кадр иначе посчитался бы от них.
+    // Отметки с прошлого включения устарели: первый кадр иначе посчитался бы от них. Сначала
+    // чистка, потом флаг: отметки рендер-потока не попадают в окно между ними.
+    let measuring = overlay.shown || bench.on || phone_log();
+    if !measuring {
+        MEASURING.store(false, Ordering::Relaxed);
+    }
     if let Ok(mut t) = shared.0.lock() {
         t.main_marks = Default::default();
         t.render_marks = Default::default();
         t.overlay = Default::default();
     }
+    MEASURING.store(measuring, Ordering::Relaxed);
     for entity in &texts {
         commands.entity(entity).despawn();
     }

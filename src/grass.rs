@@ -504,23 +504,23 @@ fn burn_by_lava(
     time: Res<Time>,
     mut grass: ResMut<Grass>,
     pools: Res<LavaPools>,
-    mut checked: Local<Option<((usize, usize), usize)>>,
+    mut checked: Local<Option<(u64, usize)>>,
 ) {
     grass.lava_timer -= time.delta_secs();
     if grass.lava_timer > 0.0 {
         return;
     }
     grass.lava_timer = LAVA_CHECK;
-    let state = (pools.extent(), grass.patches.len());
-    if state.0.0 == 0 || *checked == Some(state) {
+    let state = (pools.revision(), grass.patches.len());
+    if pools.is_empty() || *checked == Some(state) {
         *checked = Some(state);
         return;
     }
     *checked = Some(state);
-    let half = CHUNK_SIZE as f32 * 0.5;
     for (coord, patch) in grass.patches.iter_mut() {
-        let center = chunk_origin(*coord) + Vec2::splat(half);
-        if !pools.near(center, half * std::f32::consts::SQRT_2 + 1.0) {
+        // Пучки проверяют лаву в метре от себя: рамка участка с запасом в полторы ячейки.
+        let lo = chunk_origin(*coord) - Vec2::splat(1.5);
+        if !pools.touches(lo, lo + Vec2::splat(CHUNK_SIZE as f32 + 3.0)) {
             continue;
         }
         for tuft in patch.cells.iter_mut().flatten() {
