@@ -11,6 +11,8 @@
 //!   и возвращения хранит здоровье.
 //! - `alarm` — враги всех видов, один выезжает из дома; тревога на третьей ступени зовёт Службу,
 //!   потом тревога сбрасывается и Служба уезжает. В лог — расстояния, линия прицела танков.
+//! - `paths` — тропинки посёлков сверху: стартовый посёлок и два соседних, снимок каждого
+//!   жители на тропинках.
 
 use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
@@ -51,8 +53,9 @@ impl Plugin for DebugChecksPlugin {
         })
         .add_systems(
             Update,
-            (tick, check_ruins, check_trees, check_alarm)
+            (tick, check_ruins, check_trees, check_alarm, check_paths)
                 .chain()
+                .after(crate::camera::follow_focus)
                 .in_set(GameSet::Presentation),
         );
     }
@@ -745,4 +748,76 @@ fn check_alarm(
         .collect();
     line += &format!(" | Служба {}: [{}]", ring.len(), ring.join(" "));
     info!("{line}");
+}
+
+/// Тропинки сверху: луноход у посёлка, камера над его серединой, снимок; потом следующий посёлок.
+fn check_paths(
+    mut commands: Commands,
+    mut check: ResMut<Check>,
+    terrain: Res<Terrain>,
+    mut settlements: ResMut<Settlements>,
+    mut rover: Query<&mut Transform, With<Rover>>,
+    mut camera: Query<&mut Transform, (With<crate::camera::GameCamera>, Without<Rover>)>,
+    mut villages: Local<Vec<Vec2>>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    if check.scene != "paths" {
+        return;
+    }
+    let Ok(mut rover) = rover.single_mut() else {
+        return;
+    };
+    if villages.is_empty() && check.clock > 1.0 {
+        // Посёлки ближе всего к старту: стартовый и ещё два.
+        let mut found: Vec<Vec2> = Vec::new();
+        for r in 1..=3 {
+            for z in -r..=r {
+                for x in -r..=r {
+                    let coord = IVec2::new(x, z);
+                    let houses = &settlements.region(coord, &terrain).houses;
+                    if houses.len() >= 3 {
+                        let c = houses.iter().map(|h| h.position).sum::<Vec2>() / houses.len() as f32;
+                        if !found.iter().any(|f| f.distance(c) < 1.0) {
+                            found.push(c);
+                        }
+                    }
+                }
+            }
+        }
+        found.sort_by(|a, b| a.length().total_cmp(&b.length()));
+        found.truncate(3);
+        info!("Проверка paths: посёлков {}", found.len());
+        *villages = found;
+    }
+    if villages.is_empty() {
+        return;
+    }
+    // Каждый посёлок: 4 с на подгрузку и снимок сверху, через 10 с — ближе, жители гуляют.
+    const SPAN: f32 = 15.0;
+    let index = (check.step / 3) as usize;
+    if index >= villages.len() {
+        if check.clock > 1.0 + SPAN * villages.len() as f32 {
+            exit.write(AppExit::Success);
+        }
+        return;
+    }
+    let c = villages[index];
+    let begin = 1.0 + SPAN * index as f32;
+    let step = index as u32 * 3;
+    if check.at(step, begin) {
+        let at = Vec3::new(c.x + 30.0, 0.0, c.y + 30.0);
+        place_rover(&mut rover, &terrain, at, Vec3::new(c.x, 0.0, c.y));
+    }
+    let close = check.step > step + 1;
+    if let Ok(mut cam) = camera.single_mut() {
+        let h = terrain.height_at(c.x, c.y);
+        let (up, back) = if close { (34.0, 10.0) } else { (68.0, 14.0) };
+        *cam = Transform::from_xyz(c.x, h + up, c.y + back).looking_at(Vec3::new(c.x, h, c.y), Vec3::NEG_Z);
+    }
+    if check.at(step + 1, begin + 4.0) {
+        check.shot(&mut commands, &format!("village_{index}"));
+    }
+    if check.at(step + 2, begin + 14.0) {
+        check.shot(&mut commands, &format!("village_{index}_close"));
+    }
 }

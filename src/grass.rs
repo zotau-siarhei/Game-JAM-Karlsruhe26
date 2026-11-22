@@ -273,6 +273,7 @@ fn stream_grass(
     obstacles: NearObstacles,
     puddles: Res<Puddles>,
     ruts: Res<Tracks>,
+    paths: Res<crate::paths::VillagePaths>,
     quality: Res<Quality>,
     material: Res<GrassMaterial>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -322,6 +323,7 @@ fn stream_grass(
                 let blocked = cell.is_some_and(|tuft| {
                     puddles.at(tuft.position)
                         || ruts.rut_at(tuft.position)
+                        || paths.at(tuft.position)
                         || obstacles
                         .near(tuft.position, OBSTACLE_CLEAR + 1.0)
                         .any(|(_, o)| o.shape.push_out(tuft.position, OBSTACLE_CLEAR).is_some())

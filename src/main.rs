@@ -63,6 +63,7 @@ mod fragments;
 mod loading;
 mod prewarm;
 mod profile;
+mod paths;
 mod puddles;
 mod quality;
 mod rails;
@@ -344,6 +345,7 @@ fn game_plugins(app: &mut App) {
         .add_plugins((fire::FirePlugin, debug_shot::DebugShotPlugin, debug_checks::DebugChecksPlugin))
         // Лужи и вода в кратерах.
         .add_plugins(puddles::PuddlesPlugin)
+        .add_plugins(paths::PathsPlugin)
         .add_plugins((
             voice::VoicePlugin,
             hq::HqPlugin,

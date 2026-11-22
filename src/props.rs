@@ -99,7 +99,7 @@ impl Plugin for PropsPlugin {
                     (remember_prop_health, break_props).chain().in_set(GameSet::Death),
                     remove_dead_props.in_set(GameSet::Cleanup),
                     // После луж: объекты на месте лужи уступают ей до появления.
-                    stream_props.after(crate::puddles::place_puddles).in_set(GameSet::Streaming),
+                    stream_props.after(crate::puddles::place_puddles).after(crate::paths::paint_paths).in_set(GameSet::Streaming),
                     (fly_shards, fell_trees, sway_trees, burn_crowns).chain().in_set(GameSet::Presentation),
                 ),
             );
@@ -347,6 +347,27 @@ fn nearby_houses(coord: IVec2, terrain: &Terrain, settlements: &mut Settlements)
         }
     }
     houses
+}
+
+/// Отрезки забора перед домом в плане мира, без калитки; пусто — забора нет. Повторяет решение
+/// [`add_village_props`]: первое число генератора дома, те же секции и калитка.
+pub fn front_fence(house: &HouseState) -> Vec<(Vec2, Vec2)> {
+    let footprint = house.footprint();
+    if Rng::from_position(house.position).next_f32() >= 0.7 {
+        return Vec::new();
+    }
+    let half = footprint.half;
+    let z = half.y + 3.0;
+    let x0 = -half.x - 1.5;
+    let sections = ((2.0 * half.x + 3.0) / 2.0).round() as i32;
+    let section = (2.0 * half.x + 3.0) / sections as f32;
+    (0..sections)
+        .filter(|&i| !(sections > 2 && i == sections / 2))
+        .map(|i| {
+            let a = Vec2::new(x0 + i as f32 * section, z);
+            (footprint.to_world(a), footprint.to_world(a + Vec2::X * section))
+        })
+        .collect()
 }
 
 /// Заборы перед домами, столбы по их концам и антенны во дворах.

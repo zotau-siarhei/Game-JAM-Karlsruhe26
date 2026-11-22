@@ -79,6 +79,10 @@
   у геймпадов PlayStation не работает. На Linux и Windows — `GamepadRumbleRequest` через gilrs
   (`src/haptics/bevy_rumble.rs`), на Linux световая панель — `/sys/class/leds`
   (`src/haptics/linux_light.rs`; без правила udev писать туда может только root).
+- Тропинки посёлков — `src/paths.rs`: сеть соседей между домами (ребро, если нет третьего дома ближе к обоим),
+  маршруты A* по сетке 1 м в обход домов, заборов (`props::front_fence`) и путей. Земля красится в цвета
+  вершин при появлении участка, трава, деревья и камни на тропинке не появляются (`VillagePaths::at`).
+  Спокойные жители гуляют по ним (`VillagePaths::stroll`). Снимки сверху — проверка `paths`.
 - Мини-карта — `src/minimap.rs`: новой сущности с меткой добавь запрос в `update_markers`.
 - Меню — `src/menu.rs` (главное меню и подэкраны: сложность, настройки, рекорды, авторы). Настройки
   (качество, громкости, субтитры, вибрация, выбранная сложность) — ресурс `Settings` из `src/settings.rs`,
@@ -145,7 +149,7 @@ cargo test                                  # тесты
   SPACE_GUARD_SHOT=/путь/кадр.png CARGO_MANIFEST_DIR=$PWD ./target/debug/space_guard` — забег
   начинается сам, перед луноходом встают огни, через 8 с кадр сохраняется и игра закрывается
   (`src/debug_shot.rs`).
-- Проверка сценой без рук: `SPACE_GUARD_AUTOSTART=1 SPACE_GUARD_CHECK=ruins|ruins_all|trees|alarm
+- Проверка сценой без рук: `SPACE_GUARD_AUTOSTART=1 SPACE_GUARD_CHECK=ruins|ruins_all|trees|alarm|paths
   SPACE_GUARD_SHOT_DIR=/папка CARGO_MANIFEST_DIR=$PWD ./target/release/space_guard --immortal` — итог
   в лог строками «Проверка», снимки в папку, игра закрывается сама (`src/debug_checks.rs`).
 - Прогрев шейдеров — `src/prewarm.rs`: при запуске и смене качества каждый класс меша рисуется с каждым

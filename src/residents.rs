@@ -32,6 +32,8 @@ const WALK_SPEED: f32 = 1.6;
 const RUN_SPEED: f32 = 4.5;
 /// Житель бродит в этом радиусе от своего дома, м.
 const WANDER_RADIUS: f32 = 12.0;
+/// Доля прогулок по тропинкам посёлка среди прогулок спокойного жителя.
+const STROLL_CHANCE: f32 = 0.75;
 /// Укрытие ищется в этом радиусе, м.
 const HIDE_RADIUS: f32 = 30.0;
 /// Бегство от опасности на столько, м.
@@ -164,6 +166,8 @@ pub struct Resident {
     velocity: Vec2,
     /// Личный темп: множитель скорости шага и бега. Кто-то гуляет, кто-то спешит, пожилые медленнее.
     pace: f32,
+    /// Оставшиеся точки прогулки по тропинкам, последняя — следующая.
+    route: Vec<Vec2>,
 }
 
 impl Resident {
@@ -373,6 +377,7 @@ fn spawn_resident(
                 phase: dice.range(0.0, 10.0),
                 velocity: Vec2::ZERO,
                 pace,
+                route: Vec::new(),
             },
             RunScoped,
             Health::new(1.0),
@@ -535,6 +540,7 @@ fn think(
     time: Res<Time>,
     mut dice: ResMut<GameRng>,
     settlements: Res<Settlements>,
+    paths: Res<crate::paths::VillagePaths>,
     mut residents: Query<(Entity, &Transform, &mut Resident)>,
 ) {
     let dt = time.delta_secs();
@@ -546,6 +552,10 @@ fn think(
         let p = Vec2::new(transform.translation.x, transform.translation.z);
         resident.contagious = (resident.contagious - dt).max(0.0);
         let home = settlements.house(resident.home).map_or(p, |s| s.position);
+        // Прогулка по тропинкам — только спокойная: паника и болтовня её бросают.
+        if resident.mood != Mood::Wander {
+            resident.route.clear();
+        }
         match resident.mood {
             Mood::Wander => {
                 if resident.pause > 0.0 {
@@ -559,9 +569,29 @@ fn think(
                         resident.mood = Mood::Chat(dice.range(3.0, 6.0));
                     }
                 } else if resident.target.distance(p) < 0.5 || resident.stuck > 1.5 {
+                    if resident.stuck > 1.5 {
+                        resident.route.clear();
+                    }
                     resident.stuck = 0.0;
-                    resident.pause = dice.range(1.0, 4.0);
-                    resident.target = home + Vec2::from_angle(dice.range(0.0, std::f32::consts::TAU)) * dice.range(3.0, WANDER_RADIUS);
+                    if let Some(next) = resident.route.pop() {
+                        // Идёт дальше по тропинке без остановки.
+                        resident.target = next;
+                    } else {
+                        resident.pause = dice.range(1.0, 4.0);
+                        let stroll = if dice.range(0.0, 1.0) < STROLL_CHANCE {
+                            paths.stroll(home, p, &mut dice)
+                        } else {
+                            None
+                        };
+                        if let Some(mut route) = stroll {
+                            route.reverse();
+                            resident.target = route.pop().unwrap_or(p);
+                            resident.route = route;
+                        } else {
+                            resident.target =
+                                home + Vec2::from_angle(dice.range(0.0, std::f32::consts::TAU)) * dice.range(3.0, WANDER_RADIUS);
+                        }
+                    }
                 }
             }
             Mood::Chat(left) => {
