@@ -297,7 +297,9 @@ fn aim_strike(
         targeting.close();
         return;
     }
-    let dt = real.delta_secs();
+    // Шаг ограничен: первый кадр после возврата из фона несёт всё время в фоне, и наведение
+    // кончилось бы сбросом раньше, чем забег встанет на паузу.
+    let dt = real.delta_secs().min(0.1);
     targeting.scroll_cooldown = (targeting.scroll_cooldown - dt).max(0.0);
     if pad.weapon_step != 0 {
         targeting.turns += pad.weapon_step;

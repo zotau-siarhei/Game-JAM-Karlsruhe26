@@ -105,12 +105,12 @@ pub fn canvas_scale() -> f32 {
 }
 
 /// Отступы от вырезов экрана в dp: слева, сверху, справа, снизу. Страница браузера кладёт их в
-/// `window.spaceGuardSafeArea` (`env(safe-area-inset-*)`), на Android — вырез камеры из `WindowInsets`,
-/// на iOS — `safeAreaInsets` вида окна.
+/// `window.spaceGuardSafeArea` (`env(safe-area-inset-*)`), на Android — вырез камеры и видимые системные
+/// панели, на iOS — `safeAreaInsets` вида окна.
 pub fn safe_area() -> bevy::math::Vec4 {
     #[cfg(target_os = "android")]
     {
-        crate::android::cutout_insets()
+        crate::android::safe_insets()
     }
     #[cfg(target_os = "ios")]
     {

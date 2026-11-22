@@ -200,7 +200,9 @@ fn release_sinks(
                 continue;
             }
             PlaybackMode::Remove => {
+                // As `cleanup_finished_audio` does for a finished sound: the player goes too.
                 commands.entity(entity).try_remove::<(
+                    AudioPlayer<crate::AudioSource>,
                     AudioSink,
                     SpatialAudioSink,
                     PlaybackSettings,

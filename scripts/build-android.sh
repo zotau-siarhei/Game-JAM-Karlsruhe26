@@ -9,6 +9,8 @@
 # Один раз поставить: rustup target add aarch64-linux-android x86_64-linux-android
 #                     sdkmanager 'ndk;29.0.14206865' 'platforms;android-36' 'build-tools;36.1.0'
 # Подпись — отладочным ключом ~/.android/debug.keystore (создаётся сам, если его нет).
+# Версия: SPACE_GUARD_VERSION_NAME (по умолчанию 0.1.0) и SPACE_GUARD_VERSION_CODE (по умолчанию —
+# число коммитов; в клоне с неполной историей его надо задать).
 set -euo pipefail
 
 root=$(git rev-parse --show-toplevel)
@@ -70,7 +72,8 @@ for abi in "${abis[@]}"; do
     targets+=(--target "$triple")
     clang=$llvm/$triple$min_sdk-clang
     under=${triple//-/_}
-    upper=${under^^}
+    # Не ${under^^}: bash 3.2 из macOS его не знает.
+    upper=$(printf '%s' "$under" | tr '[:lower:]' '[:upper:]')
     export "CC_$under=$clang" "CXX_$under=$clang++" "AR_$under=$llvm/llvm-ar"
     # C++ зависимостей (meshoptimizer) без исключений и RTTI: среды C++ с ними в системе Android нет,
     # библиотека не загрузилась бы (нет __gxx_personality_v0).
@@ -103,6 +106,11 @@ else
     cp -R assets "$assets_dir"
 fi
 rm -rf "$assets_dir/voice/raw"
+# Чего игра не читает: документация, страница прослушивания реплик и список голосов для скриптов,
+# профили и шрифт (вшиты в библиотеку: include_str!/include_bytes!). Лицензия шрифта остаётся.
+find "$assets_dir" -name '*.md' -delete
+rm -rf "$assets_dir/voice/preview.html" "$assets_dir/voice/voices.json" "$assets_dir/platform" \
+    "$assets_dir/fonts/DejaVuSansMono.ttf"
 textures=(scripts/web_textures.py "$assets_dir" "$CARGO_TARGET_DIR/textures" 1024)
 if python3 -c "import PIL" 2>/dev/null; then
     python3 -I "${textures[@]}"
@@ -113,11 +121,23 @@ else
     exit 1
 fi
 
+# Код версии растёт с каждым коммитом; в клоне с неполной историей (CI с fetch-depth 1) число коммитов
+# неверное, и Play отклонил бы пакет с кодом не больше прежнего.
+version_name=${SPACE_GUARD_VERSION_NAME:-0.1.0}
+if [[ -n "${SPACE_GUARD_VERSION_CODE:-}" ]]; then
+    version_code=$SPACE_GUARD_VERSION_CODE
+elif [[ $(git rev-parse --is-shallow-repository) == true ]]; then
+    echo "история git неполная: задайте SPACE_GUARD_VERSION_CODE или сделайте git fetch --unshallow" >&2
+    exit 1
+else
+    version_code=$(git rev-list --count HEAD)
+fi
+
 # Уже сжатые форматы хранятся как есть: чтение из APK быстрее, размер почти тот же.
 "$tools/aapt2" link -o "$out/unsigned.apk" -I "$platform" \
     --manifest android/AndroidManifest.xml \
     --min-sdk-version "$min_sdk" --target-sdk-version "$target_sdk" \
-    --version-code "$(git rev-list --count HEAD)" --version-name 0.1.0 \
+    --version-code "$version_code" --version-name "$version_name" \
     -A "$assets_dir" -0 mp3 -0 ogg -0 png -0 glb \
     "$out/res.zip"
 

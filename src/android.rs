@@ -35,8 +35,24 @@ impl Plugin for AndroidPlugin {
             device.tier(),
             device.probe_ms,
         );
+        if let Some(app) = bevy::android::ANDROID_APP.get() {
+            // Флаг живёт у окна активности и действует, только пока оно на экране: с геймпадом экран
+            // иначе гас бы по таймауту — касаний нет.
+            use bevy::android::android_activity::WindowManagerFlags;
+            app.set_window_flags(WindowManagerFlags::KEEP_SCREEN_ON, WindowManagerFlags::empty());
+        }
+        hide_system_bars();
         app.add_systems(Last, drop_point_shadow_sampling)
             .init_resource::<Load>()
+            .add_systems(PreUpdate, (keep_immersive, watch_audio))
+            .add_systems(
+                Update,
+                back_to_background
+                    // Раньше меню: из подэкрана тот же Esc только вернёт в главное меню.
+                    .before(crate::menu::MenuInput)
+                    .run_if(in_state(crate::run::GameState::Menu))
+                    .in_set(crate::frame::GameSet::Screens),
+            )
             .add_systems(PreUpdate, (watch_thermal, watch_memory, watch_game_mode, apply_load).chain())
             .add_systems(Last, request_frame_rate)
             .insert_resource(RenderErrorHandler(restart_on_render_error));
@@ -604,11 +620,13 @@ pub fn system_property(name: &std::ffi::CStr) -> Option<String> {
     (!text.is_empty()).then(|| text.to_owned())
 }
 
-/// Отступы от выреза камеры в dp: слева, сверху, справа, снизу. С target SDK 35+ окно рисуется и
-/// под вырезом (edge-to-edge принудительно), поэтому сенсорные кнопки его обходят сами.
+/// Безопасные отступы в dp: слева, сверху, справа, снизу — вырез камеры и видимые системные панели,
+/// по каждой стороне большее. С target SDK 35+ окно рисуется и под вырезом, и под панелями
+/// (edge-to-edge принудительно), поэтому сенсорные кнопки их обходят сами. Панели обычно спрятаны
+/// (`hide_system_bars`) и дают 0; видны они, например, в разделённом экране.
 /// Спрашивает систему не чаще раза в секунду: телефон переворачивают, и вырез переходит на другой бок.
 /// Не вышло спросить — остаётся прежнее значение.
-pub fn cutout_insets() -> Vec4 {
+pub fn safe_insets() -> Vec4 {
     use std::sync::Mutex;
     static CACHE: Mutex<Option<(bevy::platform::time::Instant, Vec4)>> = Mutex::new(None);
     let mut cache = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -618,9 +636,255 @@ pub fn cutout_insets() -> Vec4 {
     {
         return insets;
     }
-    let insets = read_cutout().or(cache.map(|(_, insets)| insets)).unwrap_or(Vec4::ZERO);
+    // Панели читает главный поток Java: ответ придёт к следующему разу, сейчас — прошлый.
+    on_java_main_thread(|env, activity| {
+        let bars = read_bars(env, activity)?;
+        *BARS.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = bars;
+        Ok(())
+    });
+    let bars = BARS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).unwrap_or(Vec4::ZERO);
+    let cutout = read_cutout().or(cache.map(|(_, insets)| insets)).unwrap_or(Vec4::ZERO);
+    let insets = cutout.max(bars);
     *cache = Some((now, insets));
     insets
+}
+
+/// Отступы видимых системных панелей в dp; `None` — ещё не прочитаны.
+static BARS: std::sync::Mutex<Option<Vec4>> = std::sync::Mutex::new(None);
+
+/// `Build.VERSION.SDK_INT`.
+fn sdk_int(env: &mut jni::JNIEnv) -> jni::errors::Result<i32> {
+    env.get_static_field("android/os/Build$VERSION", "SDK_INT", "I")?.i()
+}
+
+/// Вызов Java с активностью в главном потоке Java (потоке интерфейса): окно и его вид можно трогать
+/// только оттуда. Не ждёт: вызов ставится в очередь потока. Ошибка JNI пишется в лог.
+fn on_java_main_thread(
+    call: impl FnOnce(&mut jni::JNIEnv, &jni::objects::JObject) -> jni::errors::Result<()> + Send + 'static,
+) {
+    let Some(app) = bevy::android::ANDROID_APP.get() else {
+        return;
+    };
+    app.run_on_java_main_thread(Box::new(move || {
+        if with_activity(call).is_none() {
+            warn!("Android: вызов в потоке интерфейса не удался");
+        }
+    }));
+}
+
+/// Прячет строку состояния и панель навигации (immersive): панель появляется по свайпу от края и уходит
+/// сама. API 30+ — `WindowInsetsController`, API 29 — флаги `setSystemUiVisibility`.
+fn hide_system_bars() {
+    use jni::objects::JValue;
+    on_java_main_thread(|env, activity| {
+        let window = env.call_method(activity, "getWindow", "()Landroid/view/Window;", &[])?.l()?;
+        if window.is_null() {
+            return Ok(());
+        }
+        if sdk_int(env)? >= 30 {
+            let bars = env.call_static_method("android/view/WindowInsets$Type", "systemBars", "()I", &[])?.i()?;
+            let controller = env
+                .call_method(&window, "getInsetsController", "()Landroid/view/WindowInsetsController;", &[])?
+                .l()?;
+            if !controller.is_null() {
+                /// `WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE`.
+                const BY_SWIPE: i32 = 2;
+                env.call_method(&controller, "setSystemBarsBehavior", "(I)V", &[JValue::Int(BY_SWIPE)])?;
+                env.call_method(&controller, "hide", "(I)V", &[JValue::Int(bars)])?;
+            }
+        } else {
+            /// `SYSTEM_UI_FLAG_IMMERSIVE_STICKY | HIDE_NAVIGATION | FULLSCREEN | LAYOUT_STABLE |
+            /// LAYOUT_HIDE_NAVIGATION | LAYOUT_FULLSCREEN`.
+            const IMMERSIVE: i32 = 0x1000 | 0x2 | 0x4 | 0x100 | 0x200 | 0x400;
+            let decor = env.call_method(&window, "getDecorView", "()Landroid/view/View;", &[])?.l()?;
+            env.call_method(&decor, "setSystemUiVisibility", "(I)V", &[JValue::Int(IMMERSIVE)])?;
+        }
+        info!("Android: системные панели спрятаны");
+        Ok(())
+    });
+}
+
+/// Система показывает панели снова, когда окно теряет фокус (шторка, диалог, другое приложение):
+/// при каждом возврате фокуса они прячутся заново.
+fn keep_immersive(mut focus: MessageReader<bevy::window::WindowFocused>) {
+    if focus.read().any(|change| change.focused) {
+        hide_system_bars();
+    }
+}
+
+/// Отступы видимых системных панелей в dp из `View.getRootWindowInsets()`; спрятанные дают 0.
+/// Только поток интерфейса. `Ok(None)` — окно ещё не прикреплено.
+fn read_bars(env: &mut jni::JNIEnv, activity: &jni::objects::JObject) -> jni::errors::Result<Option<Vec4>> {
+    use jni::objects::JValue;
+    let window = env.call_method(activity, "getWindow", "()Landroid/view/Window;", &[])?.l()?;
+    if window.is_null() {
+        return Ok(None);
+    }
+    let decor = env.call_method(&window, "getDecorView", "()Landroid/view/View;", &[])?.l()?;
+    let insets = env.call_method(&decor, "getRootWindowInsets", "()Landroid/view/WindowInsets;", &[])?.l()?;
+    if insets.is_null() {
+        return Ok(None);
+    }
+    let px = if sdk_int(env)? >= 30 {
+        let bars = env.call_static_method("android/view/WindowInsets$Type", "systemBars", "()I", &[])?.i()?;
+        let sides = env
+            .call_method(&insets, "getInsets", "(I)Landroid/graphics/Insets;", &[JValue::Int(bars)])?
+            .l()?;
+        let mut side = |name: &str| env.get_field(&sides, name, "I").and_then(|v| v.i());
+        Vec4::new(side("left")? as f32, side("top")? as f32, side("right")? as f32, side("bottom")? as f32)
+    } else {
+        let mut side = |name: &str| env.call_method(&insets, name, "()I", &[]).and_then(|v| v.i());
+        Vec4::new(
+            side("getSystemWindowInsetLeft")? as f32,
+            side("getSystemWindowInsetTop")? as f32,
+            side("getSystemWindowInsetRight")? as f32,
+            side("getSystemWindowInsetBottom")? as f32,
+        )
+    };
+    Ok(Some(px / density(env, activity)?))
+}
+
+/// Пикселей на dp у экрана активности.
+fn density(env: &mut jni::JNIEnv, activity: &jni::objects::JObject) -> jni::errors::Result<f32> {
+    let resources = env.call_method(activity, "getResources", "()Landroid/content/res/Resources;", &[])?.l()?;
+    let metrics = env
+        .call_method(&resources, "getDisplayMetrics", "()Landroid/util/DisplayMetrics;", &[])?
+        .l()?;
+    Ok(env.get_field(&metrics, "density", "F")?.f()?.max(0.5))
+}
+
+/// «Назад» (Esc из фильтра ввода) в главном меню сворачивает игру. Не в тот кадр, когда Esc пропустил
+/// интро: тогда интро ещё шло в прошлом кадре.
+fn back_to_background(
+    keys: Res<ButtonInput<KeyCode>>,
+    menu: Res<crate::menu::Menu>,
+    intro: Res<crate::intro::Intro>,
+    mut intro_was_active: Local<bool>,
+) {
+    let skipped_intro = std::mem::replace(&mut *intro_was_active, intro.active());
+    if keys.just_pressed(KeyCode::Escape)
+        && menu.page == crate::menu::MenuPage::Main
+        && !intro.active()
+        && !skipped_intro
+    {
+        move_task_to_back();
+    }
+}
+
+/// Игра уходит в фон, как от кнопки «Домой», процесс живёт. Выходить самой (`exit`) приложению Android
+/// не принято.
+fn move_task_to_back() {
+    on_java_main_thread(|env, activity| {
+        env.call_method(activity, "moveTaskToBack", "(Z)Z", &[true.into()])?;
+        info!("Android: «назад» в главном меню — игра уходит в фон");
+        Ok(())
+    });
+}
+
+/// Аудиофокус и звонки. Пока окно на экране, игра просит фокус раз в секунду, пока система его не
+/// даст (чужая музыка встаёт на паузу); из фона система просьбу отклоняет, поэтому после возврата —
+/// снова. Раз в секунду — режим `AudioManager`: звонит телефон или идёт разговор — звук игры молчит
+/// (`sound::SystemSilence`). Слушатель потери фокуса — Java-интерфейс, без своего класса его нет.
+fn watch_audio(
+    time: Res<Time<Real>>,
+    mut lifecycle: MessageReader<bevy::window::AppLifecycle>,
+    mut focus: MessageReader<bevy::window::WindowFocused>,
+    mut granted: Local<bool>,
+    mut away: Local<bool>,
+    mut next: Local<f32>,
+    mut silence: ResMut<crate::sound::SystemSilence>,
+) {
+    use bevy::window::AppLifecycle;
+    for event in lifecycle.read() {
+        match event {
+            AppLifecycle::WillSuspend | AppLifecycle::Suspended => *away = true,
+            AppLifecycle::WillResume | AppLifecycle::Running => (*away, *granted) = (false, false),
+            _ => {}
+        }
+    }
+    if focus.read().any(|change| change.focused) {
+        *granted = false;
+    }
+    let now = time.elapsed_secs();
+    if now < *next {
+        return;
+    }
+    *next = now + 1.0;
+    /// `AudioManager.AUDIOFOCUS_REQUEST_GRANTED`.
+    const GRANTED: i32 = 1;
+    if !*away && !*granted && request_audio_focus() == Some(GRANTED) {
+        *granted = true;
+        info!("Android: аудиофокус получен");
+    }
+    /// `AudioManager.MODE_RINGTONE`, `MODE_IN_CALL`, `MODE_IN_COMMUNICATION`.
+    const CALL_MODES: [i32; 3] = [1, 2, 3];
+    let Some(mode) = with_activity(|env, activity| {
+        let manager = audio_manager(env, activity)?;
+        env.call_method(&manager, "getMode", "()I", &[])?.i()
+    }) else {
+        return;
+    };
+    let call = CALL_MODES.contains(&mode);
+    if silence.0 != call {
+        info!("Android: {}", if call { "звонок — звук молчит" } else { "звонок кончился" });
+        silence.0 = call;
+    }
+}
+
+fn audio_manager<'local>(
+    env: &mut jni::JNIEnv<'local>,
+    activity: &jni::objects::JObject,
+) -> jni::errors::Result<jni::objects::JObject<'local>> {
+    let name = env.new_string("audio")?;
+    env.call_method(
+        activity,
+        "getSystemService",
+        "(Ljava/lang/String;)Ljava/lang/Object;",
+        &[jni::objects::JValue::Object(&name)],
+    )?
+    .l()
+}
+
+/// `AudioManager.requestAudioFocus` для игры (`USAGE_GAME`) без слушателя; ответ системы.
+fn request_audio_focus() -> Option<i32> {
+    use jni::objects::JValue;
+    with_activity(|env, activity| {
+        /// `AudioAttributes.USAGE_GAME`, `CONTENT_TYPE_SONIFICATION`, `AudioManager.AUDIOFOCUS_GAIN`.
+        const USAGE_GAME: i32 = 14;
+        const SONIFICATION: i32 = 4;
+        const GAIN: i32 = 1;
+        let builder = env.new_object("android/media/AudioAttributes$Builder", "()V", &[])?;
+        let builder = env
+            .call_method(&builder, "setUsage", "(I)Landroid/media/AudioAttributes$Builder;", &[JValue::Int(USAGE_GAME)])?
+            .l()?;
+        let builder = env
+            .call_method(
+                &builder,
+                "setContentType",
+                "(I)Landroid/media/AudioAttributes$Builder;",
+                &[JValue::Int(SONIFICATION)],
+            )?
+            .l()?;
+        let attributes = env.call_method(&builder, "build", "()Landroid/media/AudioAttributes;", &[])?.l()?;
+        let request = env.new_object("android/media/AudioFocusRequest$Builder", "(I)V", &[JValue::Int(GAIN)])?;
+        let request = env
+            .call_method(
+                &request,
+                "setAudioAttributes",
+                "(Landroid/media/AudioAttributes;)Landroid/media/AudioFocusRequest$Builder;",
+                &[JValue::Object(&attributes)],
+            )?
+            .l()?;
+        let request = env.call_method(&request, "build", "()Landroid/media/AudioFocusRequest;", &[])?.l()?;
+        let manager = audio_manager(env, activity)?;
+        env.call_method(
+            &manager,
+            "requestAudioFocus",
+            "(Landroid/media/AudioFocusRequest;)I",
+            &[JValue::Object(&request)],
+        )?
+        .i()
+    })
 }
 
 /// `Display.getCutout()` в dp. Вырез берётся у экрана, а не у окна (`View.getRootWindowInsets`):
@@ -638,11 +902,7 @@ fn read_cutout() -> Option<Vec4> {
         if cutout.is_null() {
             return Ok(Some(Vec4::ZERO));
         }
-        let resources = env.call_method(activity, "getResources", "()Landroid/content/res/Resources;", &[])?.l()?;
-        let metrics = env
-            .call_method(&resources, "getDisplayMetrics", "()Landroid/util/DisplayMetrics;", &[])?
-            .l()?;
-        let density = env.get_field(&metrics, "density", "F")?.f()?.max(0.5);
+        let density = density(env, activity)?;
         let mut side = |name: &str| env.call_method(&cutout, name, "()I", &[]).and_then(|v| v.i());
         let px = Vec4::new(
             side("getSafeInsetLeft")? as f32,

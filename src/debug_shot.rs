@@ -40,6 +40,8 @@
 //!   разбиваются: куски модели и глыбы с осколками.
 //! - `SPACE_GUARD_SCENE=boss` — босс выходит сразу, после посадки встаёт в 26 м от лунохода
 //!   и гибнет: куски корпуса и ноги.
+//! - `SPACE_GUARD_SCENE=gameover` — на 2-й секунде забега луноход гибнет: экран конца забега, ввод
+//!   имени рекорда (с `--touch` или на телефоне — экранная клавиатура).
 //! - `SPACE_GUARD_MENU=difficulty|settings|records|records-hard|authors` — меню сразу открывает
 //!   этот подэкран (`menu`): снять его без рук.
 //! - `SPACE_GUARD_KEYS=down,down,enter,left` — через секунду после входа в меню клавиши нажимаются
@@ -99,7 +101,7 @@ impl Plugin for DebugShotPlugin {
             staged: false,
         })
         .add_systems(Update, (open_menu_page, press_keys).before(GameSet::Screens))
-        .add_systems(Update, (press_start, stage_scene, stage_train, stage_collapse, stage_lava, stage_airstrike, stage_weapons, stage_gadflies, stage_pieces, stage_wrecks, keep_shocked, drive, take_shot).before(GameSet::Screens));
+        .add_systems(Update, (press_start, stage_scene, stage_train, stage_collapse, stage_lava, stage_airstrike, stage_weapons, stage_gadflies, stage_pieces, stage_wrecks, stage_gameover, keep_shocked, drive, take_shot).before(GameSet::Screens));
     }
 }
 
@@ -350,6 +352,30 @@ fn stage_airstrike(
     } else if *step == 2 {
         *step = 3;
         mouse.release(MouseButton::Left);
+    }
+}
+
+/// Сцена `gameover`: луноход гибнет на 2-й секунде забега.
+fn stage_gameover(
+    time: Res<Time<Real>>,
+    debug: Res<DebugShot>,
+    state: Res<State<GameState>>,
+    rover: Query<Entity, With<Rover>>,
+    mut damage: MessageWriter<crate::combat::Damage>,
+    mut since: Local<Option<f32>>,
+    mut done: Local<bool>,
+) {
+    if *done || debug.scene.as_deref() != Some("gameover") || *state.get() != GameState::Playing {
+        return;
+    }
+    let now = time.elapsed_secs();
+    if now - *since.get_or_insert(now) < 2.0 {
+        return;
+    }
+    if let Ok(target) = rover.single() {
+        *done = true;
+        info!("Сцена gameover: луноход гибнет");
+        damage.write(crate::combat::Damage { target, amount: 1.0e7, source_team: Team::Enemy });
     }
 }
 

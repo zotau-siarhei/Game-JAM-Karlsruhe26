@@ -72,7 +72,7 @@ impl Plugin for PrewarmPlugin {
             )
             .add_systems(
                 Update,
-                (restart_on_quality, warm, follow_camera)
+                (restart_on_quality, warm, follow_camera, cover_recompile)
                     .chain()
                     .in_set(crate::frame::GameSet::Presentation),
             );
@@ -125,20 +125,25 @@ impl PipelineWatch {
 /// Где профиль велит (`prewarm.wait_pipelines`, Android), конвейеры собираются параллельно в пуле
 /// асинхронных задач, но кадр ждёт, пока все
 /// начатые не соберутся: отрисовка вперемешку со сборкой вешала GPU Adreno 810 (DeviceLost),
-/// а по одному в рендер-потоке прогрев шёл 15 с.
+/// а по одному в рендер-потоке прогрев шёл 15 с. Одно ожидание — не дольше `prewarm.wait_limit`:
+/// пока кадр стоит, ввод не обрабатывается, и Android после 5 с показал бы «не отвечает» (ANR).
 fn compile_pipelines(mut cache: ResMut<PipelineCache>, watch: Res<PipelineWatch>) {
     let start = Instant::now();
     cache.process_queue();
-    // Ждать ли начатые конвейеры — `prewarm.wait_pipelines` профиля (Android).
-    if crate::profile::get().prewarm.wait_pipelines {
+    let prewarm = &crate::profile::get().prewarm;
+    if prewarm.wait_pipelines {
         use bevy::render::render_resource::CachedPipelineState;
         let creating = |cache: &PipelineCache| {
-            cache.pipelines().any(|p| matches!(p.state, CachedPipelineState::Creating(_)))
+            cache.pipelines().filter(|p| matches!(p.state, CachedPipelineState::Creating(_))).count()
         };
-        // Предел на случай зависшей задачи: кадр пойдёт, Bevy доберёт её сам.
-        while creating(&cache) && start.elapsed().as_secs_f32() < 120.0 {
+        while creating(&cache) > 0 && start.elapsed().as_secs_f32() < prewarm.wait_limit {
             std::thread::sleep(std::time::Duration::from_millis(1));
             cache.process_queue();
+        }
+        let waited = start.elapsed().as_secs_f32();
+        if waited > 0.25 {
+            let left = creating(&cache);
+            info!("Конвейеры: кадр ждал сборки {:.0} мс, собирается ещё {left}", waited * 1000.0);
         }
     }
     let ms = start.elapsed().as_secs_f32() * 1000.0;
@@ -387,6 +392,54 @@ fn restart_on_quality(quality: Res<Quality>, mut prewarm: ResMut<Prewarm>, watch
     prewarm.quiet = 0;
     prewarm.started = None;
     watch.lock().warm = false;
+}
+
+/// Надпись поверх занавеса на время повторного прогрева.
+#[derive(Component)]
+struct RecompileNotice;
+
+/// Где кадр ждёт сборки конвейеров (`prewarm.wait_pipelines`, Android), повторный прогрев после смены
+/// качества идёт под занавесом с надписью: иначе меню или пауза замирали бы на время сборки, и игрок
+/// не понял бы почему. Первый прогрев закрыт экраном загрузки.
+fn cover_recompile(
+    mut commands: Commands,
+    prewarm: Res<Prewarm>,
+    state: Res<State<crate::run::GameState>>,
+    mut curtain: ResMut<crate::fade::Curtain>,
+    notice: Query<Entity, With<RecompileNotice>>,
+) {
+    if !crate::profile::get().prewarm.wait_pipelines || *state.get() == crate::run::GameState::Loading {
+        return;
+    }
+    let covered = !notice.is_empty();
+    if !prewarm.done && !covered {
+        // Сразу, а не плавно: кадры прогрева долгие, и меню успело бы замереть на виду.
+        curtain.close(0.0);
+        commands.spawn((
+            RecompileNotice,
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(0.0),
+                right: Val::Px(0.0),
+                top: Val::Px(0.0),
+                bottom: Val::Px(0.0),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            GlobalZIndex(crate::fade::ABOVE_CURTAIN_Z),
+            children![(
+                Text::new("COMPILING SHADERS"),
+                TextFont { font_size: FontSize::Px(28.0), ..default() },
+                TextColor(Color::srgb(0.8, 0.8, 0.8)),
+            )],
+        ));
+    } else if prewarm.done && covered {
+        curtain.open(0.3);
+        for entity in &notice {
+            commands.entity(entity).despawn();
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -4,7 +4,8 @@
 //! стик и курки. Поэтому события геймпада забирает фильтр очереди ввода (`set_input_filter`, патч
 //! android-activity в `android/patch_android_activity.py`), а система раз в кадр отдаёт изменения
 //! в Bevy теми же сообщениями, что шлёт gilrs: для остальной игры это обычный `Gamepad`.
-//! Отключение система Android в очередь ввода не сообщает, поэтому геймпад остаётся до выхода.
+//! Отключение система Android в очередь ввода не сообщает: раз в секунду система спрашивает, есть ли
+//! ещё устройство (`InputDevice.getDevice`), и отпускает кнопки и стики отключённого.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -17,9 +18,12 @@ use bevy::input::gamepad::{
 use bevy::prelude::*;
 use jni::objects::{JString, JValue};
 
-/// Биты источника события `AINPUT_SOURCE_GAMEPAD` и `AINPUT_SOURCE_JOYSTICK`.
+/// Биты источника события `AINPUT_SOURCE_GAMEPAD`, `AINPUT_SOURCE_JOYSTICK`, `AINPUT_SOURCE_DPAD`
+/// и класс клавиатуры (`AINPUT_SOURCE_KEYBOARD` без класса кнопок).
 const SOURCE_GAMEPAD: u32 = 0x0000_0401;
 const SOURCE_JOYSTICK: u32 = 0x0100_0010;
+const SOURCE_DPAD: u32 = 0x0000_0201;
+const KEYBOARD_BIT: u32 = 0x0000_0100;
 
 /// Кнопки по порядку в состоянии.
 const BUTTONS: [GamepadButton; 16] = [
@@ -107,8 +111,9 @@ fn button_index(key: Keycode) -> Option<usize> {
 /// Нажата системная «назад» (кнопка или жест): игра делает из неё Esc, а не закрывается.
 static BACK: AtomicBool = AtomicBool::new(false);
 
-/// Забирает события геймпада и системную «назад». Все его кнопки считаются обработанными: иначе система сделала бы
-/// из кнопки B «назад» и закрыла игру.
+/// Забирает события геймпада и системную «назад». Забираются только кнопки, которые игра знает (B
+/// среди них: иначе система сделала бы из неё «назад» и закрыла игру); громкость, медиа и остальное
+/// с геймпада или игрового телефона уходят системе.
 fn filter(event: &InputEvent<'_>) -> bool {
     match event {
         InputEvent::MotionEvent(motion) => {
@@ -137,25 +142,55 @@ fn filter(event: &InputEvent<'_>) -> bool {
             true
         }
         InputEvent::KeyEvent(key) => {
-            if u32::from(key.source()) & SOURCE_GAMEPAD != SOURCE_GAMEPAD {
+            let source = u32::from(key.source());
+            let Some(index) = button_index(key.key_code()) else {
+                return false;
+            };
+            // Крестовина отдельного устройства D-pad (пульт, часть геймпадов) — тоже крестовина;
+            // стрелки клавиатуры приходят с классом клавиатуры и остаются клавиатуре.
+            let dpad = (DPAD_UP..=DPAD_RIGHT).contains(&index)
+                && source & SOURCE_DPAD == SOURCE_DPAD
+                && source & KEYBOARD_BIT == 0;
+            if source & SOURCE_GAMEPAD != SOURCE_GAMEPAD && !dpad {
                 return false;
             }
             let mut state = shared();
             state.device = Some(key.device_id());
-            if let Some(index) = button_index(key.key_code()) {
-                match key.action() {
-                    KeyAction::Down => {
-                        state.keys[index] = true;
-                        state.pressed[index] = true;
-                    }
-                    KeyAction::Up => state.keys[index] = false,
-                    _ => {}
+            match key.action() {
+                KeyAction::Down => {
+                    state.keys[index] = true;
+                    state.pressed[index] = true;
                 }
+                KeyAction::Up => state.keys[index] = false,
+                _ => {}
             }
             true
         }
         _ => false,
     }
+}
+
+/// Отпускает все кнопки и стики.
+fn release_all(state: &mut Shared) {
+    state.keys = [false; 16];
+    state.pressed = [false; 16];
+    state.analog = [0.0; 16];
+    state.axes = [0.0; 4];
+}
+
+/// Есть ли ещё устройство ввода; `None` — не удалось спросить.
+fn device_present(device: i32) -> Option<bool> {
+    crate::android::with_env(|env| {
+        let input_device = env
+            .call_static_method(
+                "android/view/InputDevice",
+                "getDevice",
+                "(I)Landroid/view/InputDevice;",
+                &[JValue::Int(device)],
+            )?
+            .l()?;
+        Ok(!input_device.is_null())
+    })
 }
 
 /// Имя, производитель и модель устройства: их знает только Java-класс `InputDevice`.
@@ -185,35 +220,72 @@ fn describe(device: i32) -> Option<(String, u16, u16)> {
 #[derive(Default)]
 struct Sent {
     entity: Option<Entity>,
+    /// Подключение отправлено и не отменено отключением.
+    connected: bool,
     buttons: [f32; 16],
     axes: [f32; 4],
+    /// Когда в следующий раз спросить, есть ли ещё устройство (реальное время, с).
+    next_check: f32,
 }
 
 fn poll(
     mut commands: Commands,
+    time: Res<Time<Real>>,
     mut sent: Local<Sent>,
     mut events: MessageWriter<RawGamepadEvent>,
     mut connections: MessageWriter<GamepadConnectionEvent>,
     mut buttons: MessageWriter<RawGamepadButtonChangedEvent>,
     mut axes: MessageWriter<RawGamepadAxisChangedEvent>,
 ) {
-    let Some(entity) = sent.entity else {
-        // Сначала только подключение: компонент `Gamepad` появится к следующему кадру, и нажатие,
-        // с которого всё началось, уйдёт уже ему.
-        let Some(device) = shared().device else {
+    // Отключение: устройства больше нет — кнопки и стики отпущены, Bevy снимает `Gamepad`.
+    // Следующее событие с геймпада подключит его к той же сущности.
+    let now = time.elapsed_secs();
+    if sent.connected && now >= sent.next_check {
+        sent.next_check = now + 1.0;
+        let device = shared().device;
+        if let (Some(entity), Some(device)) = (sent.entity, device)
+            && device_present(device) == Some(false)
+        {
+            info!("Android: геймпад отключён");
+            {
+                let mut state = shared();
+                release_all(&mut state);
+                state.device = None;
+            }
+            sent.connected = false;
+            sent.buttons = [0.0; 16];
+            sent.axes = [0.0; 4];
+            let event = GamepadConnectionEvent::new(entity, GamepadConnection::Disconnected);
+            events.write(event.clone().into());
+            connections.write(event);
             return;
-        };
-        let (name, vendor_id, product_id) = match describe(device) {
-            Some((name, vendor, product)) => (name, Some(vendor), Some(product)),
-            None => ("Android gamepad".to_owned(), None, None),
-        };
-        let entity = commands.spawn(Name::new(format!("Геймпад Android: {name}"))).id();
-        let event =
-            GamepadConnectionEvent::new(entity, GamepadConnection::Connected { name, vendor_id, product_id });
-        events.write(event.clone().into());
-        connections.write(event);
-        sent.entity = Some(entity);
-        return;
+        }
+    }
+    let entity = match sent.entity {
+        Some(entity) if sent.connected => entity,
+        _ => {
+            // Сначала только подключение: компонент `Gamepad` появится к следующему кадру, и нажатие,
+            // с которого всё началось, уйдёт уже ему.
+            let Some(device) = shared().device else {
+                return;
+            };
+            let (name, vendor_id, product_id) = match describe(device) {
+                Some((name, vendor, product)) => (name, Some(vendor), Some(product)),
+                None => ("Android gamepad".to_owned(), None, None),
+            };
+            let entity = match sent.entity {
+                Some(entity) => entity,
+                None => commands.spawn(Name::new(format!("Геймпад Android: {name}"))).id(),
+            };
+            let event =
+                GamepadConnectionEvent::new(entity, GamepadConnection::Connected { name, vendor_id, product_id });
+            events.write(event.clone().into());
+            connections.write(event);
+            sent.entity = Some(entity);
+            sent.connected = true;
+            sent.next_check = now + 1.0;
+            return;
+        }
     };
     let (now_buttons, now_axes) = {
         let mut state = shared();
@@ -252,16 +324,12 @@ fn release_on_blur(
         matches!(event, bevy::window::AppLifecycle::WillSuspend | bevy::window::AppLifecycle::Suspended)
     });
     if blurred || suspended {
-        let mut state = shared();
-        state.keys = [false; 16];
-        state.pressed = [false; 16];
-        state.analog = [0.0; 16];
-        state.axes = [0.0; 4];
+        release_all(&mut shared());
     }
 }
 
-/// «Назад» — Esc на один кадр: пауза в забеге, назад в меню. Нажимается после ввода Bevy,
-/// иначе он сбросил бы нажатие, и после `read_pad`: тот счёл бы Esc клавиатурой и снял бы
+/// «Назад» — Esc на один кадр: пауза в забеге, назад в меню, пропуск интро. Нажимается после ввода
+/// Bevy, иначе он сбросил бы нажатие, и после `read_pad`: тот счёл бы Esc клавиатурой и снял бы
 /// раскладку касаний.
 fn back_to_escape(mut held: Local<bool>, mut keys: ResMut<ButtonInput<KeyCode>>) {
     if std::mem::take(&mut *held) {
@@ -281,6 +349,8 @@ pub(super) fn build(app: &mut App) {
             PreUpdate,
             back_to_escape
                 .after(bevy::input::InputSystems)
-                .after(super::PadRead),
+                .after(super::PadRead)
+                // «Назад» пропускает интро, как Esc.
+                .before(crate::intro::skip_intro),
         );
 }

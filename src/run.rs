@@ -236,6 +236,8 @@ const DIGITS: [KeyCode; 10] = [
 const KEYBOARD_ROWS: [&str; 4] = ["1234567890", "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"];
 /// Клавиша экранной клавиатуры: ширина и высота, dp.
 const KEY_SIZE_DP: (f32, f32) = (52.0, 40.0);
+/// Промежуток между строками экрана конца забега, пока имя вводится касаниями.
+const COMPACT_GAP: f32 = 8.0;
 
 /// Кнопка экрана, которую нажимают пальцем: клавиша или пункт.
 fn touch_key(
@@ -725,27 +727,37 @@ fn draw_game_over(
     for screen in &old {
         commands.entity(screen).despawn();
     }
-    commands
-        .spawn((GameOverScreen, screen_root(0.62), appear))
-        .with_children(|screen| {
-            screen.spawn(screen_line("ROVER LOST", 56.0, Color::srgb(1.0, 0.35, 0.25)));
-            screen.spawn(screen_line(format!("TIME  {}", format_time(result.seconds)), 34.0, Color::WHITE));
-            screen.spawn(screen_line(rank_line(result.place), 26.0, TITLE_COLOR));
+    // Ввод имени касаниями: клавиатура в dp высокая, и на телефоне высотой 360 dp экран не влез бы.
+    // Строки сложности и подсказки нет, промежутки меньше.
+    let compact = touch && result.entry.is_some();
+    let mut root = commands.spawn((GameOverScreen, screen_root(0.62), appear));
+    if compact {
+        root.entry::<Node>().and_modify(|mut node| node.row_gap = Val::Px(COMPACT_GAP));
+    }
+    root.with_children(|screen| {
+        screen.spawn(screen_line("ROVER LOST", 56.0, Color::srgb(1.0, 0.35, 0.25)));
+        screen.spawn(screen_line(format!("TIME  {}", format_time(result.seconds)), 34.0, Color::WHITE));
+        screen.spawn(screen_line(rank_line(result.place), 26.0, TITLE_COLOR));
+        if !compact {
             screen.spawn(screen_line(format!("DIFFICULTY: {}", difficulty.0.title()), 20.0, HINT_COLOR));
+        }
 
-            if let Some(entry) = &result.entry {
-                screen.spawn(screen_line("ENTER YOUR NAME", 22.0, Color::WHITE));
-                screen
-                    .spawn(Node {
-                        column_gap: Val::Px(14.0),
-                        ..default()
-                    })
-                    .with_children(|cells| {
-                        for (index, cell) in entry.cells.iter().enumerate() {
-                            let color = if index == entry.cursor { TITLE_COLOR } else { Color::WHITE };
-                            cells.spawn(screen_line(cell.unwrap_or('_').to_string(), 64.0, color));
-                        }
-                    });
+        if let Some(entry) = &result.entry {
+            screen.spawn(screen_line("ENTER YOUR NAME", 22.0, Color::WHITE));
+            screen
+                .spawn(Node {
+                    column_gap: Val::Px(14.0),
+                    ..default()
+                })
+                .with_children(|cells| {
+                    for (index, cell) in entry.cells.iter().enumerate() {
+                        let color = if index == entry.cursor { TITLE_COLOR } else { Color::WHITE };
+                        cells.spawn(screen_line(cell.unwrap_or('_').to_string(), 64.0, color));
+                    }
+                });
+            if compact {
+                spawn_keyboard(screen, &ui_scale);
+            } else {
                 screen.spawn(hint_line_touch(
                     "LETTERS, DIGITS, BACKSPACE     ENTER - SAVE",
                     format!("{{A}} - SAVE AS {}", run_table.last_name),
@@ -753,41 +765,39 @@ fn draw_game_over(
                     20.0,
                     HINT_COLOR,
                 ));
-                if touch {
-                    spawn_keyboard(screen, &ui_scale);
-                }
-                return;
             }
+            return;
+        }
 
+        screen
+            .spawn(Node {
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(4.0),
+                ..default()
+            })
+            .with_children(|table| {
+                for (place, record) in run_table.records.iter().enumerate() {
+                    let color = if result.place == Some(place) { TITLE_COLOR } else { Color::WHITE };
+                    table.spawn(screen_line(table_row(place, record), 22.0, color));
+                }
+            });
+        if touch {
+            let gap = Val::Px(crate::touch::dp_to_ui(16.0, &ui_scale));
             screen
                 .spawn(Node {
-                    flex_direction: FlexDirection::Column,
-                    row_gap: Val::Px(4.0),
+                    column_gap: gap,
+                    margin: UiRect::top(gap),
                     ..default()
                 })
-                .with_children(|table| {
-                    for (place, record) in run_table.records.iter().enumerate() {
-                        let color = if result.place == Some(place) { TITLE_COLOR } else { Color::WHITE };
-                        table.spawn(screen_line(table_row(place, record), 22.0, color));
-                    }
+                .with_children(|buttons| {
+                    use crate::touch::TapAction;
+                    buttons.spawn(touch_key(TapAction::Key(KeyCode::Enter), "RESTART", 130.0, &ui_scale, TITLE_COLOR));
+                    buttons.spawn(touch_key(TapAction::Key(KeyCode::Escape), "MENU", 130.0, &ui_scale, Color::WHITE));
                 });
-            if touch {
-                let gap = Val::Px(crate::touch::dp_to_ui(16.0, &ui_scale));
-                screen
-                    .spawn(Node {
-                        column_gap: gap,
-                        margin: UiRect::top(gap),
-                        ..default()
-                    })
-                    .with_children(|buttons| {
-                        use crate::touch::TapAction;
-                        buttons.spawn(touch_key(TapAction::Key(KeyCode::Enter), "RESTART", 130.0, &ui_scale, TITLE_COLOR));
-                        buttons.spawn(touch_key(TapAction::Key(KeyCode::Escape), "MENU", 130.0, &ui_scale, Color::WHITE));
-                    });
-            } else {
-                screen.spawn(hint_line("ENTER - RESTART     ESC - MENU", "{A} - RESTART     {B} - MENU", 22.0, HINT_COLOR));
-            }
-        });
+        } else {
+            screen.spawn(hint_line("ENTER - RESTART     ESC - MENU", "{A} - RESTART     {B} - MENU", 22.0, HINT_COLOR));
+        }
+    });
 }
 
 /// Конец забега. Пока вводится имя: буквы, цифры, Backspace, Enter сохраняет результат.
@@ -876,6 +886,7 @@ fn pause_on_escape_or_blur(
     mut lifecycle: MessageReader<bevy::window::AppLifecycle>,
     mut next: ResMut<NextState<GameState>>,
     targeting: Res<crate::airstrike::Targeting>,
+    silence: Option<Res<crate::sound::SystemSilence>>,
 ) {
     // В прогоне замера и при отладочном автозапуске окно может быть и не в фокусе.
     let unattended = bench.is_some_and(|b| b.on) || std::env::var_os("SPACE_GUARD_AUTOSTART").is_some();
@@ -884,7 +895,9 @@ fn pause_on_escape_or_blur(
     let suspended = lifecycle.read().any(|event| {
         matches!(event, bevy::window::AppLifecycle::WillSuspend | bevy::window::AppLifecycle::Suspended)
     });
-    let blurred = (focus.read().any(|change| !change.focused) || suspended) && !unattended;
+    // Звонок поверх игры (Android): окно на экране, но играть сейчас некогда.
+    let call = silence.is_some_and(|silence| silence.is_changed() && silence.0);
+    let blurred = (focus.read().any(|change| !change.focused) || suspended || call) && !unattended;
     // Esc в наведении авиаудара отменяет его, а не ставит паузу.
     if blurred || (keys.just_pressed(KeyCode::Escape) && !targeting.open) {
         next.set(GameState::Paused);

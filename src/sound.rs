@@ -118,6 +118,7 @@ impl Plugin for SoundPlugin {
             .add_message::<PlaySound>()
             .add_systems(Startup, load_sounds)
             .init_resource::<InBackground>()
+            .init_resource::<SystemSilence>()
             .add_systems(
                 Update,
                 pause_audio_in_background
@@ -231,19 +232,28 @@ fn attach_ears(
 /// (`audio.pause_in_background` профиля платформы). Сообщения `AppLifecycle` шлёт winit; Bevy 0.20
 /// переводит `WillSuspend` в `Suspended` и `WillResume` в `Running` раньше, чем отправит сообщение,
 /// поэтому приходят только они.
+/// Звук придержан: игра в фоне или идёт звонок ([`SystemSilence`]).
 #[derive(Resource, Default)]
 struct InBackground(bool);
+
+/// Система просит игру молчать, хотя окно на экране: на Android — пока звонит телефон или идёт
+/// разговор (`android::watch_audio`). Звук придерживается так же, как в фоне.
+#[derive(Resource, Default)]
+pub struct SystemSilence(pub bool);
 
 /// Звук, который ещё не начался и родится на паузе, потому что игра в фоне: при возврате
 /// его настройка паузы снимается.
 #[derive(Component)]
 struct HeldInBackground;
 
-/// Уход в фон — пауза всего, что звучит; возврат — снова звучит всё, кроме звуков мира на паузе
-/// игры (их снимет `resume_world_sounds`, когда игра продолжится).
+/// Уход в фон или звонок — пауза всего, что звучит; возврат — снова звучит всё, кроме звуков мира
+/// на паузе игры (их снимет `resume_world_sounds`, когда игра продолжится).
+#[allow(clippy::too_many_arguments)]
 fn pause_audio_in_background(
     mut commands: Commands,
     mut lifecycle: MessageReader<bevy::window::AppLifecycle>,
+    mut away: Local<bool>,
+    silence: Res<SystemSilence>,
     mut background: ResMut<InBackground>,
     mut output: ResMut<bevy::audio::AudioOutputSuspended>,
     state: Res<State<GameState>>,
@@ -254,29 +264,31 @@ fn pause_audio_in_background(
     use bevy::window::AppLifecycle;
     for event in lifecycle.read() {
         match event {
-            AppLifecycle::WillSuspend | AppLifecycle::Suspended if !background.0 => {
-                background.0 = true;
-                // Поток вывода закрывается (`vendor/bevy_audio`): пауза звука его не останавливает.
-                output.0 = true;
-                sinks.iter().for_each(|(sink, _)| sink.pause());
-                spatial_sinks.iter().for_each(|(sink, _)| sink.pause());
-            }
-            AppLifecycle::WillResume | AppLifecycle::Running if background.0 => {
-                background.0 = false;
-                output.0 = false;
-                let game_paused = *state.get() == GameState::Paused;
-                let wakes = |instance: Option<&SoundInstance>| !(game_paused && instance.is_some_and(|i| i.world));
-                sinks.iter().filter(|(_, i)| wakes(*i)).for_each(|(sink, _)| sink.play());
-                spatial_sinks.iter().filter(|(_, i)| wakes(*i)).for_each(|(sink, _)| sink.play());
-                // Звук мира на паузе игры остаётся придержанным: его отпустит `resume_world_sounds`.
-                for (entity, mut settings, instance) in &mut held {
-                    if wakes(instance) {
-                        settings.paused = false;
-                        commands.entity(entity).remove::<HeldInBackground>();
-                    }
-                }
-            }
+            AppLifecycle::WillSuspend | AppLifecycle::Suspended => *away = true,
+            AppLifecycle::WillResume | AppLifecycle::Running => *away = false,
             _ => {}
+        }
+    }
+    let quiet = *away || silence.0;
+    if quiet && !background.0 {
+        background.0 = true;
+        // Поток вывода закрывается (`vendor/bevy_audio`): пауза звука его не останавливает.
+        output.0 = true;
+        sinks.iter().for_each(|(sink, _)| sink.pause());
+        spatial_sinks.iter().for_each(|(sink, _)| sink.pause());
+    } else if !quiet && background.0 {
+        background.0 = false;
+        output.0 = false;
+        let game_paused = *state.get() == GameState::Paused;
+        let wakes = |instance: Option<&SoundInstance>| !(game_paused && instance.is_some_and(|i| i.world));
+        sinks.iter().filter(|(_, i)| wakes(*i)).for_each(|(sink, _)| sink.play());
+        spatial_sinks.iter().filter(|(_, i)| wakes(*i)).for_each(|(sink, _)| sink.play());
+        // Звук мира на паузе игры остаётся придержанным: его отпустит `resume_world_sounds`.
+        for (entity, mut settings, instance) in &mut held {
+            if wakes(instance) {
+                settings.paused = false;
+                commands.entity(entity).remove::<HeldInBackground>();
+            }
         }
     }
 }

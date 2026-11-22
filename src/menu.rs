@@ -53,6 +53,7 @@ impl Plugin for MenuPlugin {
                     // поставленный на старт.
                     .after(run::fly_over_planet)
                     .run_if(in_state(GameState::Menu))
+                    .in_set(MenuInput)
                     .in_set(GameSet::Screens),
             );
     }
@@ -69,6 +70,10 @@ pub enum MenuPage {
     Records(Difficulty),
     Authors,
 }
+
+/// Ввод, отрисовка и подсветка меню.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MenuInput;
 
 /// Открытая страница и выделенная строка.
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -142,7 +147,8 @@ fn items(page: MenuPage, pad: bool, touch: bool) -> Vec<Item> {
             .map(Item::Setting)
             .to_vec();
             items.retain(|item| match item {
-                Item::Setting(Setting::Vibration) => pad,
+                // Вибрации геймпада на Android нет (`input.rumble` профиля).
+                Item::Setting(Setting::Vibration) => pad && crate::profile::get().input.rumble,
                 Item::Setting(Setting::TouchSize | Setting::TouchOpacity) => touch,
                 _ => true,
             });
@@ -404,7 +410,8 @@ fn menu_input(
         }
     }
 
-    // Esc и «назад» геймпада: из подэкрана — в главное меню, в главном меню — ничего.
+    // Esc и «назад» геймпада: из подэкрана — в главное меню, в главном меню — ничего (на Android
+    // «назад» там сворачивает игру: `android::back_to_background`).
     if keys.just_pressed(KeyCode::Escape) && menu.page != MenuPage::Main {
         next = back_to_main(menu.page);
         click = true;

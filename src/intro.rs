@@ -57,7 +57,13 @@ impl Plugin for IntroPlugin {
             .add_message::<Tutorial>()
             // Пропуск — сразу после чтения ввода, до экранов: нажатие, оборвавшее интро,
             // меню уже не видит и забег им не начинает.
-            .add_systems(PreUpdate, skip_intro.after(InputSystems))
+            // На экране загрузки интро ещё не началось: касание там его не пропускает.
+            .add_systems(
+                PreUpdate,
+                skip_intro
+                    .after(InputSystems)
+                    .run_if(not(in_state(crate::run::GameState::Loading))),
+            )
             .add_systems(Update, forget_tutorials.in_set(GameSet::Reset))
             .add_systems(
                 Update,

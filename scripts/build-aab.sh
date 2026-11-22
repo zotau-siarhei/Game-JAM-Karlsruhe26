@@ -7,10 +7,13 @@
 # Подпись ключом загрузки Play — из переменных окружения; сам ключ и пароль в репозиторий не класть:
 #   SPACE_GUARD_UPLOAD_KEYSTORE=/путь/upload.jks   хранилище ключа
 #   SPACE_GUARD_UPLOAD_ALIAS=upload                имя ключа в хранилище
-#   SPACE_GUARD_UPLOAD_PASSWORD=…                  пароль (хранилища и ключа)
+#   SPACE_GUARD_UPLOAD_PASSWORD=…                  пароль хранилища
+#   SPACE_GUARD_UPLOAD_KEY_PASSWORD=…              пароль ключа, если не совпадает с паролем хранилища
 # Без них пакет подписывается отладочным ключом: годится для проверки на телефоне, не для Play.
-# Версия для пользователей — SPACE_GUARD_VERSION_NAME (по умолчанию 0.1.0), код версии — число
-# коммитов, как у APK. Библиотеку и ассеты готовит scripts/build-android.sh (arm64-v8a).
+# Версия для пользователей — SPACE_GUARD_VERSION_NAME (по умолчанию 0.1.0), код версии —
+# SPACE_GUARD_VERSION_CODE или число коммитов, как у APK (в клоне с неполной историей — только
+# переменная). Библиотеку и ассеты готовит scripts/build-android.sh (arm64-v8a); символы библиотеки
+# для Play Vitals (имена функций в стеках падений) лежат в пакете отдельно, сама библиотека — без них.
 set -euo pipefail
 
 root=$(git rev-parse --show-toplevel)
@@ -27,13 +30,24 @@ done
 min_sdk=29
 target_sdk=36
 version_name=${SPACE_GUARD_VERSION_NAME:-0.1.0}
+if [[ -n "${SPACE_GUARD_VERSION_CODE:-}" ]]; then
+    version_code=$SPACE_GUARD_VERSION_CODE
+elif [[ $(git rev-parse --is-shallow-repository) == true ]]; then
+    echo "история git неполная: задайте SPACE_GUARD_VERSION_CODE или сделайте git fetch --unshallow" >&2
+    exit 1
+else
+    version_code=$(git rev-list --count HEAD)
+fi
 sdk=${ANDROID_HOME:-$HOME/Android/Sdk}
 tools=$(ls -d "$sdk"/build-tools/* 2>/dev/null | sort -V | tail -1)
 platform=$sdk/platforms/android-$target_sdk/android.jar
 target=$root/target/android
 
-# Библиотека, ресурсы и ассеты с уменьшенными текстурами — как у APK.
-scripts/build-android.sh
+# Библиотека, ресурсы и ассеты с уменьшенными текстурами — как у APK; библиотека с таблицей символов.
+SPACE_GUARD_SYMBOLS=1 SPACE_GUARD_VERSION_NAME=$version_name SPACE_GUARD_VERSION_CODE=$version_code \
+    scripts/build-android.sh
+ndk=${ANDROID_NDK_HOME:-$(ls -d "$sdk"/ndk/* 2>/dev/null | sort -V | tail -1)}
+llvm=$(ls -d "$ndk"/toolchains/llvm/prebuilt/*/bin | head -1)
 
 # bundletool от Google: скачивается один раз, сверяется по SHA-256.
 bundletool_version=1.18.3
@@ -62,10 +76,17 @@ mkdir -p "$out/base"
 "$tools/aapt2" link --proto-format -o "$out/base.apk" -I "$platform" \
     --manifest android/AndroidManifest.xml \
     --min-sdk-version "$min_sdk" --target-sdk-version "$target_sdk" \
-    --version-code "$(git rev-list --count HEAD)" --version-name "$version_name" \
+    --version-code "$version_code" --version-name "$version_name" \
     -A "$target/assets" \
     "$target/apk/res.zip"
-python3 -I - "$out/base.apk" "$out/base" "$target/aarch64-linux-android/release/libspace_guard.so" <<'PY'
+# В пакет — библиотека без символов. Таблица символов (без DWARF и кода, как SYMBOL_TABLE у Android
+# Gradle Plugin: ~90 МБ, в пакете ~11 МБ) — в метаданные пакета: Play Console читает по ней имена
+# функций в стеках падений и ANR, на телефоны она не попадает.
+library=$target/aarch64-linux-android/release/libspace_guard.so
+symbols=$out/libspace_guard.so.sym
+"$llvm/llvm-objcopy" --strip-debug --only-keep-debug "$library" "$symbols"
+"$llvm/llvm-strip" --strip-all -o "$out/libspace_guard.so" "$library"
+python3 -I - "$out/base.apk" "$out/base" "$out/libspace_guard.so" <<'PY'
 import os, sys, zipfile
 apk, base, lib = sys.argv[1:4]
 with zipfile.ZipFile(apk) as source:
@@ -73,7 +94,7 @@ with zipfile.ZipFile(apk) as source:
 os.makedirs(os.path.join(base, "manifest"))
 os.rename(os.path.join(base, "AndroidManifest.xml"), os.path.join(base, "manifest", "AndroidManifest.xml"))
 os.makedirs(os.path.join(base, "lib", "arm64-v8a"))
-os.link(lib, os.path.join(base, "lib", "arm64-v8a", "libspace_guard.so"))
+os.rename(lib, os.path.join(base, "lib", "arm64-v8a", "libspace_guard.so"))
 with zipfile.ZipFile(os.path.join(os.path.dirname(base), "base.zip"), "w", zipfile.ZIP_DEFLATED) as module:
     for folder, _, files in os.walk(base):
         for name in files:
@@ -96,7 +117,8 @@ cat > "$out/BundleConfig.json" <<'JSON'
 JSON
 aab=$target/space-guard.aab
 rm -f "$aab"
-java -jar "$bundletool" build-bundle --modules="$out/base.zip" --config="$out/BundleConfig.json" --output="$aab"
+java -jar "$bundletool" build-bundle --modules="$out/base.zip" --config="$out/BundleConfig.json" --output="$aab" \
+    --metadata-file="com.android.tools.build.debugsymbols/arm64-v8a/libspace_guard.so.sym:$symbols"
 # Вывод целиком, а не через `| grep -q`: при pipefail grep, закрывший канал раньше, дал бы SIGPIPE.
 config=$(java -jar "$bundletool" dump config --bundle="$aab")
 if [[ "$config" != *PAGE_ALIGNMENT_16K* ]]; then
@@ -107,11 +129,18 @@ fi
 if [[ -n "${SPACE_GUARD_UPLOAD_KEYSTORE:-}" ]]; then
     : "${SPACE_GUARD_UPLOAD_ALIAS:?нужно имя ключа: SPACE_GUARD_UPLOAD_ALIAS}"
     : "${SPACE_GUARD_UPLOAD_PASSWORD:?нужен пароль: SPACE_GUARD_UPLOAD_PASSWORD}"
-    # Пароль — из окружения: в командной строке и логе его нет.
+    export SPACE_GUARD_UPLOAD_KEY_PASSWORD=${SPACE_GUARD_UPLOAD_KEY_PASSWORD:-$SPACE_GUARD_UPLOAD_PASSWORD}
+    # Пароли — из окружения: в командной строке и логе их нет. Алгоритм подписи jarsigner выбирает
+    # по типу ключа (RSA, EC).
     jarsigner -keystore "$SPACE_GUARD_UPLOAD_KEYSTORE" -storepass:env SPACE_GUARD_UPLOAD_PASSWORD \
-        -keypass:env SPACE_GUARD_UPLOAD_PASSWORD -sigalg SHA256withRSA -digestalg SHA-256 \
+        -keypass:env SPACE_GUARD_UPLOAD_KEY_PASSWORD -digestalg SHA-256 \
         "$aab" "$SPACE_GUARD_UPLOAD_ALIAS" >/dev/null
-    echo "подписан ключом загрузки «$SPACE_GUARD_UPLOAD_ALIAS»"
+    # Подпись проверяется сразу: битый пакет Play отклонил бы уже после загрузки.
+    if ! jarsigner -verify "$aab" >/dev/null; then
+        echo "подпись $aab не проверилась" >&2
+        exit 1
+    fi
+    echo "подписан ключом загрузки «$SPACE_GUARD_UPLOAD_ALIAS», подпись проверена"
 else
     jarsigner -keystore "$HOME/.android/debug.keystore" -storepass android -keypass android \
         -sigalg SHA256withRSA -digestalg SHA-256 "$aab" androiddebugkey >/dev/null

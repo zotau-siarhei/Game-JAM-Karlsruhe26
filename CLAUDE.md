@@ -181,12 +181,25 @@ cargo test                                  # тесты
   Adreno) и `src/platform.rs`: ассеты лежат в APK, поэтому новый JSON-список надо вшить в
   `platform::read_list`. Потеря видеокарты (DeviceLost) или паника открывают игру заново (`android::restart_once`,
   перезапуск в первую минуту после перезапуска не повторяется); проверка — `setprop debug.spaceguard.lose <секунд>`. Конвейеры на Android собираются параллельно в пуле асинхронных задач, но кадр ждёт
-  их готовности (`prewarm::compile_pipelines`): отрисовка вперемешку со сборкой вешала GPU Adreno 810. Управление — касания (`src/touch.rs`), геймпад или клавиатура; вибрации нет.
+  их готовности (`prewarm::compile_pipelines`): отрисовка вперемешку со сборкой вешала GPU Adreno 810. Одно ожидание —
+  не дольше `prewarm.wait_limit` профиля (2 с): пока кадр стоит, ввод не обрабатывается, и после 5 с Android показал бы
+  «не отвечает» (ANR); смена качества там идёт под занавесом с надписью. Управление — касания (`src/touch.rs`), геймпад
+  или клавиатура; вибрации нет (`input.rumble` профиля прячет пункт меню). Окно — immersive: системные панели
+  прячутся при старте и каждом возврате фокуса (`android::hide_system_bars`, в потоке интерфейса через
+  `run_on_java_main_thread`), безопасная область — вырез и видимые панели (`android::safe_insets`); экран не гаснет
+  (`KEEP_SCREEN_ON`). «Выхода» в меню нет: «назад» в главном меню сворачивает игру (`moveTaskToBack`). Игра просит
+  аудиофокус и молчит во время звонка (`sound::SystemSilence`; проверка — `adb emu gsm call 5551234`, конец —
+  `adb emu gsm cancel 5551234`). Что меняется посреди игры (оператор, SIM, тема…), перечислено в `configChanges`
+  манифеста: новая активность в живом процессе завершает его (`main.rs`).
   Иконка — ресурсы `android/res`; слои пересобирает `scripts/android-icon.py` из `android/icon/source.png` (нужен Pillow).
   Пакет для Google Play — `scripts/build-aab.sh` (`--install` ставит его на телефон через bundletool):
   `target/android/space-guard.aab`, скачивание ~120 МБ. Ключ загрузки — переменные `SPACE_GUARD_UPLOAD_KEYSTORE`,
-  `SPACE_GUARD_UPLOAD_ALIAS`, `SPACE_GUARD_UPLOAD_PASSWORD` (ключ и пароль в репозиторий не класть), без них —
-  отладочный ключ. Текстуры моделей в APK и AAB уменьшаются до 1024 при сборке (`scripts/web_textures.py`).
+  `SPACE_GUARD_UPLOAD_ALIAS`, `SPACE_GUARD_UPLOAD_PASSWORD` и, если отличается, `SPACE_GUARD_UPLOAD_KEY_PASSWORD`
+  (ключ и пароли в репозиторий не класть), без них — отладочный ключ; подпись ключом загрузки проверяется сразу.
+  Таблица символов библиотеки лежит в метаданных пакета (`BUNDLE-METADATA/com.android.tools.build.debugsymbols`): по
+  ней Play Vitals показывает имена функций в падениях и ANR; сама библиотека в пакете без символов. Версия —
+  `SPACE_GUARD_VERSION_NAME` и `SPACE_GUARD_VERSION_CODE` (по умолчанию — число коммитов; в клоне с неполной
+  историей скрипты требуют переменную). Текстуры моделей в APK и AAB уменьшаются до 1024 при сборке (`scripts/web_textures.py`).
   Play требует страниц 16 КБ: библиотека линкуется с `max-page-size=16384`, APK выравнивается `zipalign -P 16`,
   а `BundleConfig.json` пакета объявляет `PAGE_ALIGNMENT_16K` — скрипт сверяет это `bundletool dump config`.
   Эмулятор (Android Studio, AVD `Medium_Phone_API_36.0`, arm64): `~/Library/Android/sdk/emulator/emulator -avd

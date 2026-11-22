@@ -125,6 +125,9 @@ pub struct Prewarm {
     pub start_frames: u32,
     /// Кадр ждёт, пока соберутся все начатые конвейеры (Adreno вешал GPU при сборке вперемешку).
     pub wait_pipelines: bool,
+    /// Дольше этого одно ожидание конвейеров не длится, секунд: несобранное ждёт в следующем кадре.
+    /// Между кадрами обрабатывается ввод — Android показывает «не отвечает» после 5 с без этого.
+    pub wait_limit: f32,
     /// Собирать конвейеры по одному в рендер-потоке.
     pub sync_compile: bool,
 }
@@ -145,6 +148,8 @@ pub struct Input {
     pub touch_default: bool,
     /// Есть ли курсор мыши, который прячется при геймпаде.
     pub cursor: bool,
+    /// Умеет ли игра вибрировать геймпадом: без этого нет и пункта «VIBRATION».
+    pub rumble: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -215,6 +220,9 @@ impl PlatformProfile {
             && (!finite(fps) || !(fps == 0.0 || (10.0..=480.0).contains(&fps)))
         {
             return Err(format!("render.frame_limit {fps}: 0 (без предела) или от 10 до 480"));
+        }
+        if !finite(self.prewarm.wait_limit) || !(0.1..=120.0).contains(&self.prewarm.wait_limit) {
+            return Err(format!("prewarm.wait_limit {}: нужно от 0,1 до 120 с", self.prewarm.wait_limit));
         }
         if !finite(self.debris.shadow_min_size) || self.debris.shadow_min_size < 0.0 {
             return Err(format!("debris.shadow_min_size {}: нужно от 0", self.debris.shadow_min_size));
@@ -927,14 +935,14 @@ mod tests {
         assert!(android.models.simplify && android.models.shadow_proxies);
         assert_eq!(android.models.texture_max, Some(1024));
         assert_eq!(
-            (android.prewarm.start_frames, android.prewarm.wait_pipelines),
-            (3, true)
+            (android.prewarm.start_frames, android.prewarm.wait_pipelines, android.prewarm.wait_limit),
+            (3, true, 2.0)
         );
         assert_eq!(
             (android.threads.compute, android.threads.async_compute),
             (Some(4), Some([2, 6]))
         );
-        assert!(android.input.touch_default && !android.input.cursor && android.menu.quit);
+        assert!(android.input.touch_default && !android.input.cursor && !android.input.rumble && !android.menu.quit);
         assert!(android.audio.pause_in_background);
     }
 

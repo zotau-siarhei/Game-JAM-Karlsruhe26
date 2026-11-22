@@ -36,7 +36,8 @@ if [[ "$have" != "$want" ]]; then
     exit 1
 fi
 
-cargo build --target wasm32-unknown-unknown "${cargo_profile[@]}"
+# Пустой массив при set -u: bash 3.2 из macOS иначе падает («unbound variable»).
+cargo build --target wasm32-unknown-unknown ${cargo_profile[@]+"${cargo_profile[@]}"}
 
 out=target/web
 mkdir -p "$out"

@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Game Mode (Android 12+): игра сама поддерживает режимы «производительность» и «экономия батареи»
-     (src/android.rs, `GameManager.getGameMode`), поэтому вмешательства системы — ANGLE вместо драйвера,
-     уменьшение кадра, подмена частоты кадров — ей не нужны. -->
+<!-- Game Mode (Android 12+): игра сама поддерживает режим «экономия батареи» (src/android.rs,
+     `GameManager.getGameMode`: не больше 30 кадров). «Производительность» она не обрабатывает — обычный
+     режим и так рисует столько, сколько позволяет профиль, — поэтому и не объявляет. Вмешательства
+     системы — ANGLE вместо драйвера, уменьшение кадра, подмена частоты кадров — ей не нужны. -->
 <game-mode-config xmlns:android="http://schemas.android.com/apk/res/android"
     android:supportsBatteryGameMode="true"
-    android:supportsPerformanceGameMode="true"
+    android:supportsPerformanceGameMode="false"
     android:allowGameAngleDriver="false"
     android:allowGameDownscaling="false"
     android:allowGameFpsOverride="false" />

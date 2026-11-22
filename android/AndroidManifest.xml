@@ -18,6 +18,9 @@
         <meta-data android:name="android.game_mode_config" android:resource="@xml/game_mode_config" />
         <!-- enableOnBackInvokedCallback="false": с target SDK 36 «назад» иначе закрывает игру сам,
              а она делает из неё Esc (src/gamepad/android.rs). -->
+        <!-- configChanges: всё, что меняется посреди игры, обрабатывает сама игра. Иначе система
+             пересоздала бы активность, а вторая активность в живом процессе завершает его (main.rs):
+             смена оператора в роуминге (mcc|mnc) обрывала бы забег. -->
         <activity
             android:name="android.app.NativeActivity"
             android:exported="true"
@@ -25,7 +28,7 @@
             android:enableOnBackInvokedCallback="false"
             android:screenOrientation="sensorLandscape"
             android:theme="@style/SpaceGuard"
-            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density|fontScale|layoutDirection|locale">
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density|fontScale|layoutDirection|locale|mcc|mnc|touchscreen|colorMode|fontWeightAdjustment|grammaticalGender">
             <meta-data android:name="android.app.lib_name" android:value="space_guard" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
