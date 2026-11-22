@@ -21,7 +21,7 @@
     "threads": { "compute": null, "async_compute": null },
     "input": { "touch_default": false, "cursor": true, "rumble": true },
     "menu": { "quit": true },
-    "audio": { "pause_in_background": false }
+    "audio": { "pause_in_background": false, "world_sounds": 20 }
   },
 
   "desktop": { "parent": "base" },
@@ -29,7 +29,7 @@
   "linux": { "parent": "desktop" },
   "windows": { "parent": "desktop" },
 
-  "web": { "parent": "base", "menu": { "quit": false } },
+  "web": { "parent": "base", "menu": { "quit": false }, "audio": { "world_sounds": 10 } },
   "web-desktop": { "parent": "web" },
   "web-mobile": {
     "parent": "web",

@@ -17,6 +17,7 @@ use crate::frame::GameSet;
 use crate::run::WorldRebuilt;
 use crate::settings::{Settings, SoundGroup};
 use crate::sound_list::{SoundEntry, SoundList};
+use crate::web_audio::{WebPlaying, WebSound};
 
 /// Каталог реплик внутри `assets`.
 const VOICE_DIR: &str = "voice";
@@ -157,22 +158,22 @@ fn play_voice(
             started: time.elapsed_secs_f64(),
             silent_seconds: silent_seconds(&loaded.entry.text),
         },
-        AudioPlayer::new(sound.clone()),
         // При нулевой громкости реплика всё равно идёт: субтитры держатся, пока она звучит.
-        PlaybackSettings {
-            volume: bevy::audio::Volume::Linear(settings.gain(SoundGroup::Voice)),
-            ..PlaybackSettings::DESPAWN
-        },
+        // В браузере её играет сам браузер (`web_audio`): в тяжёлом бою общий микшер давал щели.
+        crate::web_audio::player(sound.clone(), settings.gain(SoundGroup::Voice), false),
     ));
 }
 
 /// Громкость голоса из настроек меняется и у звучащей реплики.
-fn follow_volume(settings: Res<Settings>, mut playing: Query<&mut AudioSink, With<VoicePlayback>>) {
+fn follow_volume(
+    settings: Res<Settings>,
+    mut playing: Query<(Option<&mut AudioSink>, Option<&mut WebSound>), With<VoicePlayback>>,
+) {
     if !settings.is_changed() {
         return;
     }
-    for mut sink in &mut playing {
-        sink.set_volume(bevy::audio::Volume::Linear(settings.gain(SoundGroup::Voice)));
+    for (sink, web) in &mut playing {
+        crate::web_audio::set_volume(sink, web, settings.gain(SoundGroup::Voice));
     }
 }
 
@@ -180,11 +181,11 @@ fn follow_volume(settings: Res<Settings>, mut playing: Query<&mut AudioSink, Wit
 fn expire_lines(
     mut commands: Commands,
     time: Res<Time<Real>>,
-    playing: Query<(Entity, &VoicePlayback, Has<AudioSink>)>,
+    playing: Query<(Entity, &VoicePlayback, Has<AudioSink>, Has<WebPlaying>)>,
 ) {
     let now = time.elapsed_secs_f64();
-    for (entity, playback, has_sink) in &playing {
-        if line_expired(now - playback.started, playback.silent_seconds, has_sink) {
+    for (entity, playback, has_sink, in_browser) in &playing {
+        if line_expired(now - playback.started, playback.silent_seconds, has_sink || in_browser) {
             commands.entity(entity).despawn();
         }
     }

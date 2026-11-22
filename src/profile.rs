@@ -164,6 +164,9 @@ pub struct Menu {
 pub struct Audio {
     /// Звук на паузе, пока приложение в фоне.
     pub pause_in_background: bool,
+    /// Сколько звуков мира звучит одновременно всего (`sound.rs`). В браузере меньше: там все
+    /// звучащие mp3 раскодируются в главном потоке.
+    pub world_sounds: usize,
 }
 
 /// Итоговый профиль: все поля обязательны, забытое поле — ошибка теста, а не тихое значение.
@@ -901,6 +904,12 @@ mod tests {
             );
             assert!(!p.input.touch_default && p.input.cursor, "{name}");
             assert_eq!(p.menu.quit, name != "web-desktop", "{name}");
+        }
+        for name in ["macos", "linux", "windows", "android", "ios-phone"] {
+            assert_eq!(build(name, &[]).audio.world_sounds, 20, "{name}");
+        }
+        for name in ["web-desktop", "web-mobile"] {
+            assert_eq!(build(name, &[]).audio.world_sounds, 10, "{name}");
         }
         let web = build("web-mobile", &[]);
         assert_eq!(web.default_quality, Quality::Low);

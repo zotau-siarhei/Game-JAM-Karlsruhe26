@@ -102,6 +102,7 @@ mod weapon_sfx;
 mod weapons;
 mod voice;
 mod waves;
+mod web_audio;
 
 use bevy::prelude::*;
 
@@ -348,6 +349,7 @@ fn game_plugins(app: &mut App) {
             hq::HqPlugin,
             sound::SoundPlugin,
             music::MusicPlugin,
+            web_audio::WebAudioPlugin,
             audio_events::AudioEventsPlugin,
             comic::ComicPlugin,
             intro::IntroPlugin,

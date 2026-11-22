@@ -30,6 +30,9 @@ meshopt = "0.7"
 bevy = { version = "0.20.1", features = ["webgpu"] }
 # Часы браузера для сидов: `std::time::SystemTime` в WASM нет.
 js-sys = "0.3"
+# Реплики и музыку в браузере играет аудиоэлемент страницы (`src/web_audio.rs`).
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["AudioContext", "BaseAudioContext", "AudioNode", "AudioParam", "GainNode", "AudioDestinationNode", "MediaElementAudioSourceNode", "HtmlAudioElement", "HtmlMediaElement", "HtmlElement", "Element", "Document", "Window", "EventTarget"] }
 
 # Вибрация и световая панель геймпада на macOS (`src/haptics.rs`): gilrs там вибрацию не умеет,
 # а системный GameController с CoreHaptics умеет (DualShock 4, DualSense, Xbox).

@@ -12,7 +12,6 @@
 //! Треки сменяются перекрёстным затуханием. Переход к [`Track::GameOver`] начинается коротким
 //! акцентом `death_sting`. Пока звучит реплика, музыка тише.
 
-use bevy::audio::Volume;
 use bevy::prelude::*;
 
 use crate::settings::{Settings, SoundGroup};
@@ -181,11 +180,8 @@ fn spawn_layer(commands: &mut Commands, player: &MusicPlayer, track: Track, leve
             level,
             fading_out: false,
         },
-        AudioPlayer::new(sound),
-        PlaybackSettings {
-            volume: Volume::Linear(BASE_VOLUME * level * player.duck * gain),
-            ..PlaybackSettings::LOOP
-        },
+        // В браузере трек играет сам браузер (`web_audio`).
+        crate::web_audio::player(sound, BASE_VOLUME * level * player.duck * gain, true),
     ));
 }
 
@@ -197,7 +193,7 @@ fn switch_track(
     settings: Res<Settings>,
     mut player: ResMut<MusicPlayer>,
     mut layers: Query<(Entity, &mut MusicLayer)>,
-    stings: Query<(), With<AudioPlayer>>,
+    stings: Query<(), Or<(With<AudioPlayer>, With<crate::web_audio::WebSound>)>>,
 ) {
     let gain = settings.gain(SoundGroup::Music);
     // Акцент гибели отзвучал или не дождались его конца: начинается музыка конца забега.
@@ -232,13 +228,7 @@ fn switch_track(
             commands.entity(entity).despawn();
         }
         let sting = commands
-            .spawn((
-                AudioPlayer::new(sound),
-                PlaybackSettings {
-                    volume: Volume::Linear(BASE_VOLUME * gain),
-                    ..PlaybackSettings::DESPAWN
-                },
-            ))
+            .spawn(crate::web_audio::player(sound, BASE_VOLUME * gain, false))
             .id();
         player.sting = Some((sting, now));
         return;
@@ -258,7 +248,7 @@ fn fade_layers(
     settings: Res<Settings>,
     mut player: ResMut<MusicPlayer>,
     voice: Query<(), With<VoicePlayback>>,
-    mut layers: Query<(Entity, &mut MusicLayer, Option<&mut AudioSink>)>,
+    mut layers: Query<(Entity, &mut MusicLayer, Option<&mut AudioSink>, Option<&mut crate::web_audio::WebSound>)>,
 ) {
     let delta = time.delta_secs();
     // Неслышный голос музыку не приглушает.
@@ -268,16 +258,14 @@ fn fade_layers(
     let gain = settings.gain(SoundGroup::Music);
     player.duck = approach(player.duck, target, DUCK_SPEED * delta);
 
-    for (entity, mut layer, sink) in &mut layers {
+    for (entity, mut layer, sink, web) in &mut layers {
         let goal = if layer.fading_out { 0.0 } else { 1.0 };
         layer.level = approach(layer.level, goal, delta / CROSSFADE_SECONDS);
         if layer.fading_out && layer.level <= 0.0 {
             commands.entity(entity).despawn();
             continue;
         }
-        if let Some(mut sink) = sink {
-            sink.set_volume(Volume::Linear(BASE_VOLUME * layer.level * player.duck * gain));
-        }
+        crate::web_audio::set_volume(sink, web, BASE_VOLUME * layer.level * player.duck * gain);
     }
 }
 

@@ -58,10 +58,6 @@ const ENGINE_PITCH: (f32, f32) = (0.7, 0.5);
 /// Сколько экземпляров одной группы звучит одновременно, если для группы нет своего предела.
 const DEFAULT_LIMIT: usize = 4;
 
-/// Сколько звуков мира звучит одновременно всего, по всем группам. Каждый — поток mp3,
-/// без общего предела бой даёт 30–40 потоков. Звуки интерфейса и мемы в предел не входят.
-const TOTAL_LIMIT: usize = 20;
-
 /// Дольше этого экземпляр звука не живёт, с: самый длинный звук — 12 с, на замедлении
 /// времени возраст звука мира растёт медленнее вместе с ним. Без звукового устройства
 /// экземпляры никто не удаляет, кроме этого срока.
@@ -400,6 +396,8 @@ struct SoundInstance {
     pitch: f32,
     /// Сколько секунд звучит: для звуков мира по игровому времени, для интерфейса по реальному.
     age: f32,
+    /// Громкость по расстоянию при создании: самый тихий звук уступает место громкому.
+    volume: f32,
 }
 
 /// Звук игрового мира, а не интерфейса. Звуки интерфейса начинаются с `ui_`.
@@ -435,8 +433,21 @@ fn volume_at(distance: f32) -> Option<f32> {
 
 /// Найдётся ли место новому звуку группы `group`: в ней звучит `in_group`, всего в мире —
 /// `in_world` звуков.
-fn has_room(group: &str, in_group: usize, in_world: usize) -> bool {
-    in_group < limit_for(group) && (outside_total(group) || in_world < TOTAL_LIMIT)
+/// Есть ли место для звука группы: предел группы и общий предел звуков мира `total`. Каждый звук —
+/// поток mp3, без общего предела бой даёт 30–40 потоков. Звуки интерфейса и мемы в общий предел не
+/// входят. Общий предел — `audio.world_sounds` профиля платформы.
+fn has_room(group: &str, in_group: usize, in_world: usize, total: usize) -> bool {
+    in_group < limit_for(group) && (outside_total(group) || in_world < total)
+}
+
+/// Кого вытеснить, когда общий предел занят: самый тихий звучащий звук мира, если он тише нового.
+fn quietest_below<'a>(
+    playing: impl Iterator<Item = (Entity, &'a SoundInstance)>,
+    volume: f32,
+) -> Option<(Entity, &'a SoundInstance)> {
+    playing
+        .filter(|(_, instance)| !outside_total(&instance.group) && instance.volume < volume)
+        .min_by(|(_, a), (_, b)| a.volume.total_cmp(&b.volume))
 }
 
 /// Предел одновременных экземпляров для группы.
@@ -455,7 +466,7 @@ fn play_sounds(
     mut dice: ResMut<Dice>,
     time: Res<Time<Virtual>>,
     listener: Query<&GlobalTransform, With<SoundListener>>,
-    instances: Query<&SoundInstance>,
+    instances: Query<(Entity, &SoundInstance)>,
     mut reported: Local<HashSet<String>>,
 ) {
     if requests.is_empty() {
@@ -468,10 +479,13 @@ fn play_sounds(
     // в этом кадре.
     let mut in_group: HashMap<String, usize> = HashMap::new();
     let mut in_world = 0;
-    for instance in &instances {
+    for (_, instance) in &instances {
         *in_group.entry(instance.group.clone()).or_default() += 1;
         in_world += usize::from(!outside_total(&instance.group));
     }
+    let total = crate::profile::get().audio.world_sounds;
+    // Вытесненные в этом кадре: второй раз их не вытесняем.
+    let mut evicted: HashSet<Entity> = HashSet::new();
 
     for request in requests.read() {
         let volume = match (request.position, listener_position) {
@@ -504,8 +518,21 @@ fn play_sounds(
         };
 
         let active = in_group.get(&request.id).copied().unwrap_or(0);
-        if !has_room(&request.id, active, in_world) {
-            continue;
+        if !has_room(&request.id, active, in_world, total) {
+            // Общий предел занят, а звук громче самого тихого из звучащих: тот уступает место.
+            // Близкий взрыв не теряется из-за далёкой стрельбы.
+            let victim = (has_room(&request.id, active, 0, total))
+                .then(|| quietest_below(instances.iter().filter(|(e, _)| !evicted.contains(e)), volume))
+                .flatten();
+            let Some((victim, quiet)) = victim else {
+                continue;
+            };
+            evicted.insert(victim);
+            commands.entity(victim).despawn();
+            in_world -= 1;
+            if let Some(count) = in_group.get_mut(&quiet.group) {
+                *count = count.saturating_sub(1);
+            }
         }
         let Some(sound) = &chosen.sound else {
             continue;
@@ -522,6 +549,7 @@ fn play_sounds(
             world,
             pitch,
             age: 0.0,
+            volume,
         };
         let settings = PlaybackSettings {
             volume: Volume::Linear(volume * gain),
@@ -674,6 +702,22 @@ mod tests {
     }
 
     #[test]
+    fn громкий_звук_вытесняет_самый_тихий() {
+        let sound = |group: &str, volume: f32| SoundInstance { group: group.into(), world: true, pitch: 1.0, age: 0.0, volume };
+        let playing = [
+            (Entity::from_raw_u32(1).unwrap(), sound("mg_fire", 0.3)),
+            (Entity::from_raw_u32(2).unwrap(), sound("explosion", 0.1)),
+            (Entity::from_raw_u32(3).unwrap(), sound("meme_airhorn", 0.05)),
+            (Entity::from_raw_u32(4).unwrap(), sound("hit", 0.6)),
+        ];
+        let iter = || playing.iter().map(|(e, i)| (*e, i));
+        // Мем вне общего предела: вытесняется самый тихий звук мира.
+        assert_eq!(quietest_below(iter(), 0.9).map(|(e, _)| e), Some(playing[1].0));
+        // Новый звук тише всех: никто не уступает.
+        assert!(quietest_below(iter(), 0.05).is_none());
+    }
+
+    #[test]
     fn мелодичные_звуки_без_разброса_высоты() {
         assert_eq!(pitch_spread("upgrade"), (1.0, 1.0));
         assert_eq!(pitch_spread("meme_womp"), (1.0, 1.0));
@@ -682,14 +726,15 @@ mod tests {
 
     #[test]
     fn world_sounds_share_a_total_limit() {
-        assert!(has_room("explosion", 0, TOTAL_LIMIT - 1));
-        assert!(!has_room("explosion", 0, TOTAL_LIMIT));
-        assert!(!has_room("explosion", limit_for("explosion"), 0));
+        const TOTAL: usize = 10;
+        assert!(has_room("explosion", 0, TOTAL - 1, TOTAL));
+        assert!(!has_room("explosion", 0, TOTAL, TOTAL));
+        assert!(!has_room("explosion", limit_for("explosion"), 0, TOTAL));
         // Интерфейс звучит и при полном мире.
-        assert!(has_room("ui_click", 0, TOTAL_LIMIT));
+        assert!(has_room("ui_click", 0, TOTAL, TOTAL));
         // Мемы звучат и при занятом пределе, но по одному.
-        assert!(has_room("meme_airhorn", 0, TOTAL_LIMIT));
-        assert!(!has_room("meme_airhorn", 1, 0));
+        assert!(has_room("meme_airhorn", 0, TOTAL, TOTAL));
+        assert!(!has_room("meme_airhorn", 1, 0, TOTAL));
     }
 
     #[test]
