@@ -101,7 +101,8 @@
     "parent": "mobile",
     "input": { "touch_default": true, "cursor": false },
     "menu": { "quit": false },
-    "audio": { "pause_in_background": true }
+    "audio": { "pause_in_background": true },
+    "prewarm": { "wait_pipelines": true }
   },
   "ios-phone-low": {
     "parent": "ios-phone",

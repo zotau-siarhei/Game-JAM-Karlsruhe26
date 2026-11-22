@@ -173,6 +173,9 @@ fn main() {
         }),
         ..default()
     }).set(bevy::log::LogPlugin {
+        // winit на iOS пишет две строки предупреждений на каждый кадр («RedrawRequested during the main
+        // event loop», «AboutToWait»): файл лога песочницы рос на мегабайт в минуту.
+        filter: format!("{}winit::platform_impl::ios::app_state=error", bevy::log::DEFAULT_FILTER),
         // На iOS лог ещё и в файл песочницы: с телефона системный лог не достать (`ios.rs`).
         #[cfg(target_os = "ios")]
         custom_layer: ios::file_log_layer,

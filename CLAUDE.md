@@ -237,7 +237,11 @@ cargo test                                  # тесты
   песочницы `Library/Application Support/space_guard.log` (с телефона: `xcrun devicectl device copy from
   --domain-type appDataContainer --domain-identifier io.github.zotausiarhei.spaceguard --source …`).
   Версия SDK в исполняемом файле — 18 (`vtool`): iOS 27 закрывает приложения без сцен UIKit, а winit 0.30
-  их не умеет. В симуляторе нет частиц (`bevy_hanabi` нужна непрямая отрисовка). meshoptimizer требует
+  их не умеет. В симуляторе нет частиц (`bevy_hanabi` нужна непрямая отрисовка). Сбой видеокарты при первой сборке шейдеров
+  (отчёт `gpuEvent-space_guard` в `--domain-type systemCrashLogs`) wgpu не сообщает: экран застывает, а игра звучит.
+  Поэтому на iOS кадр ждёт сборки конвейеров, как на Android (`prewarm.wait_pipelines`), а `ios::watch_gpu` раз в 2 с
+  шлёт видеокарте пробную работу и при ошибке показывает окно UIKit «перезапустите игру» (проверка —
+  `--env SPACE_GUARD_GPU_LOST_TEST=<секунд>`). Лог-файл забирай после закрытия игры: пока она пишет, копия обрывается. meshoptimizer требует
   libc++ (`ios.rs`) и `IPHONEOS_DEPLOYMENT_TARGET=16.0` (скрипт). Бесплатная команда Apple: если с устройства
   удалить последнее её приложение, доверие разработчику пропадает и его надо дать заново в настройках.
 - Профили платформ — `src/profile.rs`, значения в `assets/platform/profiles.json` (вшит в сборку): плотность

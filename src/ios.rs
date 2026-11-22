@@ -14,6 +14,7 @@ use bevy::prelude::*;
 use bevy::window::{PrimaryWindow, RawHandleWrapper};
 use objc2::encode::{Encode, Encoding};
 use objc2::msg_send;
+use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use raw_window_handle::RawWindowHandle;
 
@@ -37,7 +38,7 @@ impl Plugin for IosPlugin {
             if d.tablet { "iPad" } else { "iPhone" },
             d.tier(),
         );
-        app.add_systems(PreUpdate, (read_view, watch_thermal, log_memory, keep_screen_on));
+        app.add_systems(PreUpdate, (read_view, watch_thermal, log_memory, keep_screen_on, watch_gpu));
     }
 }
 
@@ -319,5 +320,165 @@ fn read_view(
         );
         *last = Some(area);
         *SAFE_AREA.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = area;
+    }
+}
+
+/// Пробная работа для видеокарты, раз в [`GPU_PROBE_SECONDS`] — проверка, что она ещё слушается.
+struct GpuProbe {
+    queue: Retained<AnyObject>,
+    buffer: Retained<AnyObject>,
+    /// Последний отправленный буфер команд и сколько проверок подряд он не закончился.
+    last: Option<(Retained<AnyObject>, u32)>,
+}
+
+thread_local! {
+    /// Объекты Metal без `Send`: живут в главном потоке (`watch_gpu` стоит с `NonSendMarker`).
+    static GPU_PROBE: std::cell::RefCell<Option<GpuProbe>> = const { std::cell::RefCell::new(None) };
+}
+
+const GPU_PROBE_SECONDS: f32 = 2.0;
+/// Пробная работа не закончилась за столько проверок подряд — видеокарта зависла.
+const GPU_STALLED_PROBES: u32 = 4;
+
+/// `NSRange` из Foundation.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct NSRange {
+    location: usize,
+    length: usize,
+}
+
+// SAFETY: раскладка совпадает с `NSRange`: два NSUInteger.
+unsafe impl Encode for NSRange {
+    const ENCODING: Encoding = Encoding::Struct("_NSRange", &[usize::ENCODING, usize::ENCODING]);
+}
+
+/// Потеря видеокарты на iOS. Сбой видеокарты (отчёт `gpuEvent` в журнале устройства) iOS лечит
+/// перезапуском видеокарты, а буферы команд игры после него заканчиваются ошибкой. wgpu считает
+/// такой буфер выполненным и ошибку не сообщает: игра живёт и звучит, а экран застыл (так
+/// застревала загрузка на «COMPILING SHADERS»). Поэтому игра раз в 2 с сама отправляет на видеокарту
+/// крошечную работу в своей очереди и смотрит, чем кончилась прошлая. Ошибка или зависание — окно
+/// UIKit с просьбой перезапустить игру: его рисует система, а не видеокарта игры, а само приложение
+/// на iOS перезапуститься не может. Проверка надписи без сбоя — `SPACE_GUARD_GPU_LOST_TEST=<секунд>`.
+fn watch_gpu(
+    _main_thread: NonSendMarker,
+    time: Res<Time<Real>>,
+    mut lifecycle: MessageReader<bevy::window::AppLifecycle>,
+    window: Query<&RawHandleWrapper, With<PrimaryWindow>>,
+    mut next: Local<f32>,
+    mut away: Local<bool>,
+    mut reported: Local<bool>,
+) {
+    use bevy::window::AppLifecycle;
+    for event in lifecycle.read() {
+        match event {
+            AppLifecycle::WillSuspend | AppLifecycle::Suspended => *away = true,
+            AppLifecycle::WillResume | AppLifecycle::Running => *away = false,
+            _ => {}
+        }
+    }
+    let now = time.elapsed_secs();
+    if *reported || now < *next {
+        return;
+    }
+    *next = now + GPU_PROBE_SECONDS;
+    if *away {
+        // В фоне видеокарта приложениям не положена: работа из фона кончается ошибкой, это не сбой.
+        GPU_PROBE.with_borrow_mut(|probe| probe.iter_mut().for_each(|probe| probe.last = None));
+        return;
+    }
+    static TEST: std::sync::LazyLock<Option<f32>> = std::sync::LazyLock::new(|| {
+        std::env::var("SPACE_GUARD_GPU_LOST_TEST").ok().and_then(|value| value.parse().ok())
+    });
+    let lost = match *TEST {
+        Some(after) if now >= after => Some("проверка SPACE_GUARD_GPU_LOST_TEST".to_string()),
+        _ => GPU_PROBE.with_borrow_mut(probe_gpu),
+    };
+    let Some(reason) = lost else {
+        return;
+    };
+    error!("iOS: видеокарта потеряна ({reason}), игра просит перезапуска");
+    if let Ok(handle) = window.single()
+        && let RawWindowHandle::UiKit(handle) = handle.get_window_handle()
+    {
+        // SAFETY: вид окна от winit жив, пока есть сущность окна; главный поток (`NonSendMarker`).
+        unsafe { ask_restart(handle.ui_view.cast::<AnyObject>().as_ref()) };
+    }
+    *reported = true;
+}
+
+/// Проверяет прошлую пробную работу и отправляет новую. `Some(причина)` — видеокарта потеряна.
+fn probe_gpu(probe: &mut Option<GpuProbe>) -> Option<String> {
+    /// `MTLCommandBufferStatusCompleted`, `…Error`.
+    const COMPLETED: usize = 4;
+    const ERROR: usize = 5;
+    /// `MTLCommandBufferErrorNotPermitted`: работа из фона, не сбой.
+    const NOT_PERMITTED: isize = 7;
+    /// `MTLResourceStorageModePrivate`.
+    const PRIVATE: usize = 2 << 4;
+    // SAFETY: вызовы Metal с объектами, которые держит `GpuProbe` (`Retained`); каждый ответ может
+    // оказаться nil — тогда `None`, а не разыменование нуля. Главный поток.
+    unsafe {
+        if probe.is_none() {
+            let device = Retained::from_raw(MTLCreateSystemDefaultDevice())?;
+            let queue: Option<Retained<AnyObject>> = msg_send![&*device, newCommandQueue];
+            let buffer: Option<Retained<AnyObject>> = msg_send![&*device, newBufferWithLength: 16usize, options: PRIVATE];
+            *probe = Some(GpuProbe { queue: queue?, buffer: buffer?, last: None });
+        }
+        let probe = probe.as_mut()?;
+        if let Some((last, waited)) = &mut probe.last {
+            let status: usize = msg_send![&**last, status];
+            if status == ERROR {
+                let error: Option<Retained<AnyObject>> = msg_send![&**last, error];
+                let code: isize = error.as_ref().map_or(0, |error| msg_send![&**error, code]);
+                if code != NOT_PERMITTED {
+                    return Some(format!("пробная работа кончилась ошибкой Metal {code}"));
+                }
+            } else if status != COMPLETED {
+                *waited += 1;
+                if *waited >= GPU_STALLED_PROBES {
+                    return Some(format!("пробная работа не закончилась за {} с", *waited as f32 * GPU_PROBE_SECONDS));
+                }
+                return None;
+            }
+        }
+        let commands: Option<Retained<AnyObject>> = msg_send![&*probe.queue, commandBuffer];
+        let commands = commands?;
+        let blit: Option<Retained<AnyObject>> = msg_send![&*commands, blitCommandEncoder];
+        let blit = blit?;
+        let range = NSRange { location: 0, length: 16 };
+        let _: () = msg_send![&*blit, fillBuffer: &*probe.buffer, range: range, value: 0u8];
+        let _: () = msg_send![&*blit, endEncoding];
+        let _: () = msg_send![&*commands, commit];
+        probe.last = Some((commands, 0));
+    }
+    None
+}
+
+/// Окно UIKit поверх игры: видеокарта не отвечает, игру надо закрыть и открыть заново. Кнопок нет:
+/// игра без видеокарты дальше не пойдёт. Только главный поток.
+unsafe fn ask_restart(view: &AnyObject) {
+    use objc2_foundation::NSString;
+    /// `UIAlertControllerStyleAlert`.
+    const ALERT: isize = 1;
+    let title = NSString::from_str("Graphics error");
+    let message = NSString::from_str(
+        "The GPU stopped responding. Close Space Guard (swipe it up in the app switcher) and open it again.",
+    );
+    // SAFETY: UIKit из главного потока; nil на любом шаге — окно просто не показывается.
+    unsafe {
+        let window: *mut AnyObject = msg_send![view, window];
+        let Some(window) = window.as_ref() else { return };
+        let root: *mut AnyObject = msg_send![window, rootViewController];
+        let Some(root) = root.as_ref() else { return };
+        let alert: *mut AnyObject = msg_send![
+            objc2::class!(UIAlertController),
+            alertControllerWithTitle: &*title,
+            message: &*message,
+            preferredStyle: ALERT
+        ];
+        let Some(alert) = alert.as_ref() else { return };
+        let none: *mut AnyObject = std::ptr::null_mut();
+        let _: () = msg_send![root, presentViewController: alert, animated: true, completion: none];
     }
 }
