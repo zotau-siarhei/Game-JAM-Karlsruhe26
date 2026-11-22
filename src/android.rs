@@ -176,9 +176,9 @@ fn ndk() -> &'static Ndk {
 /// Источники объединяются — хватает одного (`apply_load`).
 #[derive(Resource, Default, PartialEq)]
 struct Load {
-    /// По запасу до троттлинга (`watch_thermal`); `None` — ещё не спрашивали.
+    /// По запасу до троттлинга (`watch_thermal`); `None` — ещё не спрашивали или запаса нет.
     headroom: Option<crate::profile::Heat>,
-    /// По статусу нагрева: у статуса свои ступени, без запаса на остывание.
+    /// По статусу нагрева — только где запаса нет (Android 11): гистерезис у статуса свой, в HAL.
     status: Option<crate::profile::Heat>,
     /// Game Mode «экономия батареи» (`watch_game_mode`).
     battery: bool,
@@ -193,8 +193,10 @@ impl Load {
 }
 
 /// Раз в 10 с, как советует Google, — запас до троттлинга (ADPF Thermal): от 0,95 кадр реже, от 1,0 —
-/// не больше 30 кадров (`profile::heat_from_headroom`). Где запаса нет (Android 11, NaN), — статус
-/// нагрева: MODERATE — кадр реже, SEVERE и выше — 30 кадров. Нет ни того ни другого — профиль как есть.
+/// не больше 30 кадров (`profile::heat_from_headroom`), назад — с запасом на остывание. Запас 1,0 по
+/// определению — порог статуса SEVERE, поэтому статус нагрева нужен только там, где запаса нет
+/// (Android 11, система не умеет его считать): MODERATE — кадр реже, SEVERE и выше — 30 кадров.
+/// NaN — система не успела посчитать (слишком частый опрос, сбой HAL): остаётся прежний уровень.
 fn watch_thermal(time: Res<Time<Real>>, mut next: Local<f32>, mut load: ResMut<Load>) {
     use crate::profile::Heat;
     /// `ATHERMAL_STATUS_MODERATE`, `ATHERMAL_STATUS_SEVERE`.
@@ -210,22 +212,30 @@ fn watch_thermal(time: Res<Time<Real>>, mut next: Local<f32>, mut load: ResMut<L
         return;
     }
     let manager = ndk.thermal_manager as *mut c_void;
-    // SAFETY: менеджер получен у системы и не освобождается; сигнатуры — из `android/thermal.h`.
-    let headroom = ndk.thermal_headroom.map(|f| unsafe { f(manager, 0) }).filter(|h| h.is_finite());
-    let status = ndk.thermal_status.map(|f| unsafe { f(manager) });
-    // Запас на остывание — только у своего источника: иначе нагрев по статусу держался бы,
-    // пока запас стоит в полосе 0,85–1,0.
-    let was = load.headroom.unwrap_or(Heat::Cool);
-    let by_headroom = headroom.map_or(Heat::Cool, |h| crate::profile::heat_from_headroom(h, was));
-    let by_status = match status {
-        Some(s) if s >= SEVERE => Heat::Overheated,
-        Some(s) if s >= MODERATE => Heat::Throttled,
-        _ => Heat::Cool,
+    let (headroom, status) = if let Some(get_headroom) = ndk.thermal_headroom {
+        // SAFETY: менеджер получен у системы и не освобождается; сигнатура — из `android/thermal.h`.
+        let raw = unsafe { get_headroom(manager, 0) };
+        if !raw.is_finite() {
+            return;
+        }
+        let was = load.headroom.unwrap_or(Heat::Cool);
+        (Some(crate::profile::heat_from_headroom(raw, was)), None)
+    } else if let Some(get_status) = ndk.thermal_status {
+        // SAFETY: то же.
+        let raw = unsafe { get_status(manager) };
+        let heat = match raw {
+            s if s >= SEVERE => Heat::Overheated,
+            s if s >= MODERATE => Heat::Throttled,
+            _ => Heat::Cool,
+        };
+        (None, Some(heat))
+    } else {
+        return;
     };
-    if (load.headroom, load.status) != (Some(by_headroom), Some(by_status)) {
-        info!("Android: запас до нагрева {headroom:?} → {by_headroom:?}, статус {status:?} → {by_status:?}");
-        load.headroom = Some(by_headroom);
-        load.status = Some(by_status);
+    if (load.headroom, load.status) != (headroom, status) {
+        info!("Android: нагрев по запасу {headroom:?}, по статусу {status:?}");
+        load.headroom = headroom;
+        load.status = status;
     }
 }
 
@@ -332,10 +342,20 @@ fn apply_load(load: Res<Load>) {
 
 /// Частота экрана по пределу кадров: на экране 90/120 Гц игра с пределом 60 иначе рисует неровно,
 /// а экран зря тратит батарею. Окно пересоздаётся при каждом возврате в игру, а предел меняется при
-/// нагреве, поэтому раз в секунду проверяется, что системе сказано то, что нужно.
-fn request_frame_rate(time: Res<Time<Real>>, mut next: Local<f32>, mut applied: Local<(usize, Option<f32>)>) {
+/// нагреве, поэтому раз в секунду проверяется, что системе сказано то, что нужно. При уходе в фон
+/// запомненное сбрасывается: новое окно может получить адрес старого. Неудачный вызов повторяется.
+fn request_frame_rate(
+    time: Res<Time<Real>>,
+    mut lifecycle: MessageReader<bevy::window::AppLifecycle>,
+    mut next: Local<f32>,
+    mut applied: Local<Option<(usize, Option<f32>)>>,
+) {
     /// `ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT`.
     const COMPATIBILITY_DEFAULT: i8 = 0;
+    if lifecycle.read().any(|event| matches!(event, bevy::window::AppLifecycle::WillSuspend | bevy::window::AppLifecycle::Suspended)) {
+        *applied = None;
+        *next = 0.0;
+    }
     let now = time.elapsed_secs();
     if now < *next {
         return;
@@ -346,19 +366,19 @@ fn request_frame_rate(time: Res<Time<Real>>, mut next: Local<f32>, mut applied: 
     };
     let Some(window) = bevy::android::ANDROID_APP.get().and_then(|app| app.native_window()) else {
         // Игра в фоне: окна нет, после возврата частота просится заново.
-        *applied = (0, None);
+        *applied = None;
         return;
     };
     let pointer = window.ptr().as_ptr();
     let wanted = crate::profile::current_frame_limit();
-    if *applied == (pointer as usize, wanted) {
+    if *applied == Some((pointer as usize, wanted)) {
         return;
     }
     // 0 — частота на усмотрение системы.
     // SAFETY: окно захвачено `native_window` и живо, пока жив `window`.
     let result = unsafe { set_frame_rate(pointer.cast(), wanted.unwrap_or(0.0), COMPATIBILITY_DEFAULT) };
     info!("Android: частота экрана {} (ответ {result})", wanted.map_or("системная".into(), |fps| format!("{fps} Гц")));
-    *applied = (pointer as usize, wanted);
+    *applied = (result == 0).then_some((pointer as usize, wanted));
 }
 
 /// Время запуска процесса для `debug.spaceguard.lose`.
@@ -413,23 +433,30 @@ fn restart_once() -> bool {
     relaunch()
 }
 
-/// Вызов Java с активностью игры; `None` — JNI недоступен или вызов бросил исключение.
-fn with_activity<T>(
-    call: impl FnOnce(&mut jni::JNIEnv, &jni::objects::JObject) -> jni::errors::Result<T>,
-) -> Option<T> {
+/// Вызов Java в подключённом к JVM потоке; `None` — JNI недоступен или вызов бросил исключение.
+/// Потоки игры подключаются навсегда, а у такого потока нет Java-кадра, который снял бы локальные
+/// ссылки: без своего кадра они копились бы при каждом вызове до переполнения таблицы.
+pub(crate) fn with_env<T>(call: impl FnOnce(&mut jni::JNIEnv) -> jni::errors::Result<T>) -> Option<T> {
     let app = bevy::android::ANDROID_APP.get()?;
-    // SAFETY: указатели на JavaVM и активность выдаёт система, они действуют, пока жив процесс.
+    // SAFETY: указатель на JavaVM выдаёт система, он действует, пока жив процесс.
     let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }.ok()?;
     let mut env = vm.attach_current_thread_permanently().ok()?;
-    let activity = unsafe { jni::objects::JObject::from_raw(app.activity_as_ptr().cast()) };
-    // Локальные ссылки — в своём кадре: поток подключён навсегда, без кадра они копились бы при
-    // каждом опросе.
-    let result = env.with_local_frame(16, |env| call(env, &activity));
+    let result = env.with_local_frame(16, |env| call(env));
     if env.exception_check().unwrap_or(false) {
         let _ = env.exception_clear();
         return None;
     }
     result.ok()
+}
+
+/// Вызов Java с активностью игры (см. [`with_env`]).
+fn with_activity<T>(
+    call: impl FnOnce(&mut jni::JNIEnv, &jni::objects::JObject) -> jni::errors::Result<T>,
+) -> Option<T> {
+    let app = bevy::android::ANDROID_APP.get()?;
+    // SAFETY: указатель на активность выдаёт система, она живёт, пока жив процесс.
+    let activity = unsafe { jni::objects::JObject::from_raw(app.activity_as_ptr().cast()) };
+    with_env(|env| call(env, &activity))
 }
 
 /// Запускает свою активность заново в новой задаче, прежнюю закрывает. `false` — не вышло.
@@ -572,6 +599,7 @@ pub fn system_property(name: &std::ffi::CStr) -> Option<String> {
 /// Отступы от выреза камеры в dp: слева, сверху, справа, снизу. С target SDK 35+ окно рисуется и
 /// под вырезом (edge-to-edge принудительно), поэтому сенсорные кнопки его обходят сами.
 /// Спрашивает систему не чаще раза в секунду: телефон переворачивают, и вырез переходит на другой бок.
+/// Не вышло спросить — остаётся прежнее значение.
 pub fn cutout_insets() -> Vec4 {
     use std::sync::Mutex;
     static CACHE: Mutex<Option<(bevy::platform::time::Instant, Vec4)>> = Mutex::new(None);
@@ -582,34 +610,27 @@ pub fn cutout_insets() -> Vec4 {
     {
         return insets;
     }
-    let insets = read_cutout().unwrap_or(Vec4::ZERO);
+    let insets = read_cutout().or(cache.map(|(_, insets)| insets)).unwrap_or(Vec4::ZERO);
     *cache = Some((now, insets));
     insets
 }
 
-/// `Activity.getWindow().getDecorView().getRootWindowInsets().getDisplayCutout()`, в dp.
+/// `Display.getCutout()` в dp. Вырез берётся у экрана, а не у окна (`View.getRootWindowInsets`):
+/// `Display` можно спрашивать из любого потока, а View — только из потока интерфейса, а игра
+/// зовёт это из своих потоков. `DisplayInfo` повёрнут вместе с экраном, так что стороны совпадают
+/// с окном игры на весь экран.
 fn read_cutout() -> Option<Vec4> {
-    use jni::JavaVM;
-    use jni::objects::JObject;
-    let app = bevy::android::ANDROID_APP.get()?;
-    // SAFETY: указатели на JavaVM и активность выдаёт система, они действуют, пока жив процесс.
-    let vm = unsafe { JavaVM::from_raw(app.vm_as_ptr().cast()) }.ok()?;
-    let mut env = vm.attach_current_thread_permanently().ok()?;
-    let activity = unsafe { JObject::from_raw(app.activity_as_ptr().cast()) };
-    let found = (|| -> jni::errors::Result<Option<Vec4>> {
-        let window = env.call_method(&activity, "getWindow", "()Landroid/view/Window;", &[])?.l()?;
-        let decor = env.call_method(&window, "getDecorView", "()Landroid/view/View;", &[])?.l()?;
-        let insets = env
-            .call_method(&decor, "getRootWindowInsets", "()Landroid/view/WindowInsets;", &[])?
-            .l()?;
-        if insets.is_null() {
+    with_activity(|env, activity| {
+        let manager = env.call_method(activity, "getWindowManager", "()Landroid/view/WindowManager;", &[])?.l()?;
+        let display = env.call_method(&manager, "getDefaultDisplay", "()Landroid/view/Display;", &[])?.l()?;
+        if display.is_null() {
             return Ok(None);
         }
-        let cutout = env.call_method(&insets, "getDisplayCutout", "()Landroid/view/DisplayCutout;", &[])?.l()?;
+        let cutout = env.call_method(&display, "getCutout", "()Landroid/view/DisplayCutout;", &[])?.l()?;
         if cutout.is_null() {
             return Ok(Some(Vec4::ZERO));
         }
-        let resources = env.call_method(&activity, "getResources", "()Landroid/content/res/Resources;", &[])?.l()?;
+        let resources = env.call_method(activity, "getResources", "()Landroid/content/res/Resources;", &[])?.l()?;
         let metrics = env
             .call_method(&resources, "getDisplayMetrics", "()Landroid/util/DisplayMetrics;", &[])?
             .l()?;
@@ -622,9 +643,6 @@ fn read_cutout() -> Option<Vec4> {
             side("getSafeInsetBottom")? as f32,
         );
         Ok(Some(px / density))
-    })();
-    if env.exception_check().unwrap_or(false) {
-        let _ = env.exception_clear();
-    }
-    found.ok().flatten()
+    })
+    .flatten()
 }

@@ -117,11 +117,23 @@ impl Plugin for SoundPlugin {
             .init_resource::<Dice>()
             .add_message::<PlaySound>()
             .add_systems(Startup, load_sounds)
+            .init_resource::<InBackground>()
             .add_systems(
                 Update,
                 pause_audio_in_background
                     .run_if(|| crate::profile::get().audio.pause_in_background)
-                    .in_set(crate::frame::GameSet::Presentation),
+                    .in_set(crate::frame::GameSet::Presentation)
+                    // Звуки мира на паузе игры замирают раньше, чем возврат из фона их разбудит.
+                    .after(pause_world_sounds::<AudioSink>)
+                    .after(pause_world_sounds::<SpatialAudioSink>),
+            )
+            .add_systems(
+                PostUpdate,
+                (
+                    hold_new_sounds_in_background.before(bevy::audio::AudioPlaybackSystems),
+                    silence_in_background.after(bevy::audio::AudioPlaybackSystems),
+                )
+                    .run_if(|| crate::profile::get().audio.pause_in_background),
             )
             .add_systems(
                 Update,
@@ -219,25 +231,77 @@ fn attach_ears(
 /// (`audio.pause_in_background` профиля платформы). Сообщения `AppLifecycle` шлёт winit; Bevy 0.20
 /// переводит `WillSuspend` в `Suspended` и `WillResume` в `Running` раньше, чем отправит сообщение,
 /// поэтому приходят только они.
-/// Звуки мира на паузе игры снова замрут сами (`sound::pause_world_sounds`).
+#[derive(Resource, Default)]
+struct InBackground(bool);
+
+/// Звук, который ещё не начался и родится на паузе, потому что игра в фоне: при возврате
+/// его настройка паузы снимается.
+#[derive(Component)]
+struct HeldInBackground;
+
+/// Уход в фон — пауза всего, что звучит; возврат — снова звучит всё, кроме звуков мира на паузе
+/// игры (их снимет `resume_world_sounds`, когда игра продолжится).
 fn pause_audio_in_background(
+    mut commands: Commands,
     mut lifecycle: MessageReader<bevy::window::AppLifecycle>,
-    sinks: Query<&AudioSink>,
-    spatial_sinks: Query<&SpatialAudioSink>,
+    mut background: ResMut<InBackground>,
+    state: Res<State<GameState>>,
+    sinks: Query<(&AudioSink, Option<&SoundInstance>)>,
+    spatial_sinks: Query<(&SpatialAudioSink, Option<&SoundInstance>)>,
+    mut held: Query<(Entity, &mut PlaybackSettings), With<HeldInBackground>>,
 ) {
+    use bevy::window::AppLifecycle;
     for event in lifecycle.read() {
         match event {
-            bevy::window::AppLifecycle::WillSuspend | bevy::window::AppLifecycle::Suspended => {
-                sinks.iter().for_each(|sink| sink.pause());
-                spatial_sinks.iter().for_each(|sink| sink.pause());
+            AppLifecycle::WillSuspend | AppLifecycle::Suspended if !background.0 => {
+                background.0 = true;
+                sinks.iter().for_each(|(sink, _)| sink.pause());
+                spatial_sinks.iter().for_each(|(sink, _)| sink.pause());
             }
-            bevy::window::AppLifecycle::WillResume | bevy::window::AppLifecycle::Running => {
-                sinks.iter().for_each(|sink| sink.play());
-                spatial_sinks.iter().for_each(|sink| sink.play());
+            AppLifecycle::WillResume | AppLifecycle::Running if background.0 => {
+                background.0 = false;
+                let game_paused = *state.get() == GameState::Paused;
+                let wakes = |instance: Option<&SoundInstance>| !(game_paused && instance.is_some_and(|i| i.world));
+                sinks.iter().filter(|(_, i)| wakes(*i)).for_each(|(sink, _)| sink.play());
+                spatial_sinks.iter().filter(|(_, i)| wakes(*i)).for_each(|(sink, _)| sink.play());
+                for (entity, mut settings) in &mut held {
+                    settings.paused = false;
+                    commands.entity(entity).remove::<HeldInBackground>();
+                }
             }
             _ => {}
         }
     }
+}
+
+/// Звук, заказанный в фоне (или пересозданный при смене устройства вывода, `follow_output_device`),
+/// рождается на паузе: `bevy_audio` заводит его в `PostUpdate`, уже после `pause_audio_in_background`.
+fn hold_new_sounds_in_background(
+    mut commands: Commands,
+    background: Res<InBackground>,
+    mut pending: Query<
+        (Entity, &mut PlaybackSettings),
+        (Without<AudioSink>, Without<SpatialAudioSink>, Without<HeldInBackground>),
+    >,
+) {
+    if !background.0 {
+        return;
+    }
+    for (entity, mut settings) in &mut pending {
+        if !settings.paused {
+            settings.paused = true;
+            commands.entity(entity).insert(HeldInBackground);
+        }
+    }
+}
+
+/// Страховка: что зазвучало в фоне в обход паузы, замолкает в том же кадре.
+fn silence_in_background(background: Res<InBackground>, sinks: Query<&AudioSink>, spatial_sinks: Query<&SpatialAudioSink>) {
+    if !background.0 {
+        return;
+    }
+    sinks.iter().filter(|sink| !sink.is_paused()).for_each(|sink| sink.pause());
+    spatial_sinks.iter().filter(|sink| !sink.is_paused()).for_each(|sink| sink.pause());
 }
 
 /// Громкости левого и правого каналов для звука, смещённого от слушателя на долю `side`:

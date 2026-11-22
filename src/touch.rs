@@ -109,6 +109,10 @@ impl Plugin for TouchPlugin {
             )
             .add_systems(
                 PreUpdate,
+                release_on_blur.after(InputSystems).before(read_touches),
+            )
+            .add_systems(
+                PreUpdate,
                 read_touches
                     .after(InputSystems)
                     .after(crate::gamepad::PadRead)
@@ -467,6 +471,37 @@ pub fn node_contains(
     scale: f32,
 ) -> bool {
     node.contains_point(*transform, point * scale)
+}
+
+/// Игра ушла в фон или потеряла фокус (жест «Домой», звонок, блокировка): всё, что держали пальцы,
+/// отпускается. Система обычно присылает отмену касаний, но не обязана; палец, который она так
+/// и не отпустила, после возврата ничего не держит — его уже нет в `TouchControls`.
+fn release_on_blur(
+    mut focus: MessageReader<bevy::window::WindowFocused>,
+    mut lifecycle: MessageReader<bevy::window::AppLifecycle>,
+    mut controls: ResMut<TouchControls>,
+    mut keys: ResMut<ButtonInput<KeyCode>>,
+    mut mouse: ResMut<ButtonInput<MouseButton>>,
+) {
+    let blurred = focus.read().any(|change| !change.focused);
+    let suspended = lifecycle.read().any(|event| {
+        matches!(event, bevy::window::AppLifecycle::WillSuspend | bevy::window::AppLifecycle::Suspended)
+    });
+    if !blurred && !suspended {
+        return;
+    }
+    for (_, action) in std::mem::take(&mut controls.held) {
+        release(action, &mut keys, &mut mouse);
+    }
+    if std::mem::take(&mut controls.aim_fire) {
+        mouse.release(MouseButton::Left);
+    }
+    controls.fingers.clear();
+    controls.tap_fire = 0.0;
+    controls.point = None;
+    controls.twist = None;
+    controls.drive_stick = None;
+    controls.aim_stick = None;
 }
 
 fn press(

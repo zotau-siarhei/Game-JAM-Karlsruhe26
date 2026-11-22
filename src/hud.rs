@@ -31,7 +31,7 @@ impl Plugin for HudPlugin {
         app.add_systems(Startup, spawn_hud)
             .add_systems(
                 Update,
-                (update_health_bar, update_time, update_weapon, place_weapon_for_touch, hide_run_ui_in_menu)
+                (update_health_bar, update_time, update_weapon, place_hud, hide_run_ui_in_menu)
                     .in_set(GameSet::Presentation),
             );
     }
@@ -57,11 +57,33 @@ struct TimeText;
 #[derive(Component)]
 struct WeaponText;
 
+/// Корень полосы здоровья.
+#[derive(Component)]
+struct HealthBarRoot;
+
+/// Строка времени выживания.
+#[derive(Component)]
+struct TimeRow;
+
+/// Отступы от вырезов экрана (слева, сверху, справа, снизу) в пикселях интерфейса: интерфейс
+/// забега их обходит, как и сенсорные кнопки (`platform::safe_area`).
+pub fn safe_area_ui(ui_scale: &UiScale) -> Vec4 {
+    crate::platform::safe_area() / crate::platform::canvas_scale() / ui_scale.0.max(f32::EPSILON)
+}
+
+/// Меняет поле узла, только если значение другое: иначе узел каждый кадр считался бы изменённым.
+pub fn set_px(field: &mut Val, px: f32) {
+    if *field != Val::Px(px) {
+        *field = Val::Px(px);
+    }
+}
+
 fn spawn_hud(mut commands: Commands) {
     // Полоса здоровья.
     commands
         .spawn((
             RunUi,
+            HealthBarRoot,
             Node {
                 position_type: PositionType::Absolute,
                 left: Val::Px(MARGIN),
@@ -104,6 +126,7 @@ fn spawn_hud(mut commands: Commands) {
     commands
         .spawn((
             RunUi,
+            TimeRow,
             Node {
                 position_type: PositionType::Absolute,
                 top: Val::Px(MARGIN),
@@ -165,24 +188,33 @@ fn hide_run_ui_in_menu(state: Res<State<GameState>>, mut parts: Query<&mut Visib
     }
 }
 
-/// При касаниях в правом верхнем углу пауза и мини-карта: название оружия — под мини-картой.
-fn place_weapon_for_touch(
+/// Места частей интерфейса забега: обходят вырез камеры и закруглённые углы (`safe_area_ui`),
+/// а при касаниях в правом верхнем углу пауза и мини-карта — название оружия под мини-картой.
+/// Вырез переходит на другой бок при повороте телефона, поэтому места пересчитываются каждый кадр.
+fn place_hud(
     device: Res<crate::gamepad::InputDevice>,
     ui_scale: Res<UiScale>,
-    mut label: Query<&mut Node, With<WeaponText>>,
+    mut health: Query<&mut Node, (With<HealthBarRoot>, Without<TimeRow>, Without<WeaponText>)>,
+    mut time: Query<&mut Node, (With<TimeRow>, Without<HealthBarRoot>, Without<WeaponText>)>,
+    mut label: Query<&mut Node, (With<WeaponText>, Without<HealthBarRoot>, Without<TimeRow>)>,
 ) {
-    if !device.is_changed() && !ui_scale.is_changed() {
-        return;
+    let safe = safe_area_ui(&ui_scale);
+    for mut node in &mut health {
+        set_px(&mut node.left, MARGIN + safe.x);
+        set_px(&mut node.top, MARGIN + safe.y);
+    }
+    for mut node in &mut time {
+        set_px(&mut node.top, MARGIN + safe.y);
     }
     let touch = *device == crate::gamepad::InputDevice::Touch;
     for mut node in &mut label {
         if touch {
             let pause = crate::touch::dp_to_ui(crate::touch::layout::PAUSE_SIZE + crate::touch::layout::MARGIN, &ui_scale);
-            node.top = Val::Px(MARGIN + crate::minimap::DIAMETER + 8.0);
-            node.right = Val::Px(MARGIN + pause);
+            set_px(&mut node.top, MARGIN + safe.y + crate::minimap::DIAMETER + 8.0);
+            set_px(&mut node.right, MARGIN + safe.z + pause);
         } else {
-            node.top = Val::Px(MARGIN);
-            node.right = Val::Px(MARGIN);
+            set_px(&mut node.top, MARGIN + safe.y);
+            set_px(&mut node.right, MARGIN + safe.z);
         }
     }
 }

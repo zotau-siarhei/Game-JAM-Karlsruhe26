@@ -9,14 +9,12 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use bevy::android::ANDROID_APP;
 use bevy::android::android_activity::input::{Axis, InputEvent, KeyAction, Keycode, set_input_filter};
 use bevy::input::gamepad::{
     GamepadAxis, GamepadButton, GamepadConnection, GamepadConnectionEvent, RawGamepadAxisChangedEvent,
     RawGamepadButtonChangedEvent, RawGamepadEvent,
 };
 use bevy::prelude::*;
-use jni::JavaVM;
 use jni::objects::{JString, JValue};
 
 /// Биты источника события `AINPUT_SOURCE_GAMEPAD` и `AINPUT_SOURCE_JOYSTICK`.
@@ -162,11 +160,7 @@ fn filter(event: &InputEvent<'_>) -> bool {
 
 /// Имя, производитель и модель устройства: их знает только Java-класс `InputDevice`.
 fn describe(device: i32) -> Option<(String, u16, u16)> {
-    let app = ANDROID_APP.get()?;
-    // SAFETY: указатель на JavaVM выдаёт система, он действует всё время жизни процесса.
-    let vm = unsafe { JavaVM::from_raw(app.vm_as_ptr().cast()) }.ok()?;
-    let mut env = vm.attach_current_thread_permanently().ok()?;
-    let found = (|| -> jni::errors::Result<Option<(String, u16, u16)>> {
+    crate::android::with_env(|env| {
         let input_device = env
             .call_static_method(
                 "android/view/InputDevice",
@@ -183,11 +177,8 @@ fn describe(device: i32) -> Option<(String, u16, u16)> {
         let name = JString::from(env.call_method(&input_device, "getName", "()Ljava/lang/String;", &[])?.l()?);
         let name: String = env.get_string(&name)?.into();
         Ok(Some((name, vendor as u16, product as u16)))
-    })();
-    if env.exception_check().unwrap_or(false) {
-        let _ = env.exception_clear();
-    }
-    found.ok().flatten()
+    })
+    .flatten()
 }
 
 /// Что уже отдано в Bevy.
@@ -250,6 +241,25 @@ fn poll(
     sent.axes = now_axes;
 }
 
+/// Уход в фон или потеря фокуса: отпускание кнопок и стиков приходит уже другому окну, поэтому
+/// состояние геймпада обнуляется само — иначе после возврата кнопка или стик остались бы зажатыми.
+fn release_on_blur(
+    mut focus: MessageReader<bevy::window::WindowFocused>,
+    mut lifecycle: MessageReader<bevy::window::AppLifecycle>,
+) {
+    let blurred = focus.read().any(|change| !change.focused);
+    let suspended = lifecycle.read().any(|event| {
+        matches!(event, bevy::window::AppLifecycle::WillSuspend | bevy::window::AppLifecycle::Suspended)
+    });
+    if blurred || suspended {
+        let mut state = shared();
+        state.keys = [false; 16];
+        state.pressed = [false; 16];
+        state.analog = [0.0; 16];
+        state.axes = [0.0; 4];
+    }
+}
+
 /// «Назад» — Esc на один кадр: пауза в забеге, назад в меню. Нажимается после ввода Bevy,
 /// иначе он сбросил бы нажатие, и после `read_pad`: тот счёл бы Esc клавиатурой и снял бы
 /// раскладку касаний.
@@ -266,7 +276,7 @@ fn back_to_escape(mut held: Local<bool>, mut keys: ResMut<ButtonInput<KeyCode>>)
 
 pub(super) fn build(app: &mut App) {
     set_input_filter(filter);
-    app.add_systems(PreUpdate, poll.before(bevy::input::InputSystems))
+    app.add_systems(PreUpdate, (release_on_blur, poll).chain().before(bevy::input::InputSystems))
         .add_systems(
             PreUpdate,
             back_to_escape

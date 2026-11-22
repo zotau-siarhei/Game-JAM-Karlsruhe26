@@ -154,20 +154,24 @@ fn place_for_touch(
     ui_scale: Res<UiScale>,
     mut root: Query<&mut Node, With<MinimapRoot>>,
 ) {
-    if !device.is_changed() && !ui_scale.is_changed() {
-        return;
-    }
+    use crate::hud::set_px;
+    // Вырез камеры и углы экрана (`hud::place_hud`): пересчёт каждый кадр, телефон поворачивают.
+    let safe = crate::hud::safe_area_ui(&ui_scale);
     let touch = *device == crate::gamepad::InputDevice::Touch;
     for mut node in &mut root {
         if touch {
             let pause = crate::touch::dp_to_ui(crate::touch::layout::PAUSE_SIZE + crate::touch::layout::MARGIN, &ui_scale);
-            node.top = Val::Px(MARGIN);
-            node.bottom = Val::Auto;
-            node.right = Val::Px(MARGIN + pause);
+            set_px(&mut node.top, MARGIN + safe.y);
+            if node.bottom != Val::Auto {
+                node.bottom = Val::Auto;
+            }
+            set_px(&mut node.right, MARGIN + safe.z + pause);
         } else {
-            node.top = Val::Auto;
-            node.bottom = Val::Px(MARGIN);
-            node.right = Val::Px(MARGIN);
+            if node.top != Val::Auto {
+                node.top = Val::Auto;
+            }
+            set_px(&mut node.bottom, MARGIN + safe.w);
+            set_px(&mut node.right, MARGIN + safe.z);
         }
     }
 }

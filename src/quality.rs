@@ -134,7 +134,11 @@ fn switch_quality(keys: Res<ButtonInput<KeyCode>>, mut quality: ResMut<Quality>)
 
 /// Новая ступень — в настройки: они сохраняют её в файл. Ступень из отладочного переопределения
 /// (`quality`) в файл не попадает (`settings::ForcedQuality`): после замера игрок остаётся на своей.
-fn remember_quality(quality: Res<Quality>, mut settings: ResMut<Settings>) {
+fn remember_quality(mut commands: Commands, quality: Res<Quality>, mut settings: ResMut<Settings>) {
+    // Игрок сам сменил ступень — дальше она его, даже если совпадёт с переопределением.
+    if !quality.is_added() {
+        commands.remove_resource::<crate::settings::ForcedQuality>();
+    }
     if settings.quality != *quality {
         settings.quality = *quality;
     }

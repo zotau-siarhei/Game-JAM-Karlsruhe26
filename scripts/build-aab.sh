@@ -97,7 +97,9 @@ JSON
 aab=$target/space-guard.aab
 rm -f "$aab"
 java -jar "$bundletool" build-bundle --modules="$out/base.zip" --config="$out/BundleConfig.json" --output="$aab"
-if ! java -jar "$bundletool" dump config --bundle="$aab" | grep -q PAGE_ALIGNMENT_16K; then
+# Вывод целиком, а не через `| grep -q`: при pipefail grep, закрывший канал раньше, дал бы SIGPIPE.
+config=$(java -jar "$bundletool" dump config --bundle="$aab")
+if [[ "$config" != *PAGE_ALIGNMENT_16K* ]]; then
     echo "в $aab нет выравнивания библиотек по 16 КБ (PAGE_ALIGNMENT_16K)" >&2
     exit 1
 fi
@@ -122,8 +124,8 @@ if (( install )); then
     apks=$out/device.apks
     # Несколько устройств — выбор через ANDROID_SERIAL, как у adb.
     device=(${ANDROID_SERIAL:+--device-id=$ANDROID_SERIAL})
-    java -jar "$bundletool" build-apks --bundle="$aab" --output="$apks" --connected-device "${device[@]}" \
+    java -jar "$bundletool" build-apks --bundle="$aab" --output="$apks" --connected-device ${device[@]+"${device[@]}"} \
         --adb="$sdk/platform-tools/adb" \
         --ks="$HOME/.android/debug.keystore" --ks-pass=pass:android --ks-key-alias=androiddebugkey --key-pass=pass:android
-    java -jar "$bundletool" install-apks --apks="$apks" "${device[@]}" --adb="$sdk/platform-tools/adb"
+    java -jar "$bundletool" install-apks --apks="$apks" ${device[@]+"${device[@]}"} --adb="$sdk/platform-tools/adb"
 fi

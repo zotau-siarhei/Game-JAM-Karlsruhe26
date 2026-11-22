@@ -187,6 +187,57 @@ pub struct PlatformProfile {
 }
 
 impl PlatformProfile {
+    /// Значения, с которыми игра работает: переопределения приходят снаружи (переменные, свойства
+    /// Android, адрес страницы), и опечатка вроде `texture_max=0` или `compute=0` не должна вешать
+    /// загрузку или ронять игру. Неверное значение отклоняется, как и неверный вид.
+    fn check(&self) -> Result<(), String> {
+        let finite = |value: f32| value.is_finite();
+        for density in self.render.density.0.into_iter().flatten() {
+            if !finite(density) || !(0.0..=4.0).contains(&density) {
+                return Err(format!("render.density {density}: нужно от 0 до 4"));
+            }
+        }
+        if ![1, 2, 4, 8].contains(&self.render.msaa_high) {
+            return Err(format!("render.msaa_high {}: нужно 1, 2, 4 или 8", self.render.msaa_high));
+        }
+        for shadows in self.render.shadows.0 {
+            if !(256..=8192).contains(&shadows.map) || !shadows.map.is_power_of_two() {
+                return Err(format!("тени: карта {} — степень двойки от 256 до 8192", shadows.map));
+            }
+            if !(1..=4).contains(&shadows.cascades) {
+                return Err(format!("тени: каскадов {} — от 1 до 4", shadows.cascades));
+            }
+            if !finite(shadows.far) || !(1.0..=1000.0).contains(&shadows.far) {
+                return Err(format!("тени: дальность {} — от 1 до 1000 м", shadows.far));
+            }
+        }
+        if let Some(fps) = self.render.frame_limit
+            && (!finite(fps) || !(fps == 0.0 || (10.0..=480.0).contains(&fps)))
+        {
+            return Err(format!("render.frame_limit {fps}: 0 (без предела) или от 10 до 480"));
+        }
+        if !finite(self.debris.shadow_min_size) || self.debris.shadow_min_size < 0.0 {
+            return Err(format!("debris.shadow_min_size {}: нужно от 0", self.debris.shadow_min_size));
+        }
+        if !finite(self.models.detail) || !(0.01..=1.0).contains(&self.models.detail) {
+            return Err(format!("models.detail {}: нужно от 0,01 до 1", self.models.detail));
+        }
+        if let Some(max) = self.models.texture_max
+            && !(64..=16384).contains(&max)
+        {
+            return Err(format!("models.texture_max {max}: нужно от 64 до 16384"));
+        }
+        if self.threads.compute == Some(0) {
+            return Err("threads.compute 0: нужен хотя бы один поток".into());
+        }
+        if let Some([min, max]) = self.threads.async_compute
+            && (min == 0 || min > max)
+        {
+            return Err(format!("threads.async_compute [{min}, {max}]: нужно 1 ≤ наименьшее ≤ наибольшее"));
+        }
+        Ok(())
+    }
+
     /// Плотность кадра на этой ступени.
     pub fn density(&self, quality: Quality) -> Option<f32> {
         self.render.density.at(quality).filter(|d| *d > 0.0)
@@ -232,9 +283,11 @@ impl Plugin for ProfilePlugin {
 /// кадра. Нужен там, где развёртка быстрее нужного: iPad с ProMotion даёт 120 Гц, а держать 120
 /// кадров игре незачем — греется и садит батарею. iPhone без ключа `CADisableMinimumFrameDurationOnPhone`
 /// в `Info.plist` и так не быстрее 60 Гц. В браузере спать нельзя, там кадры задаёт страница.
+/// Прогон `--bench` меряет, сколько игра может, поэтому предела в нём нет.
 #[cfg(not(target_arch = "wasm32"))]
-fn limit_frames(mut last: Local<Option<bevy::platform::time::Instant>>) {
-    let Some(fps) = frame_limit(get().render.frame_limit, overheated()) else {
+fn limit_frames(bench: Option<Res<crate::perf::Bench>>, mut last: Local<Option<bevy::platform::time::Instant>>) {
+    let limit = if bench.is_some_and(|bench| bench.on) { None } else { frame_limit(get().render.frame_limit, overheated()) };
+    let Some(fps) = limit else {
         *last = None;
         return;
     };
@@ -275,7 +328,13 @@ pub fn get() -> &'static PlatformProfile {
         // Переопределения вне профиля — тоже в строку профиля: всё действующее видно в одном месте.
         for key in ["quality", "off", "perf"] {
             if let Some(value) = debug_value(key) {
-                profile.overrides.push(format!("{key} = {}", value.trim()));
+                let value = value.trim();
+                // Ступень — только из трёх (её разбирает `quality.rs`, неверная там не действует).
+                if key == "quality" && serde_json::from_value::<Quality>(Value::String(value.to_owned())).is_err() {
+                    rejected.push(format!("quality = {value} (нужно low, medium или high)"));
+                } else {
+                    profile.overrides.push(format!("{key} = {value}"));
+                }
             }
         }
         rejected.extend(resolved.rejected);
@@ -406,12 +465,14 @@ pub fn android_tier(gpu: &str, memory: u64, low_ram: bool) -> DeviceTier {
         digits.parse().ok()
     };
     let weak_gpu = model("Adreno (TM) ").is_some_and(|n| n < 700)
-        // Mali-G31…G78 — Bifrost и ранний Valhall; G310 и новее — трёхзначные. Mali-T — ещё старее.
-        || model("Mali-G").is_some_and(|n| n < 100)
+        // Mali-G31…G78 — Bifrost и ранний Valhall; G310 и новее — трёхзначные; с 2025 года —
+        // Mali-G1-Ultra/Premium/Pro (Arm Lumex), номер 1. Mali-T — ещё старее.
+        || model("Mali-G").is_some_and(|n| (30..100).contains(&n))
         || gpu.contains("Mali-T")
         || gpu.contains("PowerVR");
     let strong_gpu = model("Adreno (TM) ").is_some_and(|n| (700..900).contains(&n) && n / 10 % 10 >= 3)
         || gpu.contains("Immortalis")
+        || gpu.contains("G1-Ultra")
         || model("Xclipse ").is_some_and(|n| (900..1000).contains(&n));
     if small || weak_gpu {
         DeviceTier::Low
@@ -518,7 +579,9 @@ fn resolve(
     lookup: &dyn Fn(&str) -> Option<String>,
 ) -> Result<Resolved, String> {
     let value = inherited(all, name, 0)?;
-    serde_json::from_value::<PlatformProfile>(value.clone()).map_err(|error| error.to_string())?;
+    serde_json::from_value::<PlatformProfile>(value.clone())
+        .map_err(|error| error.to_string())?
+        .check()?;
     let mut resolved = Resolved {
         value,
         applied: Vec::new(),
@@ -531,6 +594,7 @@ fn resolve(
         let checked = change(&mut candidate).and_then(|()| {
             serde_json::from_value::<PlatformProfile>(candidate.clone())
                 .map_err(|error| error.to_string())
+                .and_then(|profile| profile.check())
         });
         match checked {
             Ok(_) => {
@@ -930,6 +994,10 @@ mod tests {
         assert_eq!(tier("Mali-G78 MP14"), DeviceTier::Low);
         assert_eq!(tier("Mali-G715 MC7"), DeviceTier::Mid);
         assert_eq!(tier("Immortalis-G720 MC12"), DeviceTier::High);
+        // Arm Lumex (Dimensity 9500 и новее): Ultra — сильный, Premium и Pro — средние.
+        assert_eq!(tier("Mali-G1-Ultra MC12"), DeviceTier::High);
+        assert_eq!(tier("Mali-G1-Premium MC10"), DeviceTier::Mid);
+        assert_eq!(tier("Mali-G1-Pro MC6"), DeviceTier::Mid);
         assert_eq!(tier("Samsung Xclipse 940"), DeviceTier::High);
         assert_eq!(tier("Samsung Xclipse 540"), DeviceTier::Mid);
         assert_eq!(tier("PowerVR B-Series BXM-8-256"), DeviceTier::Low);
@@ -1072,6 +1140,35 @@ mod tests {
         assert_eq!(p.debris.max_resting, 50);
         assert_eq!(p.rejected.len(), 2);
         assert_eq!(p.overrides, vec!["debris.max_resting = 50".to_owned()]);
+    }
+
+    /// Значения, на которых игра зависла бы или упала, отклоняются: профиль остаётся прежним.
+    #[test]
+    fn опасное_переопределение_отклоняется() {
+        let bad = [
+            ("models.texture_max", "0"),
+            ("threads.compute", "0"),
+            ("threads.async_compute", "[6, 2]"),
+            ("shadows", "0,60"),
+            ("render.frame_limit", "1e-40"),
+            ("render.density", "-1"),
+            ("render.msaa_high", "3"),
+            ("models.detail", "0"),
+        ];
+        let base = build("android", &[]);
+        for (key, value) in bad {
+            let p = build("android", &[(key, value)]);
+            assert_eq!(p.rejected.len(), 1, "{key} = {value}");
+            assert!(p.overrides.is_empty(), "{key} = {value}");
+            assert_eq!((&p.render, &p.models, &p.threads), (&base.render, &base.models, &base.threads), "{key} = {value}");
+        }
+        // Пределы, которые имеют смысл, принимаются.
+        let p = build("android", &[("render.frame_limit", "0"), ("models.texture_max", "null"), ("threads.async_compute", "[1, 1]")]);
+        assert!(p.rejected.is_empty(), "{:?}", p.rejected);
+        // Каждый профиль файла проходит проверку.
+        for name in ALL {
+            build(name, &[]).check().unwrap_or_else(|error| panic!("{name}: {error}"));
+        }
     }
 
     #[test]

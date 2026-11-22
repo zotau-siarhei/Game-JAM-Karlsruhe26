@@ -8,7 +8,8 @@
   `follow_output_device` раз в секунду переоткрывает вывод, если устройство пропало
   (`DeviceNotAvailable`, `StreamInvalidated`) или в системе сменилось устройство по умолчанию.
   Зацикленные звуки после этого запускаются заново, остальные останавливаются как доигравшие.
-- `src/lib.rs`: система `follow_output_device` в `PostUpdate` до `AudioPlaybackSystems`.
+- `src/lib.rs`: система `follow_output_device` в `PostUpdate` до `AudioPlaybackSystems`; сам набор
+  `AudioPlaybackSystems` открыт (`pub`): игра ставит до и после него паузу звука в фоне (`sound.rs`).
 - В браузере (`wasm32`) правка выключена: устройство ведёт браузер.
 
 Без правки Bevy открывает устройство один раз при запуске: после отключения и возвращения

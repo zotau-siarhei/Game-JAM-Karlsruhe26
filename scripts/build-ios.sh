@@ -52,6 +52,10 @@ for arg in "$@"; do
         *) echo "неизвестный ключ: $arg" >&2; exit 1 ;;
     esac
 done
+if ((expect_env)); then
+    echo "--env: после ключа нужно КЛЮЧ=значение" >&2
+    exit 1
+fi
 
 if ((sim)); then
     triple=aarch64-apple-ios-sim
@@ -69,7 +73,7 @@ fi
 export IPHONEOS_DEPLOYMENT_TARGET=16.0
 
 # Цель сборки — в обычном target этого worktree: зависимости для iOS собираются один раз.
-cargo build --target "$triple" "${profile_flag[@]}"
+cargo build --target "$triple" ${profile_flag[@]+"${profile_flag[@]}"}
 binary=target/$triple/$profile_dir/space_guard
 
 app=target/ios/$kind/SpaceGuard.app
@@ -162,6 +166,8 @@ else
     # Права — как ставит Xcode: только идентификатор, команда и отладка. Профиль разрешает и
     # `keychain-access-groups` с шаблоном `*`, но в подписи шаблон недопустим: iOS не запустит.
     team=$("$buddy" -c "Print :TeamIdentifier:0" "$work/p.plist")
+    # Отладку разрешают только профили разработчика; в профиле распространения ключа нет.
+    task_allow=$("$buddy" -c "Print :Entitlements:get-task-allow" "$work/p.plist" 2>/dev/null || echo false)
     cat > "$work/entitlements.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -172,14 +178,32 @@ else
 	<key>com.apple.developer.team-identifier</key>
 	<string>$team</string>
 	<key>get-task-allow</key>
-	<$("$buddy" -c "Print :Entitlements:get-task-allow" "$work/p.plist")/>
+	<$task_allow/>
 </dict>
 </plist>
 PLIST
-    # Сертификат разработчика; команда — из профиля.
-    identity=${IOS_IDENTITY:-$(security find-identity -v -p codesigning | awk -F'"' '/Apple Development/ { print $2; exit }')}
+    # Сертификат — тот, что вписан в профиль: в связке ключей их бывает несколько (разные команды,
+    # старый и новый), а подпись чужим профиль не примет. Сверка по SHA-1 сертификата.
+    identity=${IOS_IDENTITY:-}
     if [[ -z "$identity" ]]; then
-        echo "нет сертификата Apple Development в связке ключей" >&2
+        allowed=""
+        i=0
+        while "$buddy" -c "Print :DeveloperCertificates:$i" "$work/p.plist" > /dev/null 2>&1; do
+            plutil -extract "DeveloperCertificates.$i" raw "$work/p.plist" | base64 -D > "$work/cert.der"
+            allowed+=" $(openssl x509 -inform der -in "$work/cert.der" -noout -fingerprint -sha1 | sed 's/.*=//; s/://g')"
+            i=$((i + 1))
+        done
+        identities=$(security find-identity -v -p codesigning)
+        while read -r _ hash _; do
+            if [[ " $allowed " == *" $hash "* ]]; then
+                identity=$hash
+                break
+            fi
+        done <<< "$identities"
+    fi
+    if [[ -z "$identity" ]]; then
+        echo "нет в связке ключей сертификата из профиля (команда $team): поставь его через Xcode" >&2
+        echo "или укажи IOS_IDENTITY=<имя или SHA-1 сертификата>" >&2
         exit 1
     fi
     echo "подпись: $identity (команда $team)"
@@ -194,7 +218,9 @@ for pair in ${launch_env[@]+"${launch_env[@]}"}; do
     export "SIMCTL_CHILD_$pair" "DEVICECTL_CHILD_$pair"
 done
 if ((sim)); then
-    if ! xcrun simctl list devices booted | grep -q Booted; then
+    # Вывод целиком, а не через `| grep -q`: при pipefail grep, закрывший канал раньше, дал бы SIGPIPE.
+    booted=$(xcrun simctl list devices booted)
+    if [[ "$booted" != *Booted* ]]; then
         xcrun simctl boot "${IOS_SIM:-iPhone 15 Pro}"
     fi
     open -a Simulator 2>/dev/null || open -b com.apple.iphonesimulator 2>/dev/null || true

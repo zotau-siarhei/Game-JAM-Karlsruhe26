@@ -873,12 +873,18 @@ fn pause_on_escape_or_blur(
     keys: Res<ButtonInput<KeyCode>>,
     bench: Option<Res<crate::perf::Bench>>,
     mut focus: MessageReader<WindowFocused>,
+    mut lifecycle: MessageReader<bevy::window::AppLifecycle>,
     mut next: ResMut<NextState<GameState>>,
     targeting: Res<crate::airstrike::Targeting>,
 ) {
     // В прогоне замера и при отладочном автозапуске окно может быть и не в фокусе.
     let unattended = bench.is_some_and(|b| b.on) || std::env::var_os("SPACE_GUARD_AUTOSTART").is_some();
-    let blurred = focus.read().any(|change| !change.focused) && !unattended;
+    // На телефоне уход в фон — ещё и `Suspended`: фокус winit тоже теряет, но пауза не должна
+    // зависеть от порядка этих событий.
+    let suspended = lifecycle.read().any(|event| {
+        matches!(event, bevy::window::AppLifecycle::WillSuspend | bevy::window::AppLifecycle::Suspended)
+    });
+    let blurred = (focus.read().any(|change| !change.focused) || suspended) && !unattended;
     // Esc в наведении авиаудара отменяет его, а не ставит паузу.
     if blurred || (keys.just_pressed(KeyCode::Escape) && !targeting.open) {
         next.set(GameState::Paused);

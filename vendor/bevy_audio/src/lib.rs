@@ -64,7 +64,7 @@ use audio_output::*;
 
 /// Set for the audio playback systems, so they can share a run condition
 #[derive(SystemSet, Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
-struct AudioPlaybackSystems;
+pub struct AudioPlaybackSystems;
 
 /// Adds support for audio playback to a Bevy Application
 ///

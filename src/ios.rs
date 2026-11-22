@@ -79,19 +79,15 @@ pub fn device() -> Device {
         /// `MTLGPUFamilyApple1`; `Apple<N>` = 1000 + N.
         const APPLE: isize = 1000;
         // SAFETY: функции Metal и Foundation без побочных эффектов; объекты живут всё время процесса.
+        // Каждый ответ может оказаться nil — тогда ссылки нет (`as_ref`), а не разыменование нуля.
         unsafe {
-            let metal = MTLCreateSystemDefaultDevice();
-            let apple_family = if metal.is_null() {
-                0
-            } else {
-                // Семейства накопительные: берётся самое новое, которое устройство поддерживает.
-                (1..=16)
-                    .rev()
-                    .find(|n| msg_send![&*metal, supportsFamily: APPLE + *n as isize])
-                    .unwrap_or(0)
-            };
+            let metal = MTLCreateSystemDefaultDevice().as_ref();
+            // Семейства накопительные: берётся самое новое, которое устройство поддерживает.
+            let apple_family = metal.map_or(0, |metal| {
+                (1..=16).rev().find(|n| msg_send![metal, supportsFamily: APPLE + *n as isize]).unwrap_or(0)
+            });
             let info: *mut AnyObject = msg_send![objc2::class!(NSProcessInfo), processInfo];
-            let physical: u64 = msg_send![&*info, physicalMemory];
+            let physical: u64 = info.as_ref().map_or(0, |info| msg_send![info, physicalMemory]);
             Device {
                 apple_family,
                 physical,
@@ -128,7 +124,7 @@ pub fn is_tablet() -> bool {
     // SAFETY: `UIDevice.currentDevice` есть всегда; вызов из главного потока до запуска цикла событий.
     let idiom: isize = unsafe {
         let device: *mut AnyObject = msg_send![objc2::class!(UIDevice), currentDevice];
-        msg_send![&*device, userInterfaceIdiom]
+        device.as_ref().map_or(0, |device| msg_send![device, userInterfaceIdiom])
     };
     idiom == PAD
 }
@@ -147,9 +143,11 @@ fn watch_thermal(time: Res<Time<Real>>, mut next: Local<f32>) {
     }
     *next = now + 2.0;
     // SAFETY: `NSProcessInfo.processInfo` есть всегда, оба свойства только читаются.
-    let (thermal, low_power): (isize, bool) = unsafe {
+    let Some((thermal, low_power)): Option<(isize, bool)> = (unsafe {
         let info: *mut AnyObject = msg_send![objc2::class!(NSProcessInfo), processInfo];
-        (msg_send![&*info, thermalState], msg_send![&*info, isLowPowerModeEnabled])
+        info.as_ref().map(|info| (msg_send![info, thermalState], msg_send![info, isLowPowerModeEnabled]))
+    }) else {
+        return;
     };
     let throttle = thermal >= SERIOUS || low_power;
     if throttle != crate::profile::throttled() {
@@ -267,11 +265,11 @@ fn read_view(
     let RawWindowHandle::UiKit(handle) = handle.get_window_handle() else {
         return;
     };
-    let view = handle.ui_view.as_ptr().cast::<AnyObject>();
-    // SAFETY: указатель на UIView окна выдал winit, окно живо, пока есть его сущность; вызов идёт
-    // из главного потока (`NonSendMarker`).
+    // SAFETY: указатель на UIView окна выдал winit (`NonNull`, не nil), окно живо, пока есть его
+    // сущность; вызов идёт из главного потока (`NonSendMarker`).
+    let view: &AnyObject = unsafe { handle.ui_view.cast::<AnyObject>().as_ref() };
     let (insets, bounds): (UIEdgeInsets, CGRect) =
-        unsafe { (msg_send![&*view, safeAreaInsets], msg_send![&*view, bounds]) };
+        unsafe { (msg_send![view, safeAreaInsets], msg_send![view, bounds]) };
     let size = Vec2::new(bounds.width as f32, bounds.height as f32);
     if size.min_element() > 0.0 && (bevy_window.resolution.size() - size).abs().max_element() > 0.5 {
         info!("iOS: окно {} → {size} точек", bevy_window.resolution.size());
@@ -285,16 +283,15 @@ fn read_view(
     );
     if *last != Some(area) {
         // Масштабы вида, его слоя и экрана: по ним видно, совпадает ли кадр с экраном.
-        // SAFETY: те же вид и поток, что выше; `layer` и `mainScreen` у UIKit есть всегда.
+        // SAFETY: те же вид и поток, что выше; nil у слоя или экрана — масштаб 0 в логе.
         let (view_scale, layer_scale, screen_scale, native_scale): (f64, f64, f64, f64) = unsafe {
-            let layer: *mut AnyObject = msg_send![&*view, layer];
+            let layer: *mut AnyObject = msg_send![view, layer];
             let screen: *mut AnyObject = msg_send![objc2::class!(UIScreen), mainScreen];
-            (
-                msg_send![&*view, contentScaleFactor],
-                msg_send![&*layer, contentsScale],
-                msg_send![&*screen, scale],
-                msg_send![&*screen, nativeScale],
-            )
+            let layer_scale = layer.as_ref().map_or(0.0, |layer| msg_send![layer, contentsScale]);
+            let (scale, native) = screen
+                .as_ref()
+                .map_or((0.0, 0.0), |screen| (msg_send![screen, scale], msg_send![screen, nativeScale]));
+            (msg_send![view, contentScaleFactor], layer_scale, scale, native)
         };
         info!(
             "iOS: безопасная область {area}; окно {} точек, {} пикселей, масштаб {}; вид {view_scale}, \
