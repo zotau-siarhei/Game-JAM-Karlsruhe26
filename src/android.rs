@@ -178,7 +178,7 @@ fn ndk() -> &'static Ndk {
 struct Load {
     /// По запасу до троттлинга (`watch_thermal`); `None` — ещё не спрашивали или запаса нет.
     headroom: Option<crate::profile::Heat>,
-    /// По статусу нагрева — только где запаса нет (Android 10 или HAL без прогноза, запас всегда NaN):
+    /// По статусу нагрева — только где запаса нет (Android 11, где функции запаса ещё нет, или HAL без прогноза — запас всегда NaN):
     /// гистерезис у статуса свой, в HAL.
     status: Option<crate::profile::Heat>,
     /// Game Mode «экономия батареи» (`watch_game_mode`).
@@ -222,7 +222,7 @@ fn watch_thermal(time: Res<Time<Real>>, mut next: Local<f32>, mut load: ResMut<L
         // Запас уже приходил числом: случайный NaN держит прежний уровень, а не сбрасывает его.
         return;
     } else if let Some(get_status) = ndk.thermal_status {
-        // Запаса нет совсем: функция есть с Android 11, но без прогноза в HAL устройства
+        // Запаса нет совсем: функция есть с Android 12 (API 31), но без прогноза в HAL устройства
         // всегда отдаёт NaN. Тогда — статус нагрева.
         // SAFETY: то же.
         let raw = unsafe { get_status(manager) };

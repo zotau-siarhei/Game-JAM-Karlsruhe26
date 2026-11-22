@@ -192,7 +192,7 @@ fn release_sinks(
         }
         match settings.mode {
             PlaybackMode::Loop => {
-                commands.entity(entity).remove::<(AudioSink, SpatialAudioSink)>();
+                commands.entity(entity).try_remove::<(AudioSink, SpatialAudioSink)>();
                 continue;
             }
             PlaybackMode::Despawn => {

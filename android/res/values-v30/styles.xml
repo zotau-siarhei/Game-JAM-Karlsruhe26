@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- С Android 11 (API 30) — always: окно идёт под вырез на любой грани (и на планшетах с вырезом на
+         длинной стороне), а Play Console не предупреждает об устаревшем shortEdges. -->
+    <style name="SpaceGuard" parent="@android:style/Theme.Black.NoTitleBar.Fullscreen">
+        <item name="android:windowLayoutInDisplayCutoutMode">always</item>
+    </style>
+</resources>
