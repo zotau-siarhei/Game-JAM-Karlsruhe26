@@ -9,4 +9,4 @@
 
 ## 3. Проверка
 
-- [ ] 3.1 `cargo test`, `cargo build --release`, забег с ракетами по танкам и боссу (в работе: Sergei Zotov)
+- [x] 3.1 `cargo test`, `cargo build --release`, забег с ракетами по танкам и боссу (в работе: Sergei Zotov)
