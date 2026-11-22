@@ -127,6 +127,10 @@ struct Grass {
     patches: HashMap<IVec2, Patch>,
     /// Участки в сцене, которые ждут, пока на них встанут дома и объекты: сколько кадров ещё.
     settling: HashMap<IVec2, u8>,
+    /// Участки, которые подгрузка уже видела. Живёт в ресурсе, а не в `Local`: новый мир
+    /// (`reset_grass`) забывает и их, иначе стартовые участки после рестарта остались бы без травы —
+    /// их координаты видны и в старом, и в новом мире.
+    known: HashSet<IVec2>,
     lava_timer: f32,
 }
 
@@ -272,7 +276,6 @@ fn stream_grass(
     quality: Res<Quality>,
     material: Res<GrassMaterial>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut known: Local<HashSet<IVec2>>,
 ) {
     let grass = &mut *grass;
     if quality.is_changed() {
@@ -288,11 +291,11 @@ fn stream_grass(
             commands.entity(entity).try_despawn();
         }
     }
-    known.retain(|coord| visible.entity(*coord).is_some());
+    grass.known.retain(|coord| visible.entity(*coord).is_some());
     grass.settling.retain(|coord, _| visible.entity(*coord).is_some());
-    if visible.is_changed() {
+    if visible.is_changed() || grass.known.is_empty() {
         for patch_coord in visible_coords(&visible) {
-            if known.insert(patch_coord) {
+            if grass.known.insert(patch_coord) {
                 if let Some(patch) = grass.patches.get_mut(&patch_coord) {
                     patch.dirty = true;
                 } else {

@@ -259,9 +259,15 @@ impl Lines {
         0.5 * (1.0 - t) * (1.0 - t) * before + (0.5 + t * (1.0 - t)) * here + 0.5 * t * t * after
     }
 
+    /// Кэш профиля. Паника посреди записи оставит в нём разве что лишний узел, который всё равно
+    /// посчитан верно: отравленный замок не роняет следующие вызовы.
+    fn profile(&self) -> std::sync::MutexGuard<'_, Profile> {
+        self.profile.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// Сглаженный уровень в узле: холмы вдоль оси под треугольным окном.
     fn smoothed_knot(&self, line: LineId, knot: i32, hills: &impl Fn(f32, f32) -> f32) -> f32 {
-        if let Some(level) = self.profile.lock().unwrap().smoothed.get(&(line, knot)) {
+        if let Some(level) = self.profile().smoothed.get(&(line, knot)) {
             return *level;
         }
         let s = knot as f32 * KNOT_STEP;
@@ -274,7 +280,7 @@ impl Lines {
             weights += w;
         }
         let level = sum / weights;
-        self.profile.lock().unwrap().smoothed.insert((line, knot), level);
+        self.profile().smoothed.insert((line, knot), level);
         level
     }
 
@@ -286,7 +292,7 @@ impl Lines {
     /// поровну сверху и снизу: полувыемка и полунасыпь. Значение узла зависит только от
     /// соседей, а не от того, с какой стороны к нему подошли.
     fn limited_knot(&self, line: LineId, knot: i32, hills: &impl Fn(f32, f32) -> f32) -> f32 {
-        if let Some(level) = self.profile.lock().unwrap().limited.get(&(line, knot)) {
+        if let Some(level) = self.profile().limited.get(&(line, knot)) {
             return *level;
         }
         let rise = MAX_SLOPE * KNOT_STEP;
@@ -298,7 +304,7 @@ impl Lines {
             upper = upper.max(level - reach);
         }
         let level = 0.5 * (lower + upper);
-        self.profile.lock().unwrap().limited.insert((line, knot), level);
+        self.profile().limited.insert((line, knot), level);
         level
     }
 
@@ -310,11 +316,11 @@ impl Lines {
 
     /// [`Self::is_deep`] в выборке номер `i` через [`TUNNEL_STEP`], с запоминанием.
     fn deep_sample(&self, line: LineId, i: i32, raw: &impl Fn(f32, f32) -> f32, hills: &impl Fn(f32, f32) -> f32) -> bool {
-        if let Some(deep) = self.profile.lock().unwrap().deep.get(&(line, i)) {
+        if let Some(deep) = self.profile().deep.get(&(line, i)) {
             return *deep;
         }
         let deep = self.is_deep(line, i as f32 * TUNNEL_STEP, raw, hills);
-        self.profile.lock().unwrap().deep.insert((line, i), deep);
+        self.profile().deep.insert((line, i), deep);
         deep
     }
 

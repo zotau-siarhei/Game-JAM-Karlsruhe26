@@ -157,8 +157,14 @@ impl ObstacleGrid {
         (p / CELL).floor().as_ivec2()
     }
 
+    /// Ячейки, занятые в прошлый раз, остаются пустыми (память под списки переиспользуется), а
+    /// пустовавшие удаляются: иначе с каждым новым участком мира и каждым забегом таблица только росла.
     fn clear(&mut self) {
-        self.cells.values_mut().for_each(Vec::clear);
+        self.cells.retain(|_, entities| {
+            let used = !entities.is_empty();
+            entities.clear();
+            used
+        });
         self.large.clear();
     }
 
