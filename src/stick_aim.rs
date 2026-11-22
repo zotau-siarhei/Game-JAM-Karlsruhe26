@@ -18,7 +18,6 @@ use crate::enemy::Enemy;
 use crate::frame::GameSet;
 use crate::gamepad::{InputDevice, PadInput};
 use crate::haptics::Rumble;
-use crate::obstacles::Obstacle;
 use crate::rover::Rover;
 use crate::run::{GameState, WorldRebuilt};
 use crate::steering;
@@ -217,7 +216,7 @@ fn aim_with_stick(
     mut rumble: ResMut<Rumble>,
     rover: Single<&Transform, With<Rover>>,
     enemies: Query<(Entity, &Transform, &Health), With<Enemy>>,
-    obstacles: Query<(Entity, &Obstacle)>,
+    obstacles: crate::obstacles::NearObstacles,
 ) {
     if !device.stick() {
         return;
@@ -284,7 +283,7 @@ fn aim_with_stick(
         let visible = |offset: Vec2| {
             let at = me + offset;
             let target = Vec3::new(at.x, terrain.height_at(at.x, at.y) + TARGET_HEIGHT, at.y);
-            steering::has_los(&terrain, obstacles.iter(), eye, target)
+            steering::has_los(&terrain, obstacles.along(eye, target), eye, target)
         };
         if let Some((entity, offset)) = nearest_visible(&alive, visible) {
             stick.locked = Some(entity);
@@ -310,7 +309,7 @@ fn aim_with_stick(
         let visible = |offset: Vec2| {
             let at = me + offset;
             let target = Vec3::new(at.x, terrain.height_at(at.x, at.y) + TARGET_HEIGHT, at.y);
-            steering::has_los(&terrain, obstacles.iter(), eye, target)
+            steering::has_los(&terrain, obstacles.along(eye, target), eye, target)
         };
         match pick_target(dir, &alive, stick.locked, assist, visible) {
             Some((entity, offset)) => {

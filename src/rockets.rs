@@ -14,7 +14,7 @@ use crate::combat::{Collider, Damage, Health, ShotFrom, Team, spared_ally};
 use crate::enemy::Enemy;
 use crate::explosion::Explosion;
 use crate::frame::{GameSet, RunMessages};
-use crate::obstacles::{self, Obstacle};
+use crate::obstacles;
 use crate::rover::{self, Rover};
 use crate::run::{GameState, RunScoped, WorldRebuilt};
 use crate::terrain::Terrain;
@@ -481,7 +481,7 @@ fn fly_rockets(
     mut rockets: Query<(Entity, &mut Transform, &mut Rocket, &ShotFrom)>,
     targets: Query<(Entity, &GlobalTransform, &Collider, &Team, &Health)>,
     enemies: Query<(Entity, &GlobalTransform, &Health), With<Enemy>>,
-    obstacles: Query<(Entity, &Obstacle)>,
+    obstacles: crate::obstacles::NearObstacles,
     puffs: Query<(), With<Puff>>,
     mut explosions: MessageWriter<Explosion>,
 ) {
@@ -552,7 +552,7 @@ fn fly_rockets(
             to = ground;
             hit = true;
         }
-        if let Some((_, wall)) = obstacles::segment_hit(from, to, &obstacles) {
+        if let Some((_, wall)) = obstacles::segment_hit(from, to, obstacles.along(from, to)) {
             to = wall;
             hit = true;
         }

@@ -27,7 +27,6 @@ use crate::interceptor::{self, Interceptor};
 use crate::laser::FireLaser;
 use crate::models::Models;
 use crate::mortar::{self, FireShell};
-use crate::obstacles::Obstacle;
 use crate::pickups::CarriedWeapon;
 use crate::rng::GameRng;
 use crate::rockets::FireRocket;
@@ -688,7 +687,7 @@ fn drive_tanks(
     time: Res<Time>,
     difficulty: Res<crate::difficulty::RunDifficulty>,
     terrain: Res<Terrain>,
-    obstacles: Query<(Entity, &Obstacle)>,
+    obstacles: crate::obstacles::NearObstacles,
     rover: Query<(&Transform, &Health), With<Rover>>,
     mut enemies: Query<(&Transform, &GroundVehicle, &mut Steering, &mut HeavyTank, &mut TankGun), Without<Rover>>,
     mut lasers: MessageWriter<FireLaser>,
@@ -727,7 +726,7 @@ fn drive_tanks(
                 let muzzle = me + Vec3::Y * 1.2;
                 if in_range
                     && tank.reload <= 0.0
-                    && steering::has_los(&terrain, obstacles.iter(), muzzle, target + Vec3::Y * 0.5)
+                    && steering::has_los(&terrain, obstacles.along(muzzle, target + Vec3::Y * 0.5), muzzle, target + Vec3::Y * 0.5)
                 {
                     tank.state = TankState::Aiming(match tank.arm {
                         TankArm::Laser => TANK_AIM_TIME,
@@ -971,7 +970,7 @@ impl EnemyWeapons {
 fn shoot_rover(
     time: Res<Time>,
     terrain: Res<Terrain>,
-    obstacles: Query<(Entity, &Obstacle)>,
+    obstacles: crate::obstacles::NearObstacles,
     mut dice: ResMut<GameRng>,
     rover: Query<(&Transform, &Health), (With<Rover>, Without<Enemy>)>,
     mut enemies: Query<(&Transform, &mut EnemyWeapons), With<Enemy>>,
@@ -989,7 +988,7 @@ fn shoot_rover(
     for (transform, mut weapons) in &mut enemies {
         let muzzle = transform.translation + Vec3::Y * MUZZLE_HEIGHT;
         let can_start = muzzle.distance(target) <= FIRE_RANGE
-            && steering::has_los(&terrain, &obstacles, muzzle, target);
+            && steering::has_los(&terrain, obstacles.along(muzzle, target), muzzle, target);
         if weapons.tick_gun(dt, can_start) == GunAction::Fire {
             let spread = Quat::from_rotation_y(dice.range(-SPREAD, SPREAD));
             bullets.write(FireBullet {
