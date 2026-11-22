@@ -29,7 +29,7 @@ android-activity 0.6.1 даёт `AndroidApp::run_on_java_main_thread` (замы�
 2. **Безопасная область = вырез ∪ видимые панели.** Вырез по-прежнему из `Display.getCutout()` (любой
    поток). Видимые системные панели читает то же замыкание в главном потоке:
    `getRootWindowInsets().getInsets(systemBars())` (API 30+) или `getSystemWindowInset*` (29) — и кладёт
-   в статическую переменную; `cutout_insets` берёт по каждой стороне максимум. Спрятанные панели дают 0.
+   в статическую переменную; `safe_insets` берёт по каждой стороне максимум. Спрятанные панели дают 0.
 3. **Экран не гаснет** — `set_window_flags(KEEP_SCREEN_ON)` один раз при старте: флаг живёт у окна
    активности и действует, только пока оно на экране.
 4. **«Назад».** «Выход» на Android убран профилем (`menu.quit: false`, как на iOS). Esc в главном меню на
@@ -56,7 +56,8 @@ android-activity 0.6.1 даёт `AndroidApp::run_on_java_main_thread` (замы�
    `GamepadConnectionEvent::Disconnected`, следующий ввод подключит заново. Слушатель InputManager —
    снова Java-интерфейс. Вибрация: флаг профиля `input.rumble` (у `android` false) прячет пункт меню.
 9. **Пакет.** `build-aab.sh` собирает библиотеку с символами (`SPACE_GUARD_SYMBOLS=1`), копию без символов
-   (`llvm-strip --strip-all` из NDK) кладёт в base, исходную — как `libspace_guard.so.sym` в
+   (`llvm-strip --strip-all` из NDK) кладёт в base, таблицу символов без DWARF (`llvm-objcopy --strip-debug
+   --only-keep-debug`, ~90 МБ, как `SYMBOL_TABLE` у Android Gradle Plugin) — как `libspace_guard.so.sym` в
    `--metadata-file` bundletool. `SPACE_GUARD_VERSION_CODE` переопределяет код; без него в мелком клоне —
    ошибка. `SPACE_GUARD_UPLOAD_KEY_PASSWORD` — пароль ключа (по умолчанию — хранилища), `-sigalg` для
    ключа загрузки не задаётся (jarsigner выбирает по типу ключа), после подписи `jarsigner -verify`.
