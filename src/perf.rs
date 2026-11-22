@@ -16,6 +16,7 @@
 //! Отметки времени — системы между наборами `GameSet`: они сами вне наборов, иначе не встать
 //! на границу.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use bevy::platform::time::Instant;
 
@@ -278,6 +279,14 @@ impl Timings {
 #[derive(Resource, Clone, Default)]
 struct Shared(Arc<Mutex<Timings>>);
 
+/// Идёт ли замер: оверлей F3, `--bench` или сводка на телефоне. Без них отметки участков кадра
+/// не берут время и не захватывают общий мьютекс основного и рендер-потока.
+static MEASURING: AtomicBool = AtomicBool::new(false);
+
+fn measuring() -> bool {
+    MEASURING.load(Ordering::Relaxed)
+}
+
 /// Оверлей включён.
 #[derive(Resource, Default)]
 struct Overlay {
@@ -317,6 +326,7 @@ impl Plugin for PerfPlugin {
             .add_systems(PostUpdate, hide_particles);
         add_main_marks(app);
         let bench = *app.world().resource::<Bench>();
+        MEASURING.store(bench.on || phone_log(), Ordering::Relaxed);
         // Время проходов на видеокарте (метки времени GPU) — только в замере: они не бесплатны.
         if bench.on || phone_log() {
             app.add_plugins(bevy::render::diagnostic::RenderDiagnosticsPlugin);
@@ -364,6 +374,9 @@ fn add_render_marks(render: &mut SubApp) {
 }
 
 fn main_mark<const I: usize>(shared: Res<Shared>) {
+    if !measuring() {
+        return;
+    }
     let now = Instant::now();
     let Ok(mut t) = shared.0.lock() else {
         return;
@@ -397,6 +410,9 @@ fn main_mark<const I: usize>(shared: Res<Shared>) {
 }
 
 fn render_mark<const I: usize>(shared: Res<Shared>) {
+    if !measuring() {
+        return;
+    }
     let now = Instant::now();
     let Ok(mut t) = shared.0.lock() else {
         return;
@@ -460,12 +476,21 @@ fn toggle_overlay(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     mut overlay: ResMut<Overlay>,
+    bench: Res<Bench>,
+    shared: Res<Shared>,
     texts: Query<Entity, With<OverlayText>>,
 ) {
     if !keys.just_pressed(KeyCode::F3) {
         return;
     }
     overlay.shown = !overlay.shown;
+    MEASURING.store(overlay.shown || bench.on || phone_log(), Ordering::Relaxed);
+    // Отметки с прошлого включения устарели: первый кадр иначе посчитался бы от них.
+    if let Ok(mut t) = shared.0.lock() {
+        t.main_marks = Default::default();
+        t.render_marks = Default::default();
+        t.overlay = Default::default();
+    }
     for entity in &texts {
         commands.entity(entity).despawn();
     }
