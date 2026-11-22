@@ -120,7 +120,9 @@ cp "$icons"/*.png "$app/"
 plutil -convert binary1 "$plist"
 
 # Ассеты рядом с исполняемым файлом: загрузчик Bevy ищет `assets` в папке программы.
-rsync -a --exclude '.DS_Store' --exclude '*.md' assets "$app/"
+# Без черновиков озвучки и служебных файлов: шрифт и профили платформ вшиты в программу.
+rsync -a --exclude '.DS_Store' --exclude '*.md' --exclude 'voice/raw' --exclude 'voice/preview.html' \
+    --exclude 'voice/voices.json' --exclude 'platform' --exclude 'fonts/DejaVuSansMono.ttf' assets "$app/"
 if ((small_textures)); then
     textures=(scripts/web_textures.py "$app/assets" target/ios/textures 1024)
     if python3 -c "import PIL" 2>/dev/null; then

@@ -220,7 +220,7 @@ fn limb(pivot: Vec3, length: f32, swing: f32, splay: f32) -> Transform {
 
 /// Восклицательный знак над головой.
 #[derive(Component)]
-struct Alert;
+pub(crate) struct Alert;
 
 /// Облачко «пуф».
 #[derive(Component)]

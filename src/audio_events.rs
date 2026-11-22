@@ -30,7 +30,6 @@ use crate::pickups::WeaponPicked;
 use crate::upgrades::WeaponUpgraded;
 use crate::props::{Prop, PropKind};
 use crate::puddles::WaterSplash;
-use crate::records::{Records, records_path};
 use crate::repair::{MedkitPicked, RepairChanged};
 use crate::residents::{ResidentDied, ResidentScared};
 use crate::rockets::Rocket;
@@ -259,9 +258,12 @@ fn forget_run(mut rebuilt: MessageReader<WorldRebuilt>, mut memory: ResMut<Audio
 }
 
 /// Новый забег: штаб забывает сказанное, приветствует экипаж, звучит музыка передышки.
-/// Лучшее время читается из таблицы рекордов: его превышение — повод для штаба.
+/// Лучшее время берётся из таблицы рекордов уровня забега (она уже в памяти): его превышение —
+/// повод для штаба.
 fn announce_run_start(
     mut started: MessageReader<RunStarted>,
+    records: Res<crate::run::RecordsTable>,
+    difficulty: Res<crate::difficulty::RunDifficulty>,
     mut hq: ResMut<HqMemory>,
     mut memory: ResMut<AudioMemory>,
     mut cues: MessageWriter<VoiceCue>,
@@ -271,9 +273,7 @@ fn announce_run_start(
         return;
     }
     hq.reset();
-    memory.best_record = records_path()
-        .map(|path| Records::load(&path))
-        .and_then(|table| table.best().map(|record| record.seconds));
+    memory.best_record = records.table(difficulty.0).best().map(|record| record.seconds);
     cues.write(VoiceCue::new("run_start"));
     music.track = Track::Lull;
 }

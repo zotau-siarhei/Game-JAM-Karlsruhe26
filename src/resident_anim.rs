@@ -183,7 +183,8 @@ fn attach_players(
     players: Query<Entity, (With<AnimationPlayer>, Without<AnimationGraphHandle>, Without<crate::anim_lod::ParkedGraph>)>,
     parents: Query<&ChildOf>,
     children: Query<&Children>,
-    mut meshes: Query<&mut MeshMaterial3d<StandardMaterial>>,
+    // Значок тревоги над головой — тоже потомок жителя, но скин ему не надевается.
+    mut meshes: Query<&mut MeshMaterial3d<StandardMaterial>, Without<crate::residents::Alert>>,
     residents: Query<&ResidentModel, Without<Animator>>,
 ) {
     for player in &players {

@@ -37,11 +37,28 @@ impl Plugin for IosPlugin {
             if d.tablet { "iPad" } else { "iPhone" },
             d.tier(),
         );
-        app.add_systems(PreUpdate, (read_view, watch_thermal, log_memory));
+        app.add_systems(PreUpdate, (read_view, watch_thermal, log_memory, keep_screen_on));
     }
 }
 
 const GIB: f64 = (1u64 << 30) as f64;
+
+/// Экран не гаснет, пока игра на экране: с геймпадом экрана никто не касается, и iOS гасила бы его
+/// по таймеру бездействия. Флаг живёт у приложения, ставится один раз; только главный поток.
+fn keep_screen_on(_main_thread: NonSendMarker, mut done: Local<bool>) {
+    if *done {
+        return;
+    }
+    // SAFETY: UIKit из главного потока (`NonSendMarker`); `sharedApplication` до запуска — nil.
+    unsafe {
+        let application: *mut AnyObject = msg_send![objc2::class!(UIApplication), sharedApplication];
+        if let Some(application) = application.as_ref() {
+            let _: () = msg_send![application, setIdleTimerDisabled: true];
+            *done = true;
+            info!("iOS: экран не гаснет в игре");
+        }
+    }
+}
 
 #[link(name = "Metal", kind = "framework")]
 unsafe extern "C" {
