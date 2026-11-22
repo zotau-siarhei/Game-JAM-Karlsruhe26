@@ -430,6 +430,23 @@ pub struct Prop {
 #[derive(Resource, Default)]
 struct SpawnedProps(HashMap<IVec2, Vec<Entity>>);
 
+impl SpawnedProps {
+    /// Сущности объектов из участков, которые задевает круг `radius` вокруг `center`: вместо обхода
+    /// всех объектов мира. Удалённые сущности тоже попадаются — их отсеивает запрос.
+    fn near(&self, center: Vec3, radius: f32) -> impl Iterator<Item = Entity> + '_ {
+        let low = chunk_coord_at(center.x - radius, center.z - radius);
+        let high = chunk_coord_at(center.x + radius, center.z + radius);
+        (low.x..=high.x)
+            .flat_map(move |x| (low.y..=high.y).map(move |z| IVec2::new(x, z)))
+            .filter_map(|coord| self.0.get(&coord))
+            .flatten()
+            .copied()
+    }
+}
+
+/// Запас к радиусу машины при поиске мелочи под колёсами: больше радиуса любого `Crushable`.
+const CRUSH_SEARCH_MARGIN: f32 = 6.0;
+
 /// Часть облика объекта: меш, материал и положение относительно основания.
 struct Part {
     mesh: Handle<Mesh>,
@@ -839,29 +856,39 @@ const SHARD_LIFETIME: f32 = 1.0;
 const SHARD_GRAVITY: f32 = 20.0;
 
 /// Машина, наехавшая на мелкий объект, сносит его: объект исчезает навсегда, летят осколки.
+/// Мелочь под машинами: ищется в участках вокруг каждой машины, а не перебором всех объектов мира.
 fn crush_small_props(
     mut commands: Commands,
     mut props: ResMut<Props>,
+    spawned: Res<SpawnedProps>,
     vehicles: Query<(&Transform, Option<&Collider>), Or<(With<Rover>, With<GroundVehicle>)>>,
-    crushable: Query<(Entity, &Prop, &Crushable, &Transform)>,
+    crushable: Query<(&Prop, &Crushable, &Transform)>,
     breaker: Breaker,
+    mut crushed: Local<Vec<Entity>>,
 ) {
-    for (entity, prop, small, transform) in &crushable {
-        let p = transform.translation;
-        let hit = vehicles.iter().find(|(v, c)| {
-            let r = c.map_or(1.0, |c| c.radius) + small.radius;
-            Vec2::new(v.translation.x - p.x, v.translation.z - p.z).length_squared() < r * r
-        });
-        let Some((vehicle, _)) = hit else {
-            continue;
-        };
-        if let Some(state) = props.get_mut(prop.chunk, prop.index) {
-            state.status = PropStatus::Destroyed;
-        }
-        commands.entity(entity).despawn();
+    crushed.clear();
+    for (vehicle, collider) in &vehicles {
+        let reach = collider.map_or(1.0, |c| c.radius);
+        for entity in spawned.near(vehicle.translation, reach + CRUSH_SEARCH_MARGIN) {
+            let Ok((prop, small, transform)) = crushable.get(entity) else {
+                continue;
+            };
+            let p = transform.translation;
+            let r = reach + small.radius;
+            if Vec2::new(vehicle.translation.x - p.x, vehicle.translation.z - p.z).length_squared() >= r * r
+                || crushed.contains(&entity)
+            {
+                continue;
+            }
+            crushed.push(entity);
+            if let Some(state) = props.get_mut(prop.chunk, prop.index) {
+                state.status = PropStatus::Destroyed;
+            }
+            commands.entity(entity).despawn();
 
-        let away = (p - vehicle.translation).with_y(0.0).normalize_or(Vec3::X);
-        shatter(&mut commands, transform, &breaker, entity, away);
+            let away = (p - vehicle.translation).with_y(0.0).normalize_or(Vec3::X);
+            shatter(&mut commands, transform, &breaker, entity, away);
+        }
     }
 }
 
@@ -1098,21 +1125,26 @@ fn spawn_stump(commands: &mut Commands, assets: &PropAssets, chunk: IVec2, index
 /// Ударная волна: мелочь в радиусе разлетается, деревья ломаются, крупным — урон;
 /// чуть дальше деревья качаются.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn shockwave_props(
     mut commands: Commands,
     mut explosions: MessageReader<Explosion>,
     mut props: ResMut<Props>,
-    objects: Query<
-        (Entity, &Prop, &Transform, Option<&Health>, Option<&Sway>),
-        Without<TreeFall>,
-    >,
+    spawned: Res<SpawnedProps>,
+    objects: Query<(&Prop, &Transform, Option<&Health>, Option<&Sway>), Without<TreeFall>>,
     breaker: Breaker,
     mut damage: MessageWriter<Damage>,
+    mut shattered: Local<Vec<Entity>>,
 ) {
+    // Два взрыва в одном кадре не разбивают одну мелочь дважды: команды удаления применятся позже.
+    shattered.clear();
     for explosion in explosions.read() {
         let center = explosion.position;
         let r = explosion.radius;
-        for (entity, prop, transform, health, sway) in &objects {
+        for entity in spawned.near(center, r * SWAY_REACH) {
+            let Ok((prop, transform, health, sway)) = objects.get(entity) else {
+                continue;
+            };
             let offset = (transform.translation - center).with_y(0.0);
             let d = offset.length();
             if d >= r * SWAY_REACH {
@@ -1133,6 +1165,10 @@ fn shockwave_props(
                 continue;
             }
             if !prop.kind.is_large() {
+                if shattered.contains(&entity) {
+                    continue;
+                }
+                shattered.push(entity);
                 if let Some(state) = props.get_mut(prop.chunk, prop.index) {
                     state.status = PropStatus::Destroyed;
                 }

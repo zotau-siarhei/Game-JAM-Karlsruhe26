@@ -738,10 +738,11 @@ fn draw_pools(
             }
         }
     }
-    // Плоскости слившихся озёр.
+    // Плоскости слившихся озёр. Заменённую плоскость выше уже убирает `try_despawn`, а команды
+    // применяются после системы, и здесь она ещё видна: поэтому тоже `try_despawn`.
     for (entity, surface) in &surfaces {
         if !surface.crust && !alive.contains(&entity) {
-            commands.entity(entity).despawn();
+            commands.entity(entity).try_despawn();
         }
     }
 }
