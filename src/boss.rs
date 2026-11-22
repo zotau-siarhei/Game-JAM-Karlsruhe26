@@ -51,6 +51,10 @@ const MODEL_CORE: (f32, f32) = (3.4, 3.35);
 const MODEL_HIPS: Vec3 = Vec3::new(1.7, -0.4, 1.7);
 /// Радиус коллайдера, м.
 const RADIUS: f32 = 4.2;
+
+/// Броня босса: ракеты и суббоеприпасы (мощность меньше снаряда мортиры) — 0,6 урона, на босса
+/// с 1500 здоровья около 30 обычных ракет. Мортира, бомбы и термобарическая ракета — полный урон.
+pub const ARMOR: crate::combat::BlastArmor = crate::combat::BlastArmor { light_power: 1.0, share: 0.6 };
 /// Здоровье при нулевой угрозе; растёт на 40 % за единицу угрозы.
 const BASE_HEALTH: f32 = 1500.0;
 
@@ -374,6 +378,7 @@ fn spawn_boss(
             Team::Enemy,
             // Свои босса не ранят: ни его удар приземления, ни выстрелы отряда.
             crate::combat::AllyProof,
+            ARMOR,
             Collider { radius: RADIUS },
             BossGait {
                 phase: 0.0,

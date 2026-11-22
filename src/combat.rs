@@ -242,6 +242,21 @@ fn equip_rover(mut commands: Commands, rovers: Query<Entity, Added<Rover>>) {
     }
 }
 
+/// Броня от лёгких взрывов: взрыв мощностью меньше `light_power` наносит `share` урона.
+/// У босса — чтобы ракеты не снимали его за полтора десятка попаданий.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct BlastArmor {
+    pub light_power: f32,
+    pub share: f32,
+}
+
+impl BlastArmor {
+    /// Доля урона взрыва мощностью `power`.
+    pub fn share(&self, power: f32) -> f32 {
+        if power < self.light_power { self.share } else { 1.0 }
+    }
+}
+
 /// Урон взрыва мощностью `power` и радиусом `radius` на расстоянии `distance` от центра.
 ///
 /// Спадает к краю как `(1 - d/R)²`. Своей команде достаётся [`FRIENDLY_FIRE`] от урона.
@@ -296,17 +311,18 @@ pub fn explosion_damage_to(source: Team, target: Team, power: f32, radius: f32, 
 /// ([`Team::damage_share`]). Взрывы лунохода бьют врагов полным уроном во всей воронке.
 fn explosion_damage(
     mut explosions: MessageReader<Explosion>,
-    targets: Query<(Entity, &GlobalTransform, &Team, &Health)>,
+    targets: Query<(Entity, &GlobalTransform, &Team, &Health, Option<&BlastArmor>)>,
     mut damage: MessageWriter<Damage>,
 ) {
     for explosion in explosions.read() {
-        for (target, transform, team, health) in &targets {
+        for (target, transform, team, health, armor) in &targets {
             if health.is_dead() {
                 continue;
             }
             let distance = transform.translation().distance(explosion.position);
             let amount =
-                explosion_damage_to(explosion.source_team, *team, explosion.power, explosion.radius, distance);
+                explosion_damage_to(explosion.source_team, *team, explosion.power, explosion.radius, distance)
+                    * armor.map_or(1.0, |armor| armor.share(explosion.power));
             if amount > 0.0 {
                 damage.write(Damage {
                     target,

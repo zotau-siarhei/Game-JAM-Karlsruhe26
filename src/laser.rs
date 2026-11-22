@@ -333,7 +333,7 @@ fn apply_laser_shots(
     mut terrain: ResMut<Terrain>,
     visible: Res<VisibleChunks>,
     mut hot: ResMut<HotEdges>,
-    targets: Query<(Entity, &GlobalTransform, &Collider, &Team, &Health)>,
+    targets: Query<(Entity, &GlobalTransform, &Collider, &Team, &Health, Has<crate::enemy::HeavyTank>)>,
     obstacles: Query<(Entity, &Obstacle), With<Health>>,
     fx: Query<(), With<LaserFx>>,
     mut damage: MessageWriter<Damage>,
@@ -349,7 +349,7 @@ fn apply_laser_shots(
         let (a, b) = (Vec2::new(start.x, start.z), Vec2::new(end.x, end.z));
 
         // Урон всем на отрезке, кроме своих.
-        for (entity, transform, collider, team, target_health) in &targets {
+        for (entity, transform, collider, team, target_health, tank) in &targets {
             if !shot.team.hostile_to(*team) || target_health.is_dead() {
                 continue;
             }
@@ -359,9 +359,15 @@ fn apply_laser_shots(
                 continue;
             }
             if flat_distance(Vec2::new(p.x, p.z), a, b) <= collider.radius + (shot.half_width - TRENCH_HALF_WIDTH) {
+                // Лазер лунохода прожигает танк насквозь: одного импульса хватает.
+                let amount = if tank && shot.team == Team::Player {
+                    shot.damage.max(target_health.current)
+                } else {
+                    shot.damage
+                };
                 damage.write(Damage {
                     target: entity,
-                    amount: shot.damage,
+                    amount,
                     source_team: shot.team,
                 });
             }

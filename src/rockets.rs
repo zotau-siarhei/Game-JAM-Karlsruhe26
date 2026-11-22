@@ -35,7 +35,7 @@ const CRUISE_FOLLOW: f32 = 8.0;
 
 /// Взрыв обычной ракеты первого уровня: мощность от мортиры и радиус. Воронка около 8 м в поперечнике,
 /// лёгкий враг в ней гибнет (зона полного урона — `combat::core_blast_damage`).
-pub const ROCKET_POWER: f32 = 0.7;
+pub const ROCKET_POWER: f32 = 0.85;
 pub const ROCKET_RADIUS: f32 = 4.0;
 
 /// Взрыв боеголовки самонаводящейся ракеты первого уровня.
@@ -557,14 +557,22 @@ fn fly_rockets(
             hit = true;
         }
         let team = rocket.team;
-        let struck = targets.iter().any(|(_, t, c, tm, h)| {
-            team.hostile_to(*tm) && !h.is_dead() && !spared_ally(team, *tm, launched.0, t.translation(), c.radius) && {
-                let p = t.translation();
-                let along = to - from;
-                let k = ((p - from).dot(along) / along.length_squared().max(1e-6)).clamp(0.0, 1.0);
-                (from + along * k).distance(p) <= c.radius + 0.3
-            }
-        });
+        // Поражённая цель — ближайшая к началу шага из тех, кого задевает отрезок полёта.
+        let struck = targets
+            .iter()
+            .filter(|(_, t, c, tm, h)| {
+                team.hostile_to(**tm) && !h.is_dead() && !spared_ally(team, **tm, launched.0, t.translation(), c.radius) && {
+                    let p = t.translation();
+                    let along = to - from;
+                    let k = ((p - from).dot(along) / along.length_squared().max(1e-6)).clamp(0.0, 1.0);
+                    (from + along * k).distance(p) <= c.radius + 0.3
+                }
+            })
+            .map(|(_, t, ..)| t.translation())
+            .min_by(|a, b| a.distance_squared(from).total_cmp(&b.distance_squared(from)));
+        // Прямое попадание взрывается в центре цели: урон считается до центра, и взрыв у края
+        // крупного корпуса (танк, босс) давал лишь долю урона.
+        let struck = struck.inspect(|&center| to = center).is_some();
         rocket.travelled += from.distance(to);
         if hit || struck || rocket.travelled > MAX_RANGE {
             commands.entity(entity).despawn();
@@ -727,6 +735,26 @@ mod tests {
     fn heavy_tank_survives_a_rocket_in_the_centre() {
         assert!(rocket_hit(Warhead::ROCKET, 0.0) < crate::enemy::TANK_HEALTH);
         assert!(rocket_hit(Warhead::HOMING, 0.0) < crate::enemy::TANK_HEALTH);
+    }
+
+    #[test]
+    fn прямые_попадания_снимают_танки_за_два_и_три() {
+        use crate::enemy::{ROCKET_TANK_HEALTH, TANK_HEALTH};
+        let hit = rocket_hit(Warhead::ROCKET, 0.0);
+        assert!(hit < ROCKET_TANK_HEALTH && 2.0 * hit >= ROCKET_TANK_HEALTH);
+        assert!(2.0 * hit < TANK_HEALTH && 3.0 * hit >= TANK_HEALTH);
+    }
+
+    #[test]
+    fn босс_выдерживает_около_тридцати_ракет() {
+        let health = crate::boss::boss_health(0.0);
+        for warhead in [Warhead::ROCKET, Warhead::HOMING] {
+            let hit = rocket_hit(warhead, 0.0) * crate::boss::ARMOR.share(warhead.power);
+            let rockets = (health / hit).ceil();
+            assert!((28.0..=33.0).contains(&rockets), "{rockets}");
+        }
+        // Мортира бьёт босса в полную силу.
+        assert_eq!(crate::boss::ARMOR.share(crate::mortar::EXPLOSION_POWER), 1.0);
     }
 
     #[test]
