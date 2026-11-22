@@ -166,9 +166,10 @@ pub fn spawn_camera(mut commands: Commands, focus: Res<Focus>) {
     commands.spawn((
         GameCamera::default(),
         Camera3d::default(),
-        // Без сглаживания MSAA и с простой фильтрацией теней: так плавнее на слабой видеокарте.
+        // Без сглаживания MSAA: так плавнее на слабой видеокарте. Края теней размывает фильтр
+        // Gaussian (9 выборок, как ядро 5×5): с одной выборкой Hardware2x2 они шли «пилой».
         bevy::render::view::Msaa::Off,
-        bevy::light::ShadowFilteringMethod::Hardware2x2,
+        bevy::light::ShadowFilteringMethod::Gaussian,
         Transform::from_translation(focus.0 + camera_offset(0.0)).with_rotation(camera_rotation(0.0)),
     ));
 }
