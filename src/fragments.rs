@@ -302,8 +302,20 @@ pub fn wreck_vehicle(breaker: &mut Breaker, entity: Entity, transform: &Transfor
     }
 }
 
-/// Режет одну загруженную модель за кадр. Материал берётся у меша сцены модели в мире:
-/// glTF хранит свой материал, а сцена рисуется готовым `StandardMaterial`.
+/// Нарезка модели, которая идёт в пуле фоновых задач.
+struct PendingCut {
+    id: &'static str,
+    mesh: AssetId<Mesh>,
+    material: Handle<StandardMaterial>,
+    entry: Transform,
+    started: bevy::platform::time::Instant,
+    task: bevy::tasks::Task<Option<Cut>>,
+}
+
+/// Режет загруженные модели в пуле фоновых задач, по одной за раз: k-means и выдавливание кусков
+/// на телефоне занимали кадр целиком. Материал берётся у меша сцены модели в мире: glTF хранит свой
+/// материал, а сцена рисуется готовым `StandardMaterial`.
+#[allow(clippy::too_many_arguments)]
 fn cut_models(
     mut pieces: ResMut<ModelPieces>,
     bank: Res<ModelBank>,
@@ -313,38 +325,14 @@ fn cut_models(
     mut materials: ResMut<Assets<StandardMaterial>>,
     shown: Query<(&Mesh3d, &MeshMaterial3d<StandardMaterial>)>,
     mut frame: Local<u32>,
+    mut pending: Local<Option<PendingCut>>,
 ) {
-    *frame += 1;
-    if pieces.sets.len() == CUT.len() || *frame % SEARCH_EVERY != 0 {
-        return;
-    }
-    for (id, count) in CUT {
-        if pieces.sets.contains_key(id) {
-            continue;
-        }
-        let Some(gltf) = bank.ready_gltf(id).and_then(|h| gltfs.get(&h)) else {
-            continue;
+    if let Some(cut) = pending.as_mut() {
+        let Some(result) = bevy::tasks::futures::check_ready(&mut cut.task) else {
+            return;
         };
-        let Some(entry) = bank.entry_transform(id) else {
-            continue;
-        };
-        // Режется самая крупная сетка файла: у вагонов первые сетки — колёса, кузов последний.
-        let Some(primitive) = gltf
-            .meshes
-            .iter()
-            .filter_map(|m| gltf_meshes.get(m))
-            .flat_map(|m| m.primitives.iter())
-            .max_by_key(|p| meshes.get(&p.mesh).map_or(0, |mesh| mesh.count_vertices()))
-        else {
-            continue;
-        };
-        let Some(material) = shown.iter().find(|(m, _)| m.0 == primitive.mesh).map(|(_, m)| m.0.clone()) else {
-            // Сцена модели ещё не появилась в мире.
-            continue;
-        };
-        let started = bevy::platform::time::Instant::now();
-        let cut = meshes.get(&primitive.mesh).and_then(|mesh| cut_mesh(mesh, count));
-        let Some(cut) = cut else {
+        let PendingCut { id, mesh, material, entry, started, .. } = pending.take().expect("нарезка идёт");
+        let Some(cut) = result else {
             warn!("Куски: «{id}» не нарезана — данных сетки нет в памяти игры");
             pieces.sets.insert(id, PieceSet {
                 pieces: Vec::new(),
@@ -377,8 +365,8 @@ fn cut_models(
             })
             .collect::<Vec<_>>();
         let ms = started.elapsed().as_secs_f32() * 1000.0;
-        info!("Куски: «{id}» нарезана на {} кусков за {ms:.0} мс", list.len());
-        pieces.by_mesh.insert(primitive.mesh.id(), id);
+        info!("Куски: «{id}» нарезана на {} кусков за {ms:.0} мс (в фоне)", list.len());
+        pieces.by_mesh.insert(mesh, id);
         pieces.sets.insert(id, PieceSet {
             pieces: list,
             material,
@@ -387,7 +375,49 @@ fn cut_models(
             low: cut.low,
             high: cut.high,
         });
-        // Одна модель за кадр.
+        return;
+    }
+    *frame += 1;
+    if pieces.sets.len() == CUT.len() || *frame % SEARCH_EVERY != 0 {
+        return;
+    }
+    for (id, count) in CUT {
+        if pieces.sets.contains_key(id) {
+            continue;
+        }
+        let Some(gltf) = bank.ready_gltf(id).and_then(|h| gltfs.get(&h)) else {
+            continue;
+        };
+        let Some(entry) = bank.entry_transform(id) else {
+            continue;
+        };
+        // Режется самая крупная сетка файла: у вагонов первые сетки — колёса, кузов последний.
+        let Some(primitive) = gltf
+            .meshes
+            .iter()
+            .filter_map(|m| gltf_meshes.get(m))
+            .flat_map(|m| m.primitives.iter())
+            .max_by_key(|p| meshes.get(&p.mesh).map_or(0, |mesh| mesh.count_vertices()))
+        else {
+            continue;
+        };
+        let Some(material) = shown.iter().find(|(m, _)| m.0 == primitive.mesh).map(|(_, m)| m.0.clone()) else {
+            // Сцена модели ещё не появилась в мире.
+            continue;
+        };
+        // Копия сетки уходит в фоновую задачу; без данных в памяти игры резать нечего.
+        let source = meshes.get(&primitive.mesh).map(|mesh| mesh.clone());
+        let task = bevy::tasks::AsyncComputeTaskPool::get()
+            .spawn(async move { source.and_then(|mesh| cut_mesh(&mesh, count)) });
+        *pending = Some(PendingCut {
+            id,
+            mesh: primitive.mesh.id(),
+            material,
+            entry,
+            started: bevy::platform::time::Instant::now(),
+            task,
+        });
+        // Одна модель за раз.
         return;
     }
 }
