@@ -192,7 +192,8 @@ cargo test                                  # тесты
   `adb emu gsm cancel 5551234`). Что меняется посреди игры (оператор, SIM, тема…), перечислено в `configChanges`
   манифеста: новая активность в живом процессе завершает его (`main.rs`).
   Иконка — ресурсы `android/res`; слои пересобирает `scripts/android-icon.py` из `android/icon/source.png` (нужен Pillow).
-  Пакет для Google Play — `scripts/build-aab.sh` (`--install` ставит его на телефон через bundletool):
+  Пакет для Google Play — `scripts/build-aab.sh` (`--install` ставит его на телефон через bundletool; bundletool —
+  `brew install bundletool`, без него скрипт сам скачает jar в `target/android/tools`):
   `target/android/space-guard.aab`, скачивание ~120 МБ. Ключ загрузки — переменные `SPACE_GUARD_UPLOAD_KEYSTORE`,
   `SPACE_GUARD_UPLOAD_ALIAS`, `SPACE_GUARD_UPLOAD_PASSWORD` и, если отличается, `SPACE_GUARD_UPLOAD_KEY_PASSWORD`
   (ключ и пароли в репозиторий не класть), без них — отладочный ключ; подпись ключом загрузки проверяется сразу.

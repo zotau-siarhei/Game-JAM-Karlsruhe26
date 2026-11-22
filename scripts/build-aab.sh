@@ -4,6 +4,8 @@
 #   scripts/build-aab.sh             # собрать и подписать
 #   scripts/build-aab.sh --install   # ещё и поставить на подключённый телефон через bundletool
 #
+# bundletool — из PATH (`brew install bundletool`), иначе скрипт скачает jar в target/android/tools.
+#
 # Подпись ключом загрузки Play — из переменных окружения; сам ключ и пароль в репозиторий не класть:
 #   SPACE_GUARD_UPLOAD_KEYSTORE=/путь/upload.jks   хранилище ключа
 #   SPACE_GUARD_UPLOAD_ALIAS=upload                имя ключа в хранилище
@@ -58,23 +60,33 @@ SPACE_GUARD_SYMBOLS=1 SPACE_GUARD_VERSION_NAME=$version_name SPACE_GUARD_VERSION
 ndk=${ANDROID_NDK_HOME:-$(ls -d "$sdk"/ndk/* 2>/dev/null | sort -V | tail -1)}
 llvm=$(ls -d "$ndk"/toolchains/llvm/prebuilt/*/bin | head -1)
 
-# bundletool от Google: скачивается один раз, сверяется по SHA-256.
+# bundletool от Google. Есть в PATH (`brew install bundletool`) — берётся оттуда и ничего не качается.
+# Нет — jar скачивается один раз в target/android/tools и сверяется по SHA-256.
 bundletool_version=1.18.3
 bundletool_sha=a099cfa1543f55593bc2ed16a70a7c67fe54b1747bb7301f37fdfd6d91028e29
-bundletool=$target/tools/bundletool-all-$bundletool_version.jar
-if [[ ! -f "$bundletool" ]]; then
-    mkdir -p "$(dirname "$bundletool")"
-    curl -fsSL -o "$bundletool.part" \
-        "https://github.com/google/bundletool/releases/download/$bundletool_version/bundletool-all-$bundletool_version.jar"
-    # Хэш сравнивается строкой: у sha256sum в macOS нет ключа --quiet, как у GNU.
-    if command -v sha256sum >/dev/null; then sum=(sha256sum); else sum=(shasum -a 256); fi
-    actual=$("${sum[@]}" "$bundletool.part" | awk '{ print $1 }')
-    if [[ "$actual" != "$bundletool_sha" ]]; then
-        rm -f "$bundletool.part"
-        echo "bundletool: SHA-256 $actual, а ожидался $bundletool_sha" >&2
-        exit 1
+if command -v bundletool >/dev/null; then
+    bundletool=(bundletool)
+    installed=$(bundletool version 2>/dev/null | tail -1)
+    if [[ "$installed" != "$bundletool_version" ]]; then
+        echo "bundletool из PATH версии $installed, скрипт проверен с $bundletool_version" >&2
     fi
-    mv "$bundletool.part" "$bundletool"
+else
+    jar=$target/tools/bundletool-all-$bundletool_version.jar
+    if [[ ! -f "$jar" ]]; then
+        mkdir -p "$(dirname "$jar")"
+        curl -fsSL -o "$jar.part" \
+            "https://github.com/google/bundletool/releases/download/$bundletool_version/bundletool-all-$bundletool_version.jar"
+        # Хэш сравнивается строкой: у sha256sum в macOS нет ключа --quiet, как у GNU.
+        if command -v sha256sum >/dev/null; then sum=(sha256sum); else sum=(shasum -a 256); fi
+        actual=$("${sum[@]}" "$jar.part" | awk '{ print $1 }')
+        if [[ "$actual" != "$bundletool_sha" ]]; then
+            rm -f "$jar.part"
+            echo "bundletool: SHA-256 $actual, а ожидался $bundletool_sha" >&2
+            exit 1
+        fi
+        mv "$jar.part" "$jar"
+    fi
+    bundletool=(java -jar "$jar")
 fi
 
 out=$target/aab
@@ -126,10 +138,10 @@ cat > "$out/BundleConfig.json" <<'JSON'
 JSON
 aab=$target/space-guard.aab
 rm -f "$aab"
-java -jar "$bundletool" build-bundle --modules="$out/base.zip" --config="$out/BundleConfig.json" --output="$aab" \
+"${bundletool[@]}" build-bundle --modules="$out/base.zip" --config="$out/BundleConfig.json" --output="$aab" \
     --metadata-file="com.android.tools.build.debugsymbols/arm64-v8a/libspace_guard.so.sym:$symbols"
 # Вывод целиком, а не через `| grep -q`: при pipefail grep, закрывший канал раньше, дал бы SIGPIPE.
-config=$(java -jar "$bundletool" dump config --bundle="$aab")
+config=$("${bundletool[@]}" dump config --bundle="$aab")
 if [[ "$config" != *PAGE_ALIGNMENT_16K* ]]; then
     echo "в $aab нет выравнивания библиотек по 16 КБ (PAGE_ALIGNMENT_16K)" >&2
     exit 1
@@ -166,8 +178,8 @@ if (( install )); then
     apks=$out/device.apks
     # Несколько устройств — выбор через ANDROID_SERIAL, как у adb.
     device=(${ANDROID_SERIAL:+--device-id=$ANDROID_SERIAL})
-    java -jar "$bundletool" build-apks --bundle="$aab" --output="$apks" --connected-device ${device[@]+"${device[@]}"} \
+    "${bundletool[@]}" build-apks --bundle="$aab" --output="$apks" --connected-device ${device[@]+"${device[@]}"} \
         --adb="$sdk/platform-tools/adb" \
         --ks="$HOME/.android/debug.keystore" --ks-pass=pass:android --ks-key-alias=androiddebugkey --key-pass=pass:android
-    java -jar "$bundletool" install-apks --apks="$apks" ${device[@]+"${device[@]}"} --adb="$sdk/platform-tools/adb"
+    "${bundletool[@]}" install-apks --apks="$apks" ${device[@]+"${device[@]}"} --adb="$sdk/platform-tools/adb"
 fi
