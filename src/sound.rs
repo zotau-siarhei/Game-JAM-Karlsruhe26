@@ -628,11 +628,9 @@ fn resume_world_sounds<S: Component + AudioSinkPlayback>(
             sink.play();
         }
     }
-    {
-        for (entity, mut settings) in &mut held {
-            settings.paused = false;
-            commands.entity(entity).remove::<HeldInBackground>();
-        }
+    for (entity, mut settings) in &mut held {
+        settings.paused = false;
+        commands.entity(entity).remove::<HeldInBackground>();
     }
 }
 

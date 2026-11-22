@@ -126,8 +126,13 @@ fn supported_samples(wanted: u32, supported: impl Fn(u32) -> bool) -> u32 {
 }
 
 /// Q на паузе меняет ступень по кругу.
-fn switch_quality(keys: Res<ButtonInput<KeyCode>>, mut quality: ResMut<Quality>) {
-    if keys.just_pressed(KeyCode::KeyQ) {
+/// Не посреди перехода через затемнение: занавес повторного прогрева сбил бы переход.
+fn switch_quality(
+    keys: Res<ButtonInput<KeyCode>>,
+    transition: Res<crate::run::Transition>,
+    mut quality: ResMut<Quality>,
+) {
+    if keys.just_pressed(KeyCode::KeyQ) && !transition.busy() {
         *quality = quality.next();
     }
 }

@@ -430,12 +430,15 @@ fn restart_on_panic() {
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         default(info);
-        if !device_lost_panic(&info.to_string()) {
-            std::process::abort();
+        // Стандартный обработчик пишет в stderr, а его на Android никто не читает: сообщение — в logcat.
+        let message = info.to_string();
+        if device_lost_panic(&message) && restart_once() {
+            error!("Паника: видеокарта потеряна, игра открывается заново: {message}");
+            return;
         }
-        if restart_once() {
-            error!("Паника: видеокарта потеряна, игра открывается заново");
-        }
+        // Не перезапуск (или второй за минуту) — падение с отчётом, а не игра без рендера.
+        error!("Паника: {message}");
+        std::process::abort();
     }));
 }
 
@@ -839,8 +842,7 @@ fn watch_audio(
     for event in lifecycle.read() {
         match event {
             AppLifecycle::WillSuspend | AppLifecycle::Suspended => {
-                if !*away && *granted {
-                    audio_focus("abandonAudioFocusRequest");
+                if !*away && *granted && audio_focus("abandonAudioFocusRequest").is_some() {
                     info!("Android: аудиофокус отдан");
                 }
                 (*away, *granted) = (true, false);

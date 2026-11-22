@@ -74,6 +74,8 @@ impl Plugin for PrewarmPlugin {
                 Update,
                 (restart_on_quality, cover_recompile, warm, follow_camera)
                     .chain()
+                    // Занавес красится в том же кадре, что и встаёт надпись.
+                    .before(crate::fade::CurtainMove)
                     .in_set(crate::frame::GameSet::Presentation),
             )
             // Под занавесом повторного прогрева меню и пауза ввод не принимают: игрок не видит строк.

@@ -23,10 +23,14 @@ impl Plugin for FadePlugin {
             .add_systems(Startup, spawn_curtain)
             .add_systems(
                 Update,
-                (move_curtain, appear).in_set(crate::frame::GameSet::Presentation),
+                (move_curtain.in_set(CurtainMove), appear).in_set(crate::frame::GameSet::Presentation),
             );
     }
 }
+
+/// Шаг и окраска занавеса за кадр: кто закрывает занавес сразу (`Curtain::shut`), стоит до него.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CurtainMove;
 
 /// Чёрный занавес: непрозрачность сейчас и к какой он идёт.
 #[derive(Resource, Debug)]
