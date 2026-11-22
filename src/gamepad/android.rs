@@ -246,12 +246,16 @@ fn poll(
         if let (Some(entity), Some(device)) = (sent.entity, device)
             && device_present(device) == Some(false)
         {
-            info!("Android: геймпад отключён");
             {
                 let mut state = shared();
+                // Пока шёл вызов JNI, мог прийти ввод с другого геймпада: его не трогаем.
+                if state.device != Some(device) {
+                    return;
+                }
                 release_all(&mut state);
                 state.device = None;
             }
+            info!("Android: геймпад отключён");
             sent.connected = false;
             sent.buttons = [0.0; 16];
             sent.axes = [0.0; 4];

@@ -72,10 +72,12 @@ impl Plugin for PrewarmPlugin {
             )
             .add_systems(
                 Update,
-                (restart_on_quality, warm, follow_camera, cover_recompile)
+                (restart_on_quality, cover_recompile, warm, follow_camera)
                     .chain()
                     .in_set(crate::frame::GameSet::Presentation),
-            );
+            )
+            // Под занавесом повторного прогрева меню и пауза ввод не принимают: игрок не видит строк.
+            .configure_sets(Update, crate::menu::MenuInput.run_if(not(covered)));
         if let Some(render) = app.get_sub_app_mut(RenderApp) {
             render.insert_resource(watch).add_systems(
                 Render,
@@ -372,6 +374,8 @@ pub struct Prewarm {
     started: Option<f32>,
     /// Конвейеров в кэше на начало прогрева.
     pipelines_before: usize,
+    /// Кадров до начала повторного прогрева: сначала на экран выходит занавес с надписью.
+    hold: u8,
 }
 
 impl Prewarm {
@@ -381,12 +385,31 @@ impl Prewarm {
     }
 }
 
-/// Смена качества: другой ключ вида — прогрев заново.
-fn restart_on_quality(quality: Res<Quality>, mut prewarm: ResMut<Prewarm>, watch: Res<PipelineWatch>) {
+/// Повторный прогрев идёт под занавесом (`cover_recompile`): ввод экранов в это время не нужен.
+pub fn covered(prewarm: Res<Prewarm>) -> bool {
+    crate::profile::get().prewarm.wait_pipelines && !prewarm.done
+}
+
+/// Смена качества: другой ключ вида — прогрев заново. Объекты недоделанного прогрева убираются,
+/// иначе новый поставил бы их ещё раз.
+fn restart_on_quality(
+    mut commands: Commands,
+    quality: Res<Quality>,
+    mut prewarm: ResMut<Prewarm>,
+    watch: Res<PipelineWatch>,
+) {
+    // Прогрев ещё не начат: начнётся уже с новым качеством.
     if !quality.is_changed() || quality.is_added() || prewarm.started.is_none() {
         return;
     }
     info!("Прогрев шейдеров заново: качество {:?}", *quality);
+    if let Some((meshes, effects)) = prewarm.roots.take() {
+        commands.entity(meshes).despawn();
+        commands.entity(effects).despawn();
+    }
+    // Кадр ждёт сборки только там, где `wait_pipelines`: туда же и занавес; два кадра — чтобы кадр
+    // с занавесом успел выйти на экран раньше, чем ожидание сборки остановит следующий.
+    prewarm.hold = if crate::profile::get().prewarm.wait_pipelines { 2 } else { 0 };
     prewarm.done = false;
     prewarm.warmed.clear();
     prewarm.quiet = 0;
@@ -414,7 +437,7 @@ fn cover_recompile(
     let covered = !notice.is_empty();
     if !prewarm.done && !covered {
         // Сразу, а не плавно: кадры прогрева долгие, и меню успело бы замереть на виду.
-        curtain.close(0.0);
+        curtain.shut();
         commands.spawn((
             RecompileNotice,
             Node {
@@ -456,6 +479,10 @@ fn warm(
     mut waited: Local<u32>,
 ) {
     if prewarm.done {
+        return;
+    }
+    if prewarm.hold > 0 {
+        prewarm.hold -= 1;
         return;
     }
     if *waited < start_frames() {

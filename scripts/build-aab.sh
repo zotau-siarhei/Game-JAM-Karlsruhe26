@@ -38,7 +38,16 @@ elif [[ $(git rev-parse --is-shallow-repository) == true ]]; then
 else
     version_code=$(git rev-list --count HEAD)
 fi
-sdk=${ANDROID_HOME:-$HOME/Android/Sdk}
+# SDK: ANDROID_HOME, иначе место Android Studio по умолчанию (macOS, затем Linux).
+sdk=${ANDROID_HOME:-}
+if [[ -z "$sdk" ]]; then
+    sdk=$HOME/Library/Android/sdk
+    [[ -d "$sdk" ]] || sdk=$HOME/Android/Sdk
+fi
+if [[ ! -d "$sdk/build-tools" ]]; then
+    echo "Android SDK не найден в $sdk: задайте ANDROID_HOME" >&2
+    exit 1
+fi
 tools=$(ls -d "$sdk"/build-tools/* 2>/dev/null | sort -V | tail -1)
 platform=$sdk/platforms/android-$target_sdk/android.jar
 target=$root/target/android
@@ -127,6 +136,10 @@ if [[ "$config" != *PAGE_ALIGNMENT_16K* ]]; then
 fi
 
 if [[ -n "${SPACE_GUARD_UPLOAD_KEYSTORE:-}" ]]; then
+    if [[ ! -f "$SPACE_GUARD_UPLOAD_KEYSTORE" ]]; then
+        echo "нет хранилища ключа загрузки: $SPACE_GUARD_UPLOAD_KEYSTORE" >&2
+        exit 1
+    fi
     : "${SPACE_GUARD_UPLOAD_ALIAS:?нужно имя ключа: SPACE_GUARD_UPLOAD_ALIAS}"
     : "${SPACE_GUARD_UPLOAD_PASSWORD:?нужен пароль: SPACE_GUARD_UPLOAD_PASSWORD}"
     export SPACE_GUARD_UPLOAD_KEY_PASSWORD=${SPACE_GUARD_UPLOAD_KEY_PASSWORD:-$SPACE_GUARD_UPLOAD_PASSWORD}

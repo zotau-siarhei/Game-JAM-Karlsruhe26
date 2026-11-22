@@ -55,6 +55,12 @@ impl Curtain {
         self.speed = 1.0 / seconds.max(0.01);
     }
 
+    /// Закрыть сразу, в этом же кадре.
+    pub fn shut(&mut self) {
+        self.alpha = 1.0;
+        self.target = 1.0;
+    }
+
     /// Открыть за `seconds` (полный ход от закрытого).
     pub fn open(&mut self, seconds: f32) {
         self.target = 0.0;

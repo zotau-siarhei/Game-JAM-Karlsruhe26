@@ -619,12 +619,16 @@ fn resume_world_sounds<S: Component + AudioSinkPlayback>(
     mut held: Query<(Entity, &mut PlaybackSettings), With<HeldInBackground>>,
     background: Res<InBackground>,
 ) {
+    // Игра в фоне или звонит телефон: звук мира отпустит возврат (`pause_audio_in_background`).
+    if background.0 {
+        return;
+    }
     for (instance, sink) in &instances {
         if instance.world {
             sink.play();
         }
     }
-    if !background.0 {
+    {
         for (entity, mut settings) in &mut held {
             settings.paused = false;
             commands.entity(entity).remove::<HeldInBackground>();

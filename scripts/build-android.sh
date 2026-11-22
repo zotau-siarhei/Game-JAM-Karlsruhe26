@@ -32,7 +32,16 @@ for arg in "$@"; do
     esac
 done
 
-sdk=${ANDROID_HOME:-$HOME/Android/Sdk}
+# SDK: ANDROID_HOME, иначе место Android Studio по умолчанию (macOS, затем Linux).
+sdk=${ANDROID_HOME:-}
+if [[ -z "$sdk" ]]; then
+    sdk=$HOME/Library/Android/sdk
+    [[ -d "$sdk" ]] || sdk=$HOME/Android/Sdk
+fi
+if [[ ! -d "$sdk/build-tools" ]]; then
+    echo "Android SDK не найден в $sdk: задайте ANDROID_HOME" >&2
+    exit 1
+fi
 ndk=${ANDROID_NDK_HOME:-$(ls -d "$sdk"/ndk/* 2>/dev/null | sort -V | tail -1)}
 tools=$(ls -d "$sdk"/build-tools/* 2>/dev/null | sort -V | tail -1)
 platform=$sdk/platforms/android-$target_sdk/android.jar
@@ -79,8 +88,9 @@ for abi in "${abis[@]}"; do
     # библиотека не загрузилась бы (нет __gxx_personality_v0).
     export "CXXFLAGS_$under=-fno-exceptions -fno-rtti"
     export "CARGO_TARGET_${upper}_LINKER=$clang"
-    # Страницы по 16 КБ: без этого библиотека не загрузится на новых устройствах.
-    export "CARGO_TARGET_${upper}_RUSTFLAGS=-C link-arg=-Wl,-z,max-page-size=16384"
+    # Страницы по 16 КБ: без этого библиотека не загрузится на новых устройствах. Build ID — по нему
+    # система пишет библиотеку в отчёт о падении, а Play Console находит к нему таблицу символов из AAB.
+    export "CARGO_TARGET_${upper}_RUSTFLAGS=-C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wl,--build-id=sha1"
 done
 # SPACE_GUARD_SYMBOLS=1 — библиотека с именами функций для отчёта simpleperf (`--symdir`), одна ABI:
 # перекомпилируется только крейт игры, зависимости остаются прежними.

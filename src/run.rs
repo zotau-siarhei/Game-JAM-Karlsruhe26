@@ -84,7 +84,8 @@ impl Plugin for RunPlugin {
                     pause_on_escape_or_blur.run_if(in_state(GameState::Playing)),
                     (pause_input, highlight_pause_choice)
                         .chain()
-                        .run_if(in_state(GameState::Paused)),
+                        .run_if(in_state(GameState::Paused))
+                        .run_if(not(crate::prewarm::covered)),
                     (game_over_input, draw_game_over)
                         .chain()
                         .run_if(in_state(GameState::GameOver)),

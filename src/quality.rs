@@ -95,7 +95,7 @@ impl Plugin for QualityPlugin {
             .add_systems(
                 Update,
                 (
-                    switch_quality.run_if(in_state(GameState::Paused)),
+                    switch_quality.run_if(in_state(GameState::Paused)).run_if(not(crate::prewarm::covered)),
                     (apply_quality, remember_quality).run_if(resource_changed::<Quality>),
                     show_label,
                 )

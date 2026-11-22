@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- Окно и в альбомной ориентации идёт под вырез камеры на всех версиях: игра сама отодвигает
-         интерфейс по вырезу дисплея (src/android.rs, cutout_insets). Без shortEdges Android 10–14
+         интерфейс по вырезу дисплея (src/android.rs, safe_insets). Без shortEdges Android 10–14
          ставит окно рядом с вырезом, и отступ получался двойным. -->
     <style name="SpaceGuard" parent="@android:style/Theme.Black.NoTitleBar.Fullscreen">
         <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
