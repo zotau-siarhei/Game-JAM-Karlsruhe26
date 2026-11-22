@@ -28,7 +28,7 @@ impl Plugin for FadePlugin {
     }
 }
 
-/// Шаг и окраска занавеса за кадр: кто закрывает занавес сразу (`Curtain::shut`), стоит до него.
+/// Шаг и окраска занавеса за кадр: кто ставит занавес сразу (`Curtain::dim`), стоит до него.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CurtainMove;
 
@@ -59,10 +59,10 @@ impl Curtain {
         self.speed = 1.0 / seconds.max(0.01);
     }
 
-    /// Закрыть сразу, в этом же кадре.
-    pub fn shut(&mut self) {
-        self.alpha = 1.0;
-        self.target = 1.0;
+    /// Притемнить сразу, в этом же кадре, до непрозрачности `alpha`: экран за занавесом виден.
+    pub fn dim(&mut self, alpha: f32) {
+        self.alpha = alpha;
+        self.target = alpha;
     }
 
     /// Открыть за `seconds` (полный ход от закрытого).

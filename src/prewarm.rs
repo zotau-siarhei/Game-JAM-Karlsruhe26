@@ -378,6 +378,11 @@ pub struct Prewarm {
     pipelines_before: usize,
     /// Кадров до начала повторного прогрева: сначала на экран выходит занавес с надписью.
     hold: u8,
+    /// Ступень качества сейчас и ступени, уже прогретые за этот запуск: их конвейеры в кэше,
+    /// и повторный прогрев проходит без занавеса (`quiet_restart`).
+    quality: Option<Quality>,
+    warmed_qualities: Vec<Quality>,
+    quiet_restart: bool,
 }
 
 impl Prewarm {
@@ -400,18 +405,21 @@ fn restart_on_quality(
     mut prewarm: ResMut<Prewarm>,
     watch: Res<PipelineWatch>,
 ) {
+    prewarm.quality = Some(*quality);
     // Прогрев ещё не начат: начнётся уже с новым качеством.
     if !quality.is_changed() || quality.is_added() || prewarm.started.is_none() {
         return;
     }
     info!("Прогрев шейдеров заново: качество {:?}", *quality);
+    // Ступень уже была прогрета: собирать нечего, занавес только мелькнул бы.
+    prewarm.quiet_restart = prewarm.warmed_qualities.contains(&*quality);
     if let Some((meshes, effects)) = prewarm.roots.take() {
         commands.entity(meshes).despawn();
         commands.entity(effects).despawn();
     }
     // Кадр ждёт сборки только там, где `wait_pipelines`: туда же и занавес; два кадра — чтобы кадр
     // с занавесом успел выйти на экран раньше, чем ожидание сборки остановит следующий.
-    prewarm.hold = if crate::profile::get().prewarm.wait_pipelines { 2 } else { 0 };
+    prewarm.hold = if crate::profile::get().prewarm.wait_pipelines && !prewarm.quiet_restart { 2 } else { 0 };
     prewarm.done = false;
     prewarm.warmed.clear();
     prewarm.quiet = 0;
@@ -419,13 +427,17 @@ fn restart_on_quality(
     watch.lock().warm = false;
 }
 
+/// Непрозрачность занавеса на время повторного прогрева.
+const RECOMPILE_DIM: f32 = 0.7;
+
 /// Надпись поверх занавеса на время повторного прогрева.
 #[derive(Component)]
 struct RecompileNotice;
 
-/// Где кадр ждёт сборки конвейеров (`prewarm.wait_pipelines`, Android), повторный прогрев после смены
-/// качества идёт под занавесом с надписью: иначе меню или пауза замирали бы на время сборки, и игрок
-/// не понял бы почему. Первый прогрев закрыт экраном загрузки.
+/// Где кадр ждёт сборки конвейеров (`prewarm.wait_pipelines`, Android и iOS), повторный прогрев после
+/// смены качества идёт под полупрозрачным занавесом с надписью: иначе меню или пауза замирали бы на время
+/// сборки, и игрок не понял бы почему. Меню за занавесом видно. Ступень, уже прогретая за этот запуск,
+/// занавеса не получает: её конвейеры в кэше. Первый прогрев закрыт экраном загрузки.
 fn cover_recompile(
     mut commands: Commands,
     prewarm: Res<Prewarm>,
@@ -437,9 +449,9 @@ fn cover_recompile(
         return;
     }
     let covered = !notice.is_empty();
-    if !prewarm.done && !covered {
+    if !prewarm.done && !covered && !prewarm.quiet_restart {
         // Сразу, а не плавно: кадры прогрева долгие, и меню успело бы замереть на виду.
-        curtain.shut();
+        curtain.dim(RECOMPILE_DIM);
         commands.spawn((
             RecompileNotice,
             Node {
@@ -580,6 +592,12 @@ fn warm(
     drop(state);
     watch.lock().warm = true;
     prewarm.done = true;
+    prewarm.quiet_restart = false;
+    if let Some(quality) = prewarm.quality
+        && !prewarm.warmed_qualities.contains(&quality)
+    {
+        prewarm.warmed_qualities.push(quality);
+    }
     if let Some((meshes, effects)) = prewarm.roots.take() {
         commands.entity(meshes).despawn();
         commands.entity(effects).despawn();
