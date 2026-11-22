@@ -85,24 +85,32 @@ pub struct SafeAnchor {
 fn place_safe_anchors(ui_scale: Res<UiScale>, mut nodes: Query<(&SafeAnchor, &mut Node)>) {
     let safe = safe_area_ui(&ui_scale);
     for (anchor, mut node) in &mut nodes {
-        let node = &mut *node;
-        for (side, inset, field) in [
-            (anchor.left, safe.x, &mut node.left),
-            (anchor.top, safe.y, &mut node.top),
-            (anchor.right, safe.z, &mut node.right),
-            (anchor.bottom, safe.w, &mut node.bottom),
-        ] {
-            if let Some(margin) = side {
-                set_px(field, margin + inset);
-            }
-        }
+        let px = |side: Option<f32>, inset: f32| side.map(|margin| Val::Px(margin + inset));
+        set_edges(
+            &mut node,
+            [
+                px(anchor.left, safe.x),
+                px(anchor.top, safe.y),
+                px(anchor.right, safe.z),
+                px(anchor.bottom, safe.w),
+            ],
+        );
     }
 }
 
-/// Меняет поле узла, только если значение другое: иначе узел каждый кадр считался бы изменённым.
-pub fn set_px(field: &mut Val, px: f32) {
-    if *field != Val::Px(px) {
-        *field = Val::Px(px);
+/// Края узла — слева, сверху, справа, снизу; `None` — край не трогать. Узел берётся на запись,
+/// только если значение другое: иначе он каждый кадр считался бы изменённым и вёрстка
+/// пересчитывалась бы заново.
+pub fn set_edges(node: &mut Mut<Node>, edges: [Option<Val>; 4]) {
+    let now = [node.left, node.top, node.right, node.bottom];
+    if edges.iter().zip(now).all(|(want, now)| want.is_none_or(|want| want == now)) {
+        return;
+    }
+    let node = &mut **node;
+    for (want, field) in edges.into_iter().zip([&mut node.left, &mut node.top, &mut node.right, &mut node.bottom]) {
+        if let Some(want) = want {
+            *field = want;
+        }
     }
 }
 
@@ -222,28 +230,28 @@ fn hide_run_ui_in_menu(state: Res<State<GameState>>, mut parts: Query<&mut Visib
 fn place_hud(
     device: Res<crate::gamepad::InputDevice>,
     ui_scale: Res<UiScale>,
+    settings: Res<crate::settings::Settings>,
     mut health: Query<&mut Node, (With<HealthBarRoot>, Without<TimeRow>, Without<WeaponText>)>,
     mut time: Query<&mut Node, (With<TimeRow>, Without<HealthBarRoot>, Without<WeaponText>)>,
     mut label: Query<&mut Node, (With<WeaponText>, Without<HealthBarRoot>, Without<TimeRow>)>,
 ) {
     let safe = safe_area_ui(&ui_scale);
+    let px = |value: f32| Some(Val::Px(value));
     for mut node in &mut health {
-        set_px(&mut node.left, MARGIN + safe.x);
-        set_px(&mut node.top, MARGIN + safe.y);
+        set_edges(&mut node, [px(MARGIN + safe.x), px(MARGIN + safe.y), None, None]);
     }
     for mut node in &mut time {
-        set_px(&mut node.top, MARGIN + safe.y);
+        set_edges(&mut node, [None, px(MARGIN + safe.y), None, None]);
     }
     let touch = *device == crate::gamepad::InputDevice::Touch;
     for mut node in &mut label {
-        if touch {
-            let pause = crate::touch::dp_to_ui(crate::touch::layout::PAUSE_SIZE + crate::touch::layout::MARGIN, &ui_scale);
-            set_px(&mut node.top, MARGIN + safe.y + crate::minimap::DIAMETER + 8.0);
-            set_px(&mut node.right, MARGIN + safe.z + pause);
+        let (top, right) = if touch {
+            let pause = crate::touch::pause_footprint_ui(&settings, &ui_scale);
+            (MARGIN + safe.y + crate::minimap::DIAMETER + 8.0, MARGIN + safe.z + pause)
         } else {
-            set_px(&mut node.top, MARGIN + safe.y);
-            set_px(&mut node.right, MARGIN + safe.z);
-        }
+            (MARGIN + safe.y, MARGIN + safe.z)
+        };
+        set_edges(&mut node, [None, px(top), px(right), None]);
     }
 }
 

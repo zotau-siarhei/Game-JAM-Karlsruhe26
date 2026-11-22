@@ -195,7 +195,7 @@ PLIST
         done
         identities=$(security find-identity -v -p codesigning)
         while read -r _ hash _; do
-            if [[ " $allowed " == *" $hash "* ]]; then
+            if [[ -n "$hash" && " $allowed " == *" $hash "* ]]; then
                 identity=$hash
                 break
             fi

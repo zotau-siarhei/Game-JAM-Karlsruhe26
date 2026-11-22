@@ -34,6 +34,10 @@ pub(crate) struct AudioOutput {
     /// When the device was last checked.
     #[cfg(not(target_arch = "wasm32"))]
     checked: std::time::Instant,
+    /// The stream was closed for the background: reopen it on the first frame back, without
+    /// waiting for the next device check.
+    #[cfg(not(target_arch = "wasm32"))]
+    reopen: bool,
 }
 
 impl Default for AudioOutput {
@@ -63,6 +67,7 @@ impl Default for AudioOutput {
             device,
             lost,
             checked: std::time::Instant::now(),
+            reopen: false,
         }
     }
 }
@@ -132,11 +137,13 @@ pub(crate) fn follow_output_device(
     if suspended.0 {
         if audio_output.stream.take().is_some() {
             release_sinks(&mut commands, &sinks);
+            audio_output.reopen = true;
             info!("Audio output closed while the app is in the background.");
         }
         return;
     }
-    if audio_output.checked.elapsed() < DEVICE_CHECK && audio_output.stream.is_some() {
+    // A failed reopen waits for the next check too: no device probing every frame.
+    if !core::mem::take(&mut audio_output.reopen) && audio_output.checked.elapsed() < DEVICE_CHECK {
         return;
     }
     audio_output.checked = std::time::Instant::now();
@@ -166,7 +173,9 @@ pub(crate) fn follow_output_device(
 }
 
 /// Sinks of a closed stream: looping sounds lose their sink and are queued again for the next
-/// stream, the others stop and are cleaned up as finished.
+/// stream; the others stop. A stopped sink of a closed stream never reports `empty()` (rodio counts
+/// a sound as finished only when the mixer pulls its end), so despawn and remove modes are applied
+/// here instead of by `cleanup_finished_audio`.
 #[cfg(not(target_arch = "wasm32"))]
 fn release_sinks(
     commands: &mut Commands,
@@ -181,15 +190,30 @@ fn release_sinks(
         if sink.is_none() && spatial.is_none() {
             continue;
         }
-        if matches!(settings.mode, PlaybackMode::Loop) {
-            commands.entity(entity).remove::<(AudioSink, SpatialAudioSink)>();
-        } else {
-            if let Some(sink) = sink {
-                sink.stop();
+        match settings.mode {
+            PlaybackMode::Loop => {
+                commands.entity(entity).remove::<(AudioSink, SpatialAudioSink)>();
+                continue;
             }
-            if let Some(spatial) = spatial {
-                spatial.stop();
+            PlaybackMode::Despawn => {
+                commands.entity(entity).try_despawn();
+                continue;
             }
+            PlaybackMode::Remove => {
+                commands.entity(entity).try_remove::<(
+                    AudioSink,
+                    SpatialAudioSink,
+                    PlaybackSettings,
+                    PlaybackRemoveMarker,
+                )>();
+            }
+            PlaybackMode::Once => {}
+        }
+        if let Some(sink) = sink {
+            sink.stop();
+        }
+        if let Some(spatial) = spatial {
+            spatial.stop();
         }
     }
 }

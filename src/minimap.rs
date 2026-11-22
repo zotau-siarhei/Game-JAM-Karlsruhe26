@@ -152,27 +152,21 @@ struct MinimapRoot;
 fn place_for_touch(
     device: Res<crate::gamepad::InputDevice>,
     ui_scale: Res<UiScale>,
+    settings: Res<crate::settings::Settings>,
     mut root: Query<&mut Node, With<MinimapRoot>>,
 ) {
-    use crate::hud::set_px;
     // Вырез камеры и углы экрана (`hud::place_hud`): пересчёт каждый кадр, телефон поворачивают.
     let safe = crate::hud::safe_area_ui(&ui_scale);
     let touch = *device == crate::gamepad::InputDevice::Touch;
     for mut node in &mut root {
-        if touch {
-            let pause = crate::touch::dp_to_ui(crate::touch::layout::PAUSE_SIZE + crate::touch::layout::MARGIN, &ui_scale);
-            set_px(&mut node.top, MARGIN + safe.y);
-            if node.bottom != Val::Auto {
-                node.bottom = Val::Auto;
-            }
-            set_px(&mut node.right, MARGIN + safe.z + pause);
+        // Края: сверху, справа, снизу.
+        let (top, right, bottom) = if touch {
+            let pause = crate::touch::pause_footprint_ui(&settings, &ui_scale);
+            (Val::Px(MARGIN + safe.y), MARGIN + safe.z + pause, Val::Auto)
         } else {
-            if node.top != Val::Auto {
-                node.top = Val::Auto;
-            }
-            set_px(&mut node.bottom, MARGIN + safe.w);
-            set_px(&mut node.right, MARGIN + safe.z);
-        }
+            (Val::Auto, MARGIN + safe.z, Val::Px(MARGIN + safe.w))
+        };
+        crate::hud::set_edges(&mut node, [None, Some(top), Some(Val::Px(right)), Some(bottom)]);
     }
 }
 

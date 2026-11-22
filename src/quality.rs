@@ -199,7 +199,9 @@ fn apply_quality(
         commands.entity(entity).insert(
             CascadeShadowConfigBuilder {
                 num_cascades: cascades,
-                first_cascade_far_bound: 30.0,
+                // Первый каскад — 30 м, но не дальше середины теней: при `shadows 2,20` границы
+                // каскадов иначе шли бы задом наперёд.
+                first_cascade_far_bound: 30f32.min(far * 0.5),
                 maximum_distance: far,
                 ..default()
             }

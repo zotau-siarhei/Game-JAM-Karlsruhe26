@@ -438,6 +438,12 @@ pub fn dp_to_ui(dp: f32, ui_scale: &UiScale) -> f32 {
     dp / crate::platform::canvas_scale() / ui_scale.0.max(f32::EPSILON)
 }
 
+/// Место кнопки паузы у правого края (с отступом до соседа), пиксели интерфейса: кнопка растёт
+/// с размером из настроек, мини-карта и название оружия при касаниях стоят левее неё.
+pub fn pause_footprint_ui(settings: &Settings, ui_scale: &UiScale) -> f32 {
+    dp_to_ui(PAUSE_SIZE * settings.touch_size.factor() + MARGIN, ui_scale)
+}
+
 /// Строка под точкой или ближайшая к ней в пределах [`ROW_SLOP`] dp: строки меню мельче пальца.
 /// `point` — касание в логических точках окна, `scale` — масштаб окна (физических пикселей в точке).
 pub fn nearest_row<'a, T: Copy>(
@@ -480,6 +486,7 @@ fn release_on_blur(
     mut focus: MessageReader<bevy::window::WindowFocused>,
     mut lifecycle: MessageReader<bevy::window::AppLifecycle>,
     mut controls: ResMut<TouchControls>,
+    mut touches: ResMut<Touches>,
     mut keys: ResMut<ButtonInput<KeyCode>>,
     mut mouse: ResMut<ButtonInput<MouseButton>>,
 ) {
@@ -490,6 +497,9 @@ fn release_on_blur(
     if !blurred && !suspended {
         return;
     }
+    // Пальцы забываются и в `Touches`: отпускания, которое система не прислала, уже не будет, а палец
+    // жеста «Домой» из этого же кадра не должен нажать кнопку в `read_touches` (он идёт следом).
+    touches.reset_all();
     for (_, action) in std::mem::take(&mut controls.held) {
         release(action, &mut keys, &mut mouse);
     }

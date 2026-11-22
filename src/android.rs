@@ -178,7 +178,8 @@ fn ndk() -> &'static Ndk {
 struct Load {
     /// По запасу до троттлинга (`watch_thermal`); `None` — ещё не спрашивали или запаса нет.
     headroom: Option<crate::profile::Heat>,
-    /// По статусу нагрева — только где запаса нет (Android 11): гистерезис у статуса свой, в HAL.
+    /// По статусу нагрева — только где запаса нет (Android 10 или HAL без прогноза, запас всегда NaN):
+    /// гистерезис у статуса свой, в HAL.
     status: Option<crate::profile::Heat>,
     /// Game Mode «экономия батареи» (`watch_game_mode`).
     battery: bool,
@@ -212,15 +213,17 @@ fn watch_thermal(time: Res<Time<Real>>, mut next: Local<f32>, mut load: ResMut<L
         return;
     }
     let manager = ndk.thermal_manager as *mut c_void;
-    let (headroom, status) = if let Some(get_headroom) = ndk.thermal_headroom {
-        // SAFETY: менеджер получен у системы и не освобождается; сигнатура — из `android/thermal.h`.
-        let raw = unsafe { get_headroom(manager, 0) };
-        if !raw.is_finite() {
-            return;
-        }
+    // SAFETY: менеджер получен у системы и не освобождается; сигнатура — из `android/thermal.h`.
+    let raw = ndk.thermal_headroom.map(|get_headroom| unsafe { get_headroom(manager, 0) });
+    let (headroom, status) = if let Some(raw) = raw.filter(|raw| raw.is_finite()) {
         let was = load.headroom.unwrap_or(Heat::Cool);
         (Some(crate::profile::heat_from_headroom(raw, was)), None)
+    } else if load.headroom.is_some() {
+        // Запас уже приходил числом: случайный NaN держит прежний уровень, а не сбрасывает его.
+        return;
     } else if let Some(get_status) = ndk.thermal_status {
+        // Запаса нет совсем: функция есть с Android 11, но без прогноза в HAL устройства
+        // всегда отдаёт NaN. Тогда — статус нагрева.
         // SAFETY: то же.
         let raw = unsafe { get_status(manager) };
         let heat = match raw {
@@ -347,14 +350,18 @@ fn apply_load(load: Res<Load>) {
 fn request_frame_rate(
     time: Res<Time<Real>>,
     mut lifecycle: MessageReader<bevy::window::AppLifecycle>,
+    bench: Option<Res<crate::perf::Bench>>,
     mut next: Local<f32>,
     mut applied: Local<Option<(usize, Option<f32>)>>,
 ) {
     /// `ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT`.
     const COMPATIBILITY_DEFAULT: i8 = 0;
     if lifecycle.read().any(|event| matches!(event, bevy::window::AppLifecycle::WillSuspend | bevy::window::AppLifecycle::Suspended)) {
+        // Окно в этом кадре ещё старое (android-activity отпускает его после `TermWindow`):
+        // частоту ему не просить, иначе новое окно по тому же адресу сочлось бы уже настроенным.
         *applied = None;
         *next = 0.0;
+        return;
     }
     let now = time.elapsed_secs();
     if now < *next {
@@ -370,7 +377,8 @@ fn request_frame_rate(
         return;
     };
     let pointer = window.ptr().as_ptr();
-    let wanted = crate::profile::current_frame_limit();
+    // `--bench` меряет без предела кадров — и без просьбы к экрану.
+    let wanted = if bench.is_some_and(|bench| bench.on) { None } else { crate::profile::current_frame_limit() };
     if *applied == Some((pointer as usize, wanted)) {
         return;
     }

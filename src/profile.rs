@@ -227,13 +227,19 @@ impl PlatformProfile {
         {
             return Err(format!("models.texture_max {max}: нужно от 64 до 16384"));
         }
-        if self.threads.compute == Some(0) {
-            return Err("threads.compute 0: нужен хотя бы один поток".into());
+        /// Больше потоков пулу не нужно ни на одной машине: опечатка не должна плодить тысячи.
+        const MAX_THREADS: usize = 256;
+        if let Some(compute) = self.threads.compute
+            && !(1..=MAX_THREADS).contains(&compute)
+        {
+            return Err(format!("threads.compute {compute}: нужно от 1 до {MAX_THREADS}"));
         }
         if let Some([min, max]) = self.threads.async_compute
-            && (min == 0 || min > max)
+            && (min == 0 || min > max || max > MAX_THREADS)
         {
-            return Err(format!("threads.async_compute [{min}, {max}]: нужно 1 ≤ наименьшее ≤ наибольшее"));
+            return Err(format!(
+                "threads.async_compute [{min}, {max}]: нужно 1 ≤ наименьшее ≤ наибольшее ≤ {MAX_THREADS}"
+            ));
         }
         Ok(())
     }
@@ -699,10 +705,12 @@ const ALIASES: &[Alias] = &[
         let density: f32 = text
             .parse()
             .map_err(|_| format!("density: не число «{text}»"))?;
-        value["render"]["density"] = if density > 0.0 {
+        value["render"]["density"] = if density == 0.0 {
+            Value::Null
+        } else if density.is_finite() && density > 0.0 {
             density.into()
         } else {
-            Value::Null
+            return Err(format!("density {text}: нужно 0 (экран как есть) или больше"));
         };
         Ok(())
     }),
@@ -1154,6 +1162,11 @@ mod tests {
             ("render.density", "-1"),
             ("render.msaa_high", "3"),
             ("models.detail", "0"),
+            ("density", "-1"),
+            ("density", "NaN"),
+            ("density", "inf"),
+            ("threads.compute", "10000"),
+            ("compute", "10000"),
         ];
         let base = build("android", &[]);
         for (key, value) in bad {
