@@ -139,6 +139,9 @@ pub struct Pool {
     max_level: f32,
     age: f32,
     refill: f32,
+    /// Уровень последней заливки; `None` — заливать заново (новое озеро, слияние, рельеф изменился).
+    /// Пока уровень стоит и рельеф тот же, заливка дала бы те же ячейки.
+    flooded_level: Option<f32>,
     cells: HashSet<IVec2>,
     /// Наименьшая и наибольшая ячейки озера: для быстрых проверок «далеко от лавы».
     bounds: (IVec2, IVec2),
@@ -162,6 +165,7 @@ impl Pool {
             max_level: surface - POOL_CEILING_BELOW,
             age: 0.0,
             refill: 0.0,
+            flooded_level: None,
             cells: HashSet::from([origin]),
             bounds: (origin, origin),
             mesh: None,
@@ -259,6 +263,11 @@ impl LavaFires {
 
 impl LavaPools {
     /// Уровень лавы в точке плана, если она в озере.
+    /// Сколько озёр и сколько в них ячеек: изменилось — изменилась и площадь лавы.
+    pub fn extent(&self) -> (usize, usize) {
+        (self.pools.len(), self.pools.iter().map(|p| p.cells.len()).sum())
+    }
+
     pub fn lava_at(&self, x: f32, z: f32) -> Option<f32> {
         let cell = IVec2::new(x.round() as i32, z.round() as i32);
         self.pools.iter().find(|p| p.cells.contains(&cell)).map(|p| p.level)
@@ -586,9 +595,33 @@ fn blast_in_lava(
 }
 
 /// Уровень озёр растёт к целевому, заливка пересчитывается, дотянувшиеся друг до друга озёра сливаются.
-fn grow_pools(time: Res<Time>, terrain: Res<Terrain>, mut pools: ResMut<LavaPools>, mut track: ResMut<TrackDamage>) {
+/// Насколько должен сдвинуться уровень озера, чтобы заливку стоило повторить, м.
+const FLOOD_LEVEL_STEP: f32 = 0.01;
+
+fn grow_pools(
+    time: Res<Time>,
+    terrain: Res<Terrain>,
+    mut pools: ResMut<LavaPools>,
+    mut track: ResMut<TrackDamage>,
+    mut changed: MessageReader<crate::subsidence::TerrainChanged>,
+) {
     let dt = time.delta_secs();
+    let dug: Vec<(Vec2, f32)> = changed
+        .read()
+        .map(|change| (Vec2::new(change.center.x, change.center.z), change.radius))
+        .collect();
     for pool in &mut pools.pools {
+        let (low, high) = pool.bounds;
+        let near_dug = dug.iter().any(|&(at, radius)| {
+            let reach = radius + POOL_REACH as f32;
+            at.x >= low.x as f32 - reach
+                && at.x <= high.x as f32 + reach
+                && at.y >= low.y as f32 - reach
+                && at.y <= high.y as f32 + reach
+        });
+        if near_dug {
+            pool.flooded_level = None;
+        }
         pool.age += dt;
         let t = (pool.age / FILL_TIME).clamp(0.0, 1.0);
         let smooth = t * t * (3.0 - 2.0 * t);
@@ -600,6 +633,10 @@ fn grow_pools(time: Res<Time>, terrain: Res<Terrain>, mut pools: ResMut<LavaPool
             continue;
         }
         pool.refill = REFILL;
+        if pool.flooded_level.is_some_and(|level| (level - pool.level).abs() < FLOOD_LEVEL_STEP) {
+            continue;
+        }
+        pool.flooded_level = Some(pool.level);
         let cells = flood_all(&pool.origins, pool.level, POOL_REACH, |x, z| terrain.vertex_height(x, z));
         if cells != pool.cells {
             pool.set_cells(cells);
@@ -618,6 +655,7 @@ fn grow_pools(time: Res<Time>, terrain: Res<Terrain>, mut pools: ResMut<LavaPool
                 let mut cells = std::mem::take(&mut pool.cells);
                 cells.extend(other.cells);
                 pool.set_cells(cells);
+                pool.flooded_level = None;
                 pool.level = pool.level.max(other.level);
                 pool.target_level = pool.target_level.max(other.target_level);
                 pool.max_level = pool.max_level.max(other.max_level);

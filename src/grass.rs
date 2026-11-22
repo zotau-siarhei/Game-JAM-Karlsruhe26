@@ -498,13 +498,31 @@ fn scorch_grass(
 }
 
 /// Трава на лаве и у её края выгорает: раз в [`LAVA_CHECK`].
-fn burn_by_lava(time: Res<Time>, mut grass: ResMut<Grass>, pools: Res<LavaPools>) {
+/// Проверяет траву, только когда лава разлилась шире или появились новые участки травы: иначе
+/// результат прошлой проверки тот же. Участки далеко от лавы пропускаются целиком.
+fn burn_by_lava(
+    time: Res<Time>,
+    mut grass: ResMut<Grass>,
+    pools: Res<LavaPools>,
+    mut checked: Local<Option<((usize, usize), usize)>>,
+) {
     grass.lava_timer -= time.delta_secs();
     if grass.lava_timer > 0.0 {
         return;
     }
     grass.lava_timer = LAVA_CHECK;
-    for patch in grass.patches.values_mut() {
+    let state = (pools.extent(), grass.patches.len());
+    if state.0.0 == 0 || *checked == Some(state) {
+        *checked = Some(state);
+        return;
+    }
+    *checked = Some(state);
+    let half = CHUNK_SIZE as f32 * 0.5;
+    for (coord, patch) in grass.patches.iter_mut() {
+        let center = chunk_origin(*coord) + Vec2::splat(half);
+        if !pools.near(center, half * std::f32::consts::SQRT_2 + 1.0) {
+            continue;
+        }
         for tuft in patch.cells.iter_mut().flatten() {
             if matches!(tuft.state, State::Burnt | State::Gone) {
                 continue;
