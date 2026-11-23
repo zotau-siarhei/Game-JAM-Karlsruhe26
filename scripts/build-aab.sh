@@ -6,12 +6,14 @@
 #
 # bundletool — из PATH (`brew install bundletool`), иначе скрипт скачает jar в target/android/tools.
 #
-# Подпись ключом загрузки Play — из переменных окружения; сам ключ и пароль в репозиторий не класть:
+# Подпись ключом загрузки Play; сам ключ и пароль в репозиторий не класть. По умолчанию ключ берётся
+# из ~/.android: spaceguard-upload.keystore (имя ключа upload), пароль — файл spaceguard-upload.pass.
+# Другой ключ — переменными окружения:
 #   SPACE_GUARD_UPLOAD_KEYSTORE=/путь/upload.jks   хранилище ключа
 #   SPACE_GUARD_UPLOAD_ALIAS=upload                имя ключа в хранилище
 #   SPACE_GUARD_UPLOAD_PASSWORD=…                  пароль хранилища
 #   SPACE_GUARD_UPLOAD_KEY_PASSWORD=…              пароль ключа, если не совпадает с паролем хранилища
-# Без них пакет подписывается отладочным ключом: годится для проверки на телефоне, не для Play.
+# Без ключа пакет подписывается отладочным: годится для проверки на телефоне, не для Play.
 # Версия для пользователей — SPACE_GUARD_VERSION_NAME (по умолчанию 0.1.0), код версии —
 # SPACE_GUARD_VERSION_CODE или число коммитов, как у APK (в клоне с неполной историей — только
 # переменная). Библиотеку и ассеты готовит scripts/build-android.sh (arm64-v8a); символы библиотеки
@@ -147,6 +149,15 @@ if [[ "$config" != *PAGE_ALIGNMENT_16K* ]]; then
     exit 1
 fi
 
+upload_default=$HOME/.android/spaceguard-upload
+if [[ -z "${SPACE_GUARD_UPLOAD_KEYSTORE:-}" && -f "$upload_default.keystore" ]]; then
+    SPACE_GUARD_UPLOAD_KEYSTORE=$upload_default.keystore
+    SPACE_GUARD_UPLOAD_ALIAS=${SPACE_GUARD_UPLOAD_ALIAS:-upload}
+    if [[ -z "${SPACE_GUARD_UPLOAD_PASSWORD:-}" ]]; then
+        SPACE_GUARD_UPLOAD_PASSWORD=$(<"$upload_default.pass")
+    fi
+    export SPACE_GUARD_UPLOAD_PASSWORD
+fi
 if [[ -n "${SPACE_GUARD_UPLOAD_KEYSTORE:-}" ]]; then
     if [[ ! -f "$SPACE_GUARD_UPLOAD_KEYSTORE" ]]; then
         echo "нет хранилища ключа загрузки: $SPACE_GUARD_UPLOAD_KEYSTORE" >&2
@@ -166,6 +177,8 @@ if [[ -n "${SPACE_GUARD_UPLOAD_KEYSTORE:-}" ]]; then
         exit 1
     fi
     echo "подписан ключом загрузки «$SPACE_GUARD_UPLOAD_ALIAS», подпись проверена"
+    # Отпечаток — для сверки с сертификатом загрузки в Play Console (App integrity).
+    keytool -printcert -jarfile "$aab" | grep -m1 'SHA256:' | sed 's/^[[:space:]]*/сертификат /'
 else
     jarsigner -keystore "$HOME/.android/debug.keystore" -storepass android -keypass android \
         -sigalg SHA256withRSA -digestalg SHA-256 "$aab" androiddebugkey >/dev/null

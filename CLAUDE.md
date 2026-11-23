@@ -202,9 +202,12 @@ cargo test                                  # тесты
   Иконка — ресурсы `android/res`; слои пересобирает `scripts/android-icon.py` из `android/icon/source.png` (нужен Pillow).
   Пакет для Google Play — `scripts/build-aab.sh` (`--install` ставит его на телефон через bundletool; bundletool —
   `brew install bundletool`, без него скрипт сам скачает jar в `target/android/tools`):
-  `target/android/space-guard.aab`, скачивание ~120 МБ. Ключ загрузки — переменные `SPACE_GUARD_UPLOAD_KEYSTORE`,
-  `SPACE_GUARD_UPLOAD_ALIAS`, `SPACE_GUARD_UPLOAD_PASSWORD` и, если отличается, `SPACE_GUARD_UPLOAD_KEY_PASSWORD`
-  (ключ и пароли в репозиторий не класть), без них — отладочный ключ; подпись ключом загрузки проверяется сразу.
+  `target/android/space-guard.aab`, скачивание ~120 МБ. Ключ загрузки скрипт берёт сам из
+  `~/.android/spaceguard-upload.keystore` (пароль — `spaceguard-upload.pass` рядом), другой — переменными
+  `SPACE_GUARD_UPLOAD_KEYSTORE`, `SPACE_GUARD_UPLOAD_ALIAS`, `SPACE_GUARD_UPLOAD_PASSWORD` и, если отличается,
+  `SPACE_GUARD_UPLOAD_KEY_PASSWORD` (ключ и пароли в репозиторий не класть), без ключа — отладочный; подпись
+  проверяется сразу, отпечаток сертификата — в выводе. Карточка магазина и ответы анкет Play Console — `docs/store/`,
+  политика конфиденциальности — `PRIVACY.md`: игра без интернета и сбора данных, новое разрешение или SDK — правь их.
   Таблица символов библиотеки лежит в метаданных пакета (`BUNDLE-METADATA/com.android.tools.build.debugsymbols`): по
   ней Play Vitals показывает имена функций в падениях и ANR; сама библиотека в пакете без символов. Версия —
   `SPACE_GUARD_VERSION_NAME` и `SPACE_GUARD_VERSION_CODE` (по умолчанию — число коммитов; в клоне с неполной
