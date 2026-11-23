@@ -13,6 +13,10 @@
 //!   потом тревога сбрасывается и Служба уезжает. В лог — расстояния, линия прицела танков.
 //! - `paths` — тропинки посёлков сверху: стартовый посёлок и два соседних, снимок каждого
 //!   жители на тропинках.
+//! - `lava_slope` — шахта прорыва на склоне горы (нужен `SPACE_GUARD_SEED=3`, та же расстановка, что
+//!   в тесте `lava::tests::pit_on_slope`): шесть выстрелов мортиры пробивают кору, два выстрела
+//!   в стенку ниже по склону опускают край ниже уровня лавы. Снимки сверху и сбоку после
+//!   наполнения, в лог — замер `lava::Overhang`: сколько лавы за краем ямы и как высоко она там.
 
 use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
@@ -53,7 +57,7 @@ impl Plugin for DebugChecksPlugin {
         })
         .add_systems(
             Update,
-            (tick, check_ruins, check_trees, check_alarm, check_paths)
+            (tick, check_ruins, check_trees, check_alarm, check_paths, check_lava_slope)
                 .chain()
                 .after(crate::camera::follow_focus)
                 .in_set(GameSet::Presentation),
@@ -819,5 +823,86 @@ fn check_paths(
     }
     if check.at(step + 2, begin + 14.0) {
         check.shot(&mut commands, &format!("village_{index}_close"));
+    }
+}
+
+/// Место ямы сцены `lava_slope` при сиде 3: склон горы (уклон около 0,73).
+const LAVA_PIT: Vec2 = Vec2::new(20.0, -110.0);
+
+/// Сцена `lava_slope`: лава из прорубленной ямы на склоне.
+#[allow(clippy::too_many_arguments)]
+fn check_lava_slope(
+    mut commands: Commands,
+    mut check: ResMut<Check>,
+    terrain: Res<Terrain>,
+    pools: Res<crate::lava::LavaPools>,
+    mut explosions: MessageWriter<Explosion>,
+    mut rover: Query<&mut Transform, With<Rover>>,
+    mut camera: Query<&mut Transform, (With<crate::camera::GameCamera>, Without<Rover>)>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    if check.scene != "lava_slope" {
+        return;
+    }
+    let Ok(mut rover) = rover.single_mut() else {
+        return;
+    };
+    let p = LAVA_PIT;
+    let h = |dx: f32, dz: f32| terrain.original_height((p.x + dx) as i32, (p.y + dz) as i32);
+    let down = -Vec2::new(h(5.0, 0.0) - h(-5.0, 0.0), h(0.0, 5.0) - h(0.0, -5.0)).normalize_or(Vec2::X);
+    let pit = Vec3::new(p.x, 0.0, p.y);
+    let down3 = Vec3::new(down.x, 0.0, down.y);
+    let mortar = |explosions: &mut MessageWriter<Explosion>, at: Vec3| {
+        blast(explosions, &terrain, at, crate::mortar::EXPLOSION_RADIUS, crate::mortar::EXPLOSION_POWER);
+    };
+    if check.at(0, 1.0) {
+        if terrain.seed() != 3 {
+            warn!("Проверка lava_slope: сид {}, а расстановка подобрана под сид 3", terrain.seed());
+        }
+        info!("Проверка lava_slope: яма {p}, вниз по склону {down}");
+        // Луноход выше по склону, лицом к яме: лава туда не дойдёт.
+        place_rover(&mut rover, &terrain, pit - down3 * 25.0, pit);
+    }
+    // Шесть выстрелов мортиры в яму раз в секунду: на шестом кора пробита.
+    for i in 0..6 {
+        if check.at(1 + i, 4.0 + i as f32) {
+            mortar(&mut explosions, pit);
+        }
+    }
+    // Два выстрела в стенку ниже по склону.
+    for i in 0..2 {
+        if check.at(7 + i, 11.0 + i as f32) {
+            mortar(&mut explosions, pit + down3 * 7.0);
+        }
+    }
+    // Камера: сверху над серединой склона, на втором снимке — сбоку, поперёк склона.
+    let side = check.step == 10;
+    if let Ok(mut cam) = camera.single_mut() {
+        let mid = pit + down3 * 18.0;
+        let look = Vec3::new(mid.x, terrain.height_at(mid.x, mid.z), mid.z);
+        *cam = if side {
+            let across = Vec3::new(-down.y, 0.0, down.x);
+            Transform::from_translation(look + across * 60.0 + Vec3::Y * 25.0).looking_at(look, Vec3::Y)
+        } else {
+            Transform::from_translation(look + Vec3::new(0.0, 80.0, 14.0)).looking_at(look, Vec3::NEG_Z)
+        };
+    }
+    // Наполнение — 6 с после прорыва.
+    if check.at(9, 20.0) {
+        for (i, o) in pools.overhangs(&terrain).iter().enumerate() {
+            info!(
+                "Проверка lava_slope: озеро {i}: ячеек {}, за краем ямы {} (толще 1 м: {}), толщина за краем до {:.1} м, \
+                 выше исходного склона на {:.1} м, дальняя ячейка {:.0} м",
+                o.cells, o.outside, o.thick, o.max_thickness, o.above_surface, o.reach
+            );
+        }
+        info!("Проверка lava_slope: (уровень, цель, ячеек, плоскость) {:?}", pools.summary());
+        check.shot(&mut commands, "top");
+    }
+    if check.at(10, 21.0) {
+        check.shot(&mut commands, "side");
+    }
+    if check.at(11, 23.0) {
+        exit.write(AppExit::Success);
     }
 }

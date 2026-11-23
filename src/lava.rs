@@ -224,9 +224,76 @@ pub struct LavaPools {
 }
 
 impl LavaPools {
+    /// Места прорыва и потолок уровня каждого озера: для сцены проверки `lava_slope`.
+    pub fn origins(&self) -> Vec<(Vec<IVec2>, f32)> {
+        self.pools.iter().map(|p| (p.origins.clone(), p.max_level)).collect()
+    }
+
     /// Уровень, целевой уровень, число ячеек и есть ли плоскость у каждого озера: для отладочной сцены `lava`.
     pub fn summary(&self) -> Vec<(f32, f32, usize, bool)> {
         self.pools.iter().map(|p| (p.level, p.target_level, p.cells.len(), p.mesh.is_some())).collect()
+    }
+
+    /// Замер «плиты» у каждого озера: для сцены проверки `lava_slope`.
+    pub fn overhangs(&self, terrain: &Terrain) -> Vec<Overhang> {
+        self.pools
+            .iter()
+            .map(|p| Overhang::measure(&p.cells, &p.origins, p.level, |x, z| terrain.vertex_height(x, z), |x, z| terrain.original_height(x, z)))
+            .collect()
+    }
+}
+
+/// Сколько лавы озера лежит за краем ямы прорыва и как высоко она там над землёй. Лава, которая
+/// течёт, за краем лежит тонким слоем по рельефу; горизонтальная плита над склоном — толстая
+/// и выше исходной поверхности.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Overhang {
+    /// Ячеек озера всего и за краем ямы (дальше [`Overhang::RIM`] от всех мест прорыва).
+    pub cells: usize,
+    pub outside: usize,
+    /// Ячеек за краем, над которыми лава толще 1 м.
+    pub thick: usize,
+    /// Наибольшая толщина лавы за краем, м.
+    pub max_thickness: f32,
+    /// Насколько поверхность лавы за краем выше исходной поверхности склона, м (наибольшее).
+    pub above_surface: f32,
+    /// Дальняя ячейка от места прорыва, м.
+    pub reach: f32,
+}
+
+impl Overhang {
+    /// Край ямы прорыва от её центра, м: кратер мортиры с запасом.
+    pub const RIM: f32 = 9.0;
+
+    pub fn measure(
+        cells: &HashSet<IVec2>,
+        origins: &[IVec2],
+        level: f32,
+        height: impl Fn(i32, i32) -> f32,
+        original: impl Fn(i32, i32) -> f32,
+    ) -> Self {
+        let distance = |c: IVec2| origins.iter().map(|o| (c - *o).as_vec2().length()).fold(f32::MAX, f32::min);
+        let mut o = Overhang {
+            cells: cells.len(),
+            outside: 0,
+            thick: 0,
+            max_thickness: 0.0,
+            above_surface: f32::MIN,
+            reach: 0.0,
+        };
+        for &c in cells {
+            let d = distance(c);
+            o.reach = o.reach.max(d);
+            if d <= Self::RIM {
+                continue;
+            }
+            let thickness = level - height(c.x, c.y);
+            o.outside += 1;
+            o.thick += usize::from(thickness > 1.0);
+            o.max_thickness = o.max_thickness.max(thickness);
+            o.above_surface = o.above_surface.max(level - original(c.x, c.y));
+        }
+        o
     }
 }
 
@@ -1224,6 +1291,53 @@ mod tests {
         assert!(pool.near(Vec2::new(3.0, 0.0), 2.0));
         assert!(!pool.near(Vec2::new(4.0, 0.0), 2.0));
         assert!(!pool.near(Vec2::new(50.0, 0.0), 2.0));
+    }
+
+    /// Шахта прорыва на склоне горы (сид 3, точка (20, −110), уклон около 0,73) со стенкой,
+    /// прорубленной вниз по склону: та же расстановка, что в сцене проверки `lava_slope`.
+    /// Возвращает рельеф, место прорыва и озеро сразу после прорыва.
+    pub(crate) fn pit_on_slope() -> (Terrain, IVec2, Pool) {
+        let mut terrain = Terrain::new(3);
+        let at = IVec2::new(20, -110);
+        let h = |dx: i32, dz: i32| terrain.original_height(at.x + dx, at.y + dz);
+        let down = -Vec2::new(h(5, 0) - h(-5, 0), h(0, 5) - h(0, -5)).normalize();
+        let p = Vec3::new(at.x as f32, 0.0, at.y as f32);
+        // Шесть выстрелов мортиры в одну точку (как в craters.rs: радиус 7, мощность 1,4).
+        for _ in 0..6 {
+            terrain.apply_crater(p, 7.0, 4.9, 1.176);
+        }
+        // Дно — самая глубокая вершина, как в watch_crust.
+        let mut deepest = (0.0f32, at);
+        for vz in at.y - 8..=at.y + 8 {
+            for vx in at.x - 8..=at.x + 8 {
+                let d = depth(&terrain, vx, vz);
+                if d > deepest.0 {
+                    deepest = (d, IVec2::new(vx, vz));
+                }
+            }
+        }
+        assert!(deepest.0 > CRUST, "шесть выстрелов пробивают кору");
+        let cell = deepest.1;
+        let pool = Pool::new(cell, terrain.vertex_height(cell.x, cell.y), terrain.original_height(cell.x, cell.y));
+        // Взрыв прорыва на дне и два выстрела в стенку ниже по склону: край ямы ниже уровня лавы.
+        terrain.apply_crater(p, 4.0, 3.6, 0.864);
+        for _ in 0..2 {
+            terrain.apply_crater(p + Vec3::new(down.x, 0.0, down.y) * 7.0, 7.0, 4.9, 1.176);
+        }
+        (terrain, cell, pool)
+    }
+
+    #[test]
+    #[ignore = "баг: лава из прорубленной ямы на склоне висит горизонтальной плитой, а не течёт вниз (сцена lava_slope)"]
+    fn лава_из_ямы_на_склоне_не_висит_плитой() {
+        let (terrain, cell, pool) = pit_on_slope();
+        let level = pool.target_level;
+        let cells = flood(cell, level, POOL_REACH, |x, z| terrain.vertex_height(x, z));
+        let o = Overhang::measure(&cells, &[cell], level, |x, z| terrain.vertex_height(x, z), |x, z| terrain.original_height(x, z));
+        println!("прорыв {cell}, уровень {level:.2}; {o:?}");
+        assert!(o.outside > 0, "лава выходит из ямы через прорубленную стенку: {o:?}");
+        // Слой, текущий по склону, лежит на рельефе; плита над склоном стоит выше его исходной поверхности.
+        assert!(o.above_surface <= 1.0, "лава за краем не стоит над склоном выше его поверхности: {o:?}");
     }
 
     #[test]
