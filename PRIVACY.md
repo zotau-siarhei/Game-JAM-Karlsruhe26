@@ -10,6 +10,9 @@ Space Guard does not collect, store on a server, share or sell any personal or d
   device through the game.
 - **No accounts, ads, analytics, in-app purchases or crash reporting.** The game contains no third-party SDKs that
   track players.
+- **Google Play statistics.** If you allow your device to share usage and diagnostics data with Google,
+  Google Play may show the developers anonymous, aggregated crash and performance statistics (Android vitals).
+  Google collects them under the [Google Privacy Policy](https://policies.google.com/privacy), not the game.
 - **No permissions to personal data.** The game does not use the camera, microphone, location, contacts or files.
 - **Local data only.** Game settings (graphics quality, volumes, subtitles, difficulty) and the high-score tables
   (a name of up to five letters or digits typed by the player and the survival time) are stored in the game's
@@ -37,6 +40,9 @@ Space Guard не собирает, не хранит на серверах, не
   устройство через игру.
 - **Нет аккаунтов, рекламы, аналитики, покупок и отчётов о сбоях.** В игре нет сторонних SDK, которые отслеживают
   игроков.
+- **Статистика Google Play.** Если на устройстве разрешена отправка в Google данных об использовании и диагностике,
+  Google Play может показывать разработчикам обезличенную сводную статистику сбоев и скорости (Android vitals).
+  Её собирает Google по своей [политике конфиденциальности](https://policies.google.com/privacy?hl=ru), а не игра.
 - **Нет доступа к личным данным.** Игра не использует камеру, микрофон, местоположение, контакты и файлы.
 - **Только локальные данные.** Настройки игры (качество картинки, громкость, субтитры, сложность) и таблицы рекордов
   (имя до пяти букв или цифр, которое вводит игрок, и время выживания) хранятся в закрытом хранилище игры на
