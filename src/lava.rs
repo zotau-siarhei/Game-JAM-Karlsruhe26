@@ -429,6 +429,11 @@ impl LavaPools {
         })
     }
 
+    /// Сколько ячеек застыло коркой: для отладочных сцен.
+    pub fn crust_cells(&self) -> usize {
+        self.cells.values().filter(|c| c.crust > 0.0).count()
+    }
+
     /// Горячие ячейки: для мини-карты.
     pub fn cells(&self) -> impl Iterator<Item = &IVec2> {
         self.hot.iter()

@@ -877,7 +877,7 @@ fn check_lava_slope(
         }
     }
     // Камера: сверху над серединой склона, на втором снимке — сбоку, поперёк склона.
-    let side = check.step == 10 || check.step == 12;
+    let side = check.step == 10 || check.step == 12 || check.step == 14;
     if let Ok(mut cam) = camera.single_mut() {
         let mid = pit + down3 * 18.0;
         let look = Vec3::new(mid.x, terrain.height_at(mid.x, mid.z), mid.z);
@@ -925,7 +925,16 @@ fn check_lava_slope(
     if check.at(12, 76.0) {
         check.shot(&mut commands, "late_side");
     }
-    if check.at(13, 78.0) {
+    // Через две минуты источник исчерпан, поток стоит и застыл коркой.
+    if check.at(13, 120.0) {
+        let crust = pools.crust_cells();
+        info!("Проверка lava_slope через две минуты: горячих ячеек {}, застывших {crust}", pools.cells().count());
+        check.shot(&mut commands, "cooled_top");
+    }
+    if check.at(14, 121.0) {
+        check.shot(&mut commands, "cooled_side");
+    }
+    if check.at(15, 123.0) {
         exit.write(AppExit::Success);
     }
 }

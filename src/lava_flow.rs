@@ -1,6 +1,6 @@
 //! Течение лавы по рельефу: у каждой ячейки 1×1 м (вершины сетки рельефа) своя толщина горячей
 //! лавы и застывшей корки. Шаг [`flow_step`] — без Bevy: лава перетекает к соседям, у которых
-//! поверхность (рельеф + корка + лава) ниже, остановившаяся за краем ямы застывает.
+//! поверхность (рельеф + корка + лава) ниже, а за краем ямы понемногу остывает в корку.
 //!
 //! Перетекание — «виртуальные трубы» между соседними ячейками: поток в трубе набирает скорость от
 //! перепада поверхностей и гаснет от трения, а его разгон пропорционален толщине лавы. Глубокий канал
@@ -11,6 +11,10 @@
 //! `YIELD_K / толщина`. Глубокое озеро поэтому стоит ровно, а тонкий слой останавливается: на ровном
 //! месте — толщиной около `√YIELD_K`, на склоне — тоньше. Отсюда плавный край потока, и вверх лава не
 //! течёт: против перепада поток только тормозится.
+//!
+//! Остывание идёт всегда, а не только у стоящей лавы: за шаг слой за краем ямы теряет в корку
+//! `COOL_RATE · dt`. Пока источник подаёт, поток идёт дальше; тонкий край застывает первым, и поток
+//! останавливается языком сам. Иначе толстая лужа, медленно ползущая по пологому склону, не застыла бы.
 
 use std::collections::{HashMap, HashSet};
 
@@ -33,11 +37,8 @@ const PIPE_DEPTH: f32 = 3.0;
 pub const YIELD_K: f32 = 0.045;
 /// Порог текучести не больше этого, м: самая тонкая плёнка на крутом склоне всё-таки стекает.
 const YIELD_MAX: f32 = 0.5;
-/// Сколько ячейка за краем ямы должна стоять, чтобы застыть, с.
-pub const COOL_TIME: f32 = 20.0;
-/// Ячейка «стоит», если за шаг её толщина меняется меньше этого и через неё протекает меньше
-/// этого (м³ на ячейку 1 м²).
-const STILL_EPS: f32 = 0.01;
+/// Скорость остывания лавы за краем ямы, м/с: слой в полметра застывает за 25 с.
+pub const COOL_RATE: f32 = 0.02;
 /// Горячая лава тоньше этого — уже не лава (не жжёт, не рисуется), м.
 pub const MIN_DEPTH: f32 = 0.02;
 /// Остаток тоньше этого пропадает, м: иначе за потоком тянулся бы бесконечный след долей миллиметра.
@@ -57,8 +58,6 @@ pub struct LavaCell {
     pub hot: f32,
     /// Толщина застывшей корки под ней, м.
     pub crust: f32,
-    /// Сколько ячейка стоит без движения, с.
-    pub still: f32,
     /// Высота рельефа под ячейкой на последнем шаге, м.
     pub ground: f32,
     /// Поток в трубах к соседям `NEIGHBOURS`, м³/с.
@@ -98,7 +97,6 @@ pub fn pour(cells: &mut Cells, at: IVec2, volume: f32, height: impl Fn(i32, i32)
         ..default()
     });
     cell.hot += volume;
-    cell.still = 0.0;
 }
 
 /// Один шаг течения длиной `dt` секунд. `height` — рельеф, `allowed` — может ли ячейка принять
@@ -122,29 +120,24 @@ pub fn flow_step(
         substep(cells, &height, &allowed);
     }
 
-    let mut moved = 0.0f32;
-    for (at, cell) in cells.iter_mut() {
-        let d = (cell.hot - start.get(at).copied().unwrap_or(0.0)).abs();
-        moved = moved.max(d);
-        // В ровном потоке толщина не меняется, а лава идёт: стоит та, через которую почти не течёт.
-        let through = cell.out.iter().sum::<f32>() * dt;
-        if d >= STILL_EPS || through >= STILL_EPS {
-            cell.still = 0.0;
-        }
-    }
-    // Стоящая лава за краем ямы застывает, крошки пропадают.
+    let moved = cells
+        .iter()
+        .map(|(at, cell)| (cell.hot - start.get(at).copied().unwrap_or(0.0)).abs())
+        .fold(0.0f32, f32::max);
+    // Лава за краем ямы остывает в корку, плёнка тоньше горячей застывает целиком, крошки пропадают.
     for (&at, cell) in cells.iter_mut() {
         if cell.hot < DUST {
             cell.hot = 0.0;
-            cell.still = 0.0;
             cell.out = [0.0; 4];
             continue;
         }
-        cell.still += dt;
-        if cell.still >= COOL_TIME && !pit(at) {
-            cell.crust += cell.hot;
-            cell.hot = 0.0;
-            cell.still = 0.0;
+        if pit(at) {
+            continue;
+        }
+        let cooled = if cell.hot - COOL_RATE * dt < MIN_DEPTH { cell.hot } else { COOL_RATE * dt };
+        cell.hot -= cooled;
+        cell.crust += cooled;
+        if cell.hot == 0.0 {
             cell.out = [0.0; 4];
         }
     }
@@ -261,7 +254,9 @@ pub fn layer_mesh(cells: &Cells, layer: Layer, height: impl Fn(i32, i32) -> f32)
         let base = positions.len() as u32;
         for (o, top) in CORNERS.iter().zip(tops) {
             let v = *square + *o;
-            let y = top.unwrap_or_else(|| (height(v.x, v.y) - EDGE_SINK).min(mean));
+            // Под слоем — рельеф и корка: край горячей лавы уходит под верх корки, а не под землю.
+            let base = cells.get(&v).map_or_else(|| height(v.x, v.y), |c| c.ground + c.crust);
+            let y = top.unwrap_or_else(|| (base - EDGE_SINK).min(mean));
             positions.push([v.x as f32, y, v.y as f32]);
             uvs.push([v.x as f32 / 8.0, v.y as f32 / 8.0]);
         }
@@ -369,19 +364,21 @@ mod tests {
     }
 
     #[test]
-    fn остановившаяся_лава_застывает_кроме_ямы() {
-        let height = |_: i32, _: i32| 0.0;
-        let pit = |c: IVec2| c == IVec2::ZERO;
+    fn лава_за_краем_ямы_застывает_а_в_яме_нет() {
+        // Яма 3×3 глубиной 2 м; налито больше, чем она вмещает, — излишек растекается вокруг.
+        let pit = |c: IVec2| c.x.abs() <= 1 && c.y.abs() <= 1;
+        let height = |x: i32, z: i32| if pit(IVec2::new(x, z)) { -2.0 } else { 0.0 };
         let mut cells = Cells::new();
-        pour(&mut cells, IVec2::ZERO, 6.0, height);
-        let steps = (COOL_TIME / FLOW_STEP) as usize + 400;
+        pour(&mut cells, IVec2::ZERO, 9.0 * 2.0 + 6.0, height);
         let mut reshaped = false;
-        for _ in 0..steps {
+        for _ in 0..(60.0 / FLOW_STEP) as usize {
             reshaped |= flow_step(&mut cells, FLOW_STEP, height, |_| true, pit).reshaped;
         }
         assert!(reshaped);
-        assert!(cells[&IVec2::ZERO].is_hot(), "яма не застывает");
-        assert!(cells.iter().filter(|(k, _)| **k != IVec2::ZERO).all(|(_, c)| c.hot == 0.0 && c.crust > 0.0), "вокруг корка");
+        assert!(cells.iter().filter(|(k, _)| pit(**k)).all(|(_, c)| c.is_hot()), "яма не застывает");
+        let outside: Vec<_> = cells.iter().filter(|(k, _)| !pit(**k)).collect();
+        assert!(!outside.is_empty(), "лава вылилась");
+        assert!(outside.iter().all(|(_, c)| c.hot == 0.0 && c.crust > 0.0), "вокруг корка");
     }
 
     #[test]
@@ -397,7 +394,7 @@ mod tests {
             flow_step(&mut cells, FLOW_STEP, height, |_| true, |_| true);
         }
         assert!(cells.iter().any(|(k, c)| k.x > 3 && c.hot > DUST), "лава перетекла через корку");
-        assert!(cells.iter().filter(|(k, _)| (1..=3).contains(&k.x) && k.y == 0).all(|(_, c)| c.crust == 1.0), "корка на месте");
+        assert!(cells.iter().filter(|(k, _)| (1..=3).contains(&k.x) && k.y == 0).all(|(_, c)| c.crust >= 1.0), "корка на месте");
     }
 
     #[test]
