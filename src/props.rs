@@ -843,6 +843,9 @@ fn stream_props(
                     },
                     top: transform.translation.y + height * scale,
                 });
+                if state.kind == PropKind::Tree {
+                    entity.insert(crate::combat::NoHitFlash);
+                }
             }
             let entity = entity
                 .with_children(|parent| {

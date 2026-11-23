@@ -839,6 +839,7 @@ fn check_lava_slope(
     mut explosions: MessageWriter<Explosion>,
     mut rover: Query<&mut Transform, With<Rover>>,
     mut camera: Query<&mut Transform, (With<crate::camera::GameCamera>, Without<Rover>)>,
+    trees: Query<(&Prop, &GlobalTransform, &Health)>,
     mut exit: MessageWriter<AppExit>,
 ) {
     if check.scene != "lava_slope" {
@@ -887,8 +888,16 @@ fn check_lava_slope(
             Transform::from_translation(look + Vec3::new(0.0, 80.0, 14.0)).looking_at(look, Vec3::NEG_Z)
         };
     }
+    // Целые деревья в горячей лаве и у её края (2 м): они должны гореть.
+    let standing = || {
+        let alive = || trees.iter().filter(|(p, _, h)| p.kind == PropKind::Tree && !h.is_dead());
+        let inside = alive().filter(|(_, t, _)| pools.lava_at(t.translation().x, t.translation().z).is_some()).count();
+        let edge = alive().filter(|(_, t, _)| pools.near(t.translation().xz(), 2.0)).count();
+        (inside, edge)
+    };
     // Наполнение — 6 с после прорыва.
     if check.at(9, 20.0) {
+        info!("Проверка lava_slope: целых деревьев в лаве {}, у края {}", standing().0, standing().1);
         for (i, o) in pools.overhangs(&terrain).iter().enumerate() {
             info!(
                 "Проверка lava_slope: озеро {i}: ячеек {}, за краем ямы {} (толще 1 м: {}), толщина за краем до {:.1} м, \
@@ -904,6 +913,7 @@ fn check_lava_slope(
     }
     // Через минуту поток остановился и застыл.
     if check.at(11, 75.0) {
+        info!("Проверка lava_slope через минуту: целых деревьев в лаве {}, у края {}", standing().0, standing().1);
         for (i, o) in pools.overhangs(&terrain).iter().enumerate() {
             info!(
                 "Проверка lava_slope через минуту: озеро {i}: за краем ямы {}, дальняя ячейка {:.0} м, на нетронутой земле {} ячеек толщиной до {:.1} м",

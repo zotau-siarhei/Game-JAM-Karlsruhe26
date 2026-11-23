@@ -146,6 +146,10 @@ pub fn spared_ally(shot: Team, target: Team, origin: Vec3, center: Vec3, radius:
 #[derive(Component, Debug, Clone, Copy, Default)]
 pub struct AllyProof;
 
+/// Не вспыхивает от урона: деревьям вспышка не нужна, а горящее дерево от тиков огня моргало бы.
+#[derive(Component, Debug, Clone, Copy, Default)]
+pub struct NoHitFlash;
+
 /// Круглый коллайдер для попаданий и тарана.
 #[derive(Component, Debug, Clone, Copy)]
 pub struct Collider {
@@ -356,11 +360,18 @@ fn apply_damage(
     difficulty: Option<Res<crate::difficulty::RunDifficulty>>,
     mut damages: MessageReader<Damage>,
     mut died: MessageWriter<Died>,
-    mut targets: Query<(&mut Health, Option<&GlobalTransform>, Has<Rover>, Option<&Team>, Has<AllyProof>)>,
+    mut targets: Query<(
+        &mut Health,
+        Option<&GlobalTransform>,
+        Has<Rover>,
+        Option<&Team>,
+        Has<AllyProof>,
+        Has<NoHitFlash>,
+    )>,
 ) {
     let immortal = immortal.is_some_and(|i| i.0);
     for damage in damages.read() {
-        let Ok((mut health, transform, rover, team, ally_proof)) = targets.get_mut(damage.target) else {
+        let Ok((mut health, transform, rover, team, ally_proof, no_flash)) = targets.get_mut(damage.target) else {
             continue;
         };
         if health.is_dead() || damage.amount <= 0.0 {
@@ -387,9 +398,11 @@ fn apply_damage(
         }
 
         // Вспышка: корпус на мгновение получает светящийся материал. Новое попадание продлевает её.
-        commands.entity(damage.target).try_insert(HitFlash {
-            remaining: FLASH_SECONDS,
-        });
+        if !no_flash {
+            commands.entity(damage.target).try_insert(HitFlash {
+                remaining: FLASH_SECONDS,
+            });
+        }
     }
 }
 
@@ -692,6 +705,15 @@ mod tests {
         assert_eq!(material(&app, target), hull);
         assert_eq!(material(&app, part), wheel);
         assert!(app.world().get::<HitFlash>(target).is_none());
+    }
+
+    #[test]
+    fn tree_does_not_flash() {
+        let mut app = app_with_damage();
+        let target = app.world_mut().spawn((Health::new(40.0), NoHitFlash)).id();
+        hit(&mut app, target, 10.0);
+        assert_eq!(app.world().get::<Health>(target).unwrap().current, 30.0, "урон проходит");
+        assert!(app.world().get::<HitFlash>(target).is_none(), "без вспышки");
     }
 
     #[test]
