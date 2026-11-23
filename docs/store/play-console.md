@@ -86,7 +86,7 @@
 
 - Category: **Games → Arcade**. Tags: Shooter, Arcade, Action, Offline, Single player.
 - Contact details: e-mail владельца аккаунта (обязательно), website — https://zotau-siarhei.github.io/Game-JAM-Karlsruhe26/
-- Main store listing: тексты из `listing.md`, переводы de-DE и ru-RU — Add translations.
+- Main store listing: тексты из `listing.md` (только en-US, без переводов).
 - Graphics:
   - App icon — `icon-512.png` (512×512 PNG);
   - Feature graphic — `feature-graphic.png` (1024×500);
@@ -96,6 +96,6 @@
 
 1. Собрать AAB из `main`: `scripts/build-aab.sh`; сверить отпечаток сертификата в выводе.
 2. Closed testing (а позже Production) → Create new release → загрузить `target/android/space-guard.aab`.
-3. Release name — версия (например, `0.1.0 (447)`), release notes — из `listing.md` для каждого языка.
+3. Release name — версия (например, `0.1.0 (447)`), release notes — из `listing.md`.
 4. Review release → Start rollout. Отчёт pre-launch (автотест на устройствах Firebase) приходит через ~час:
    проверить падения и ANR.
