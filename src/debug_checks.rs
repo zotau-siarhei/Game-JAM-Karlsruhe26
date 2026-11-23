@@ -876,7 +876,7 @@ fn check_lava_slope(
         }
     }
     // Камера: сверху над серединой склона, на втором снимке — сбоку, поперёк склона.
-    let side = check.step == 10;
+    let side = check.step == 10 || check.step == 12;
     if let Ok(mut cam) = camera.single_mut() {
         let mid = pit + down3 * 18.0;
         let look = Vec3::new(mid.x, terrain.height_at(mid.x, mid.z), mid.z);
@@ -892,17 +892,30 @@ fn check_lava_slope(
         for (i, o) in pools.overhangs(&terrain).iter().enumerate() {
             info!(
                 "Проверка lava_slope: озеро {i}: ячеек {}, за краем ямы {} (толще 1 м: {}), толщина за краем до {:.1} м, \
-                 выше исходного склона на {:.1} м, дальняя ячейка {:.0} м",
-                o.cells, o.outside, o.thick, o.max_thickness, o.above_surface, o.reach
+                 выше исходного склона на {:.1} м, дальняя ячейка {:.0} м, на нетронутой земле {} ячеек толщиной до {:.1} м",
+                o.cells, o.outside, o.thick, o.max_thickness, o.above_surface, o.reach, o.intact, o.intact_thickness
             );
         }
-        info!("Проверка lava_slope: (уровень, цель, ячеек, плоскость) {:?}", pools.summary());
+        info!("Проверка lava_slope: (поверхность у прорыва, цель, горячих ячеек, сетка) {:?}", pools.summary());
         check.shot(&mut commands, "top");
     }
     if check.at(10, 21.0) {
         check.shot(&mut commands, "side");
     }
-    if check.at(11, 23.0) {
+    // Через минуту поток остановился и застыл.
+    if check.at(11, 75.0) {
+        for (i, o) in pools.overhangs(&terrain).iter().enumerate() {
+            info!(
+                "Проверка lava_slope через минуту: озеро {i}: за краем ямы {}, дальняя ячейка {:.0} м, на нетронутой земле {} ячеек толщиной до {:.1} м",
+                o.outside, o.reach, o.intact, o.intact_thickness
+            );
+        }
+        check.shot(&mut commands, "late_top");
+    }
+    if check.at(12, 76.0) {
+        check.shot(&mut commands, "late_side");
+    }
+    if check.at(13, 78.0) {
         exit.write(AppExit::Success);
     }
 }

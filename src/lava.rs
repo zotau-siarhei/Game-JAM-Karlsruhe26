@@ -27,6 +27,7 @@ use crate::craters;
 use crate::enemy::Enemy;
 use crate::explosion::Explosion;
 use crate::frame::{GameSet, RunMessages};
+use crate::lava_flow::{self, Cells, FLOW_STEP, LavaCell, Layer, StepResult};
 use crate::pickups::Pickup;
 use crate::props::{Prop, PropKind};
 use crate::rails::TrackDamage;
@@ -44,14 +45,22 @@ pub const CRUST: f32 = 27.0;
 /// С какой доли коры на дне появляются трещины и с какой — дым.
 const CRACKS_FROM: f32 = 0.6;
 const SMOKE_FROM: f32 = 0.75;
-/// Наибольшее удаление заливки от места прорыва, м.
-const POOL_REACH: i32 = 40;
+/// Наибольшее удаление лавы от места прорыва, м: страховка, если поток не остановится сам.
+const FLOW_REACH: i32 = 80;
 /// Уровень озера ниже исходной поверхности, м.
 const POOL_BELOW: f32 = 4.0;
-/// За сколько озеро набирает уровень, с.
+/// За сколько озеро набирает уровень, с: пузыри начинаются с половины.
 const FILL_TIME: f32 = 6.0;
-/// Как часто пересчитывается заливка, с.
-const REFILL: f32 = 0.5;
+/// Сколько лавы подаёт источник, м³/с: шахта прорыва наполняется за несколько секунд.
+const SOURCE_RATE: f32 = 250.0;
+/// Радиус подачи вокруг места прорыва, ячеек.
+const SOURCE_RADIUS: i32 = 2;
+/// Сколько лавы из одного прорыва может вылиться за край ямы, м³.
+const SPILL_BUDGET: f32 = 400.0;
+/// Сетка пересобирается, если толщина где-то сдвинулась за шаг больше этого, м.
+const MESH_EPS: f32 = 0.005;
+/// Пузыри и плевки — только там, где лава толще этого, м.
+const BUBBLE_DEPTH: f32 = 0.3;
 /// Подъём уровня от взрыва в лаве, м.
 const BLAST_RISE: f32 = 0.6;
 /// Взрыв слабее этого уровень не поднимает: гибель врага (0,25), ракета (0,45), вражеская
@@ -128,26 +137,18 @@ pub struct CrustBreached {
     pub position: Vec3,
 }
 
-/// Лавовое озеро.
+/// Место прорыва: источник лавы и озеро в его яме. Сама лава — общие ячейки [`LavaPools`].
 pub struct Pool {
-    /// Места прорывов: у слитого озера их несколько, заливка идёт от каждого.
-    origins: Vec<IVec2>,
-    level: f32,
-    start_level: f32,
+    origin: IVec2,
+    /// До какой высоты источник наполняет яму.
     target_level: f32,
     /// Выше этого взрывы уровень не поднимают.
     max_level: f32,
     age: f32,
-    refill: f32,
-    /// Уровень последней заливки; `None` — заливать заново (новое озеро, слияние, рельеф изменился).
-    /// Пока уровень стоит и рельеф тот же, заливка дала бы те же ячейки.
-    flooded_level: Option<f32>,
-    cells: HashSet<IVec2>,
-    /// Наименьшая и наибольшая ячейки озера: для быстрых проверок «далеко от лавы».
-    bounds: (IVec2, IVec2),
-    /// Сущность плоскости лавы.
-    mesh: Option<Entity>,
-    dirty: bool,
+    /// Сколько лавы вылилось за край ямы, м³.
+    spilled: f32,
+    /// Свет над ямой.
+    light: Option<Entity>,
     /// Сколько до следующего пузыря, клуба дыма и плевка, с.
     bubble: f32,
     puff: f32,
@@ -155,21 +156,15 @@ pub struct Pool {
 }
 
 impl Pool {
-    /// Новое озеро в месте прорыва с дном на высоте `bottom`.
-    fn new(origin: IVec2, bottom: f32, surface: f32) -> Self {
+    /// Новое озеро в месте прорыва, исходная поверхность там на высоте `surface`.
+    fn new(origin: IVec2, surface: f32) -> Self {
         Self {
-            origins: vec![origin],
-            level: bottom,
-            start_level: bottom,
+            origin,
             target_level: surface - POOL_BELOW,
             max_level: surface - POOL_CEILING_BELOW,
             age: 0.0,
-            refill: 0.0,
-            flooded_level: None,
-            cells: HashSet::from([origin]),
-            bounds: (origin, origin),
-            mesh: None,
-            dirty: true,
+            spilled: 0.0,
+            light: None,
             bubble: 0.0,
             puff: 0.0,
             spit: SPIT_EVERY.0,
@@ -182,64 +177,112 @@ impl Pool {
             self.target_level = (self.target_level + BLAST_RISE).min(self.max_level.max(self.target_level));
         }
     }
-
-    /// Новый набор ячеек и границы по нему.
-    fn set_cells(&mut self, cells: HashSet<IVec2>) {
-        let first = cells.iter().next().copied().unwrap_or(self.origins[0]);
-        self.bounds = cells.iter().fold((first, first), |(lo, hi), c| (lo.min(*c), hi.max(*c)));
-        self.cells = cells;
-        self.dirty = true;
-    }
-
-    /// Есть ли лава в `reach` метрах от точки плана.
-    fn near(&self, p: Vec2, reach: f32) -> bool {
-        let (lo, hi) = self.bounds;
-        if p.x < lo.x as f32 - reach || p.x > hi.x as f32 + reach || p.y < lo.y as f32 - reach || p.y > hi.y as f32 + reach {
-            return false;
-        }
-        let r = reach.ceil() as i32;
-        let c = IVec2::new(p.x.round() as i32, p.y.round() as i32);
-        (-r..=r).any(|dz| {
-            (-r..=r).any(|dx| {
-                let o = IVec2::new(dx, dz);
-                o.as_vec2().length() <= reach && self.cells.contains(&(c + o))
-            })
-        })
-    }
-
-    /// Центр озера на плане: место первого прорыва.
-    fn center(&self) -> Vec2 {
-        self.origins[0].as_vec2()
-    }
 }
 
-/// Озёра забега.
+/// Лава забега: места прорыва и ячейки с лавой ([`lava_flow`]).
 #[derive(Resource, Default)]
 pub struct LavaPools {
     pools: Vec<Pool>,
+    cells: Cells,
+    /// Горячие ячейки и их рамка: для быстрых проверок «где лава».
+    hot: HashSet<IVec2>,
+    bounds: Option<(IVec2, IVec2)>,
+    /// Сколько накопилось времени до следующего шага течения, с.
+    step_clock: f32,
+    /// Сетки надо пересобрать.
+    dirty: bool,
+    /// Сетка горячей лавы (с дочерней сеткой корок поверх) и сетка застывшей.
+    hot_surface: Option<Entity>,
+    cooled_surface: Option<Entity>,
     /// Сколько накопилось времени до следующего тика урона, с.
     burn_clock: f32,
-    /// Растёт при каждом изменении ячеек лавы, не сбрасывается и при перестройке мира.
+    /// Растёт при каждом изменении горячих ячеек, не сбрасывается и при перестройке мира.
     revision: u64,
 }
 
 impl LavaPools {
-    /// Места прорыва и потолок уровня каждого озера: для сцены проверки `lava_slope`.
-    pub fn origins(&self) -> Vec<(Vec<IVec2>, f32)> {
-        self.pools.iter().map(|p| (p.origins.clone(), p.max_level)).collect()
-    }
-
-    /// Уровень, целевой уровень, число ячеек и есть ли плоскость у каждого озера: для отладочной сцены `lava`.
+    /// Поверхность у места прорыва, целевой уровень, число горячих ячеек и есть ли сетка у каждого
+    /// озера: для отладочных сцен.
     pub fn summary(&self) -> Vec<(f32, f32, usize, bool)> {
-        self.pools.iter().map(|p| (p.level, p.target_level, p.cells.len(), p.mesh.is_some())).collect()
-    }
-
-    /// Замер «плиты» у каждого озера: для сцены проверки `lava_slope`.
-    pub fn overhangs(&self, terrain: &Terrain) -> Vec<Overhang> {
         self.pools
             .iter()
-            .map(|p| Overhang::measure(&p.cells, &p.origins, p.level, |x, z| terrain.vertex_height(x, z), |x, z| terrain.original_height(x, z)))
+            .map(|p| {
+                let surface = self.cells.get(&p.origin).map_or(f32::NAN, LavaCell::surface);
+                (surface, p.target_level, self.hot.len(), self.hot_surface.is_some())
+            })
             .collect()
+    }
+
+    /// Замер лавы за краем ямы у каждого озера: для сцены проверки `lava_slope`.
+    pub fn overhangs(&self, terrain: &Terrain) -> Vec<Overhang> {
+        let origins: Vec<IVec2> = self.pools.iter().map(|p| p.origin).collect();
+        self.pools
+            .iter()
+            .map(|p| {
+                let near = self
+                    .cells
+                    .iter()
+                    .filter(|(c, _)| (**c - p.origin).length_squared() <= FLOW_REACH * FLOW_REACH)
+                    .map(|(c, cell)| (*c, cell.surface()));
+                Overhang::measure(near, &origins, |x, z| terrain.vertex_height(x, z), |x, z| terrain.original_height(x, z))
+            })
+            .collect()
+    }
+
+    /// Шаг течения: источники подают лаву в свои ямы, лава перетекает и застывает.
+    fn step(&mut self, height: impl Fn(i32, i32) -> f32 + Copy) -> StepResult {
+        let origins: Vec<IVec2> = self.pools.iter().map(|p| p.origin).collect();
+        let pit = |c: IVec2| origins.iter().any(|o| (c - *o).as_vec2().length() <= Overhang::RIM);
+        let allowed = |c: IVec2| origins.iter().any(|o| (c - *o).length_squared() <= FLOW_REACH * FLOW_REACH);
+        for pool in &mut self.pools {
+            pool.spilled = self
+                .cells
+                .iter()
+                .filter(|(c, _)| !pit(**c) && (**c - pool.origin).length_squared() <= FLOW_REACH * FLOW_REACH)
+                .map(|(_, cell)| cell.hot + cell.crust)
+                .sum();
+            if pool.spilled >= SPILL_BUDGET {
+                continue;
+            }
+            // Источник льёт в ячейки вокруг места прорыва, где поверхность ниже уровня озера.
+            let surface = |c: IVec2| self.cells.get(&c).map_or_else(|| height(c.x, c.y), LavaCell::surface);
+            let spots: Vec<(IVec2, f32)> = (-SOURCE_RADIUS..=SOURCE_RADIUS)
+                .flat_map(|dz| (-SOURCE_RADIUS..=SOURCE_RADIUS).map(move |dx| IVec2::new(dx, dz)))
+                .filter(|o| o.length_squared() <= SOURCE_RADIUS * SOURCE_RADIUS)
+                .map(|o| pool.origin + o)
+                .map(|c| (c, pool.target_level - surface(c)))
+                .filter(|(_, room)| *room > 0.0)
+                .collect();
+            if spots.is_empty() {
+                continue;
+            }
+            let share = SOURCE_RATE * FLOW_STEP / spots.len() as f32;
+            for (c, room) in spots {
+                lava_flow::pour(&mut self.cells, c, share.min(room), height);
+            }
+        }
+        let result = lava_flow::flow_step(&mut self.cells, FLOW_STEP, height, allowed, pit);
+        if result.reshaped || result.moved > MESH_EPS {
+            self.dirty = true;
+        }
+        if result.reshaped {
+            self.refresh_hot();
+        }
+        result
+    }
+
+    /// Пересчитывает набор горячих ячеек и рамку.
+    fn refresh_hot(&mut self) {
+        let hot: HashSet<IVec2> = self.cells.iter().filter(|(_, c)| c.is_hot()).map(|(k, _)| *k).collect();
+        if hot == self.hot {
+            return;
+        }
+        self.bounds = hot.iter().fold(None, |b: Option<(IVec2, IVec2)>, c| match b {
+            None => Some((*c, *c)),
+            Some((lo, hi)) => Some((lo.min(*c), hi.max(*c))),
+        });
+        self.hot = hot;
+        self.revision += 1;
     }
 }
 
@@ -248,7 +291,7 @@ impl LavaPools {
 /// и выше исходной поверхности.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Overhang {
-    /// Ячеек озера всего и за краем ямы (дальше [`Overhang::RIM`] от всех мест прорыва).
+    /// Ячеек с лавой всего и за краем ямы (дальше [`Overhang::RIM`] от всех мест прорыва).
     pub cells: usize,
     pub outside: usize,
     /// Ячеек за краем, над которыми лава толще 1 м.
@@ -259,39 +302,51 @@ pub struct Overhang {
     pub above_surface: f32,
     /// Дальняя ячейка от места прорыва, м.
     pub reach: f32,
+    /// Ячеек за краем на нетронутой земле (рельеф ячейки и соседей не дальше 0,3 м от исходного: не кратер и не вал)
+    /// и наибольшая толщина лавы на ней, м. Плита над склоном — толстая лава как раз на такой земле.
+    pub intact: usize,
+    pub intact_thickness: f32,
 }
 
 impl Overhang {
-    /// Край ямы прорыва от её центра, м: кратер мортиры с запасом.
+    /// Край ямы прорыва от её центра, м: кратер мортиры с запасом. Ближе лава не застывает.
     pub const RIM: f32 = 9.0;
 
+    /// Замер по ячейкам с лавой: место и высота поверхности лавы.
     pub fn measure(
-        cells: &HashSet<IVec2>,
+        cells: impl IntoIterator<Item = (IVec2, f32)>,
         origins: &[IVec2],
-        level: f32,
         height: impl Fn(i32, i32) -> f32,
         original: impl Fn(i32, i32) -> f32,
     ) -> Self {
         let distance = |c: IVec2| origins.iter().map(|o| (c - *o).as_vec2().length()).fold(f32::MAX, f32::min);
         let mut o = Overhang {
-            cells: cells.len(),
+            cells: 0,
             outside: 0,
             thick: 0,
             max_thickness: 0.0,
             above_surface: f32::MIN,
             reach: 0.0,
+            intact: 0,
+            intact_thickness: 0.0,
         };
-        for &c in cells {
+        for (c, surface) in cells {
             let d = distance(c);
+            o.cells += 1;
             o.reach = o.reach.max(d);
             if d <= Self::RIM {
                 continue;
             }
-            let thickness = level - height(c.x, c.y);
+            let thickness = surface - height(c.x, c.y);
             o.outside += 1;
             o.thick += usize::from(thickness > 1.0);
             o.max_thickness = o.max_thickness.max(thickness);
-            o.above_surface = o.above_surface.max(level - original(c.x, c.y));
+            o.above_surface = o.above_surface.max(surface - original(c.x, c.y));
+            let untouched = |x: i32, z: i32| (height(x, z) - original(x, z)).abs() <= 0.3;
+            if [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)].iter().all(|(dx, dz)| untouched(c.x + dx, c.y + dz)) {
+                o.intact += 1;
+                o.intact_thickness = o.intact_thickness.max(thickness);
+            }
         }
         o
     }
@@ -331,15 +386,14 @@ impl LavaFires {
 }
 
 impl LavaPools {
-    /// Номер версии ячеек лавы: изменился — изменилось, где лава.
+    /// Номер версии горячих ячеек: изменился — изменилось, где лава жжёт.
     pub fn revision(&self) -> u64 {
         self.revision
     }
 
-    /// Есть ли озеро, рамка которого (с запасом в ячейку) задевает прямоугольник плана `lo..hi`.
+    /// Задевает ли рамка горячей лавы (с запасом в ячейку) прямоугольник плана `lo..hi`.
     pub fn touches(&self, lo: Vec2, hi: Vec2) -> bool {
-        self.pools.iter().any(|p| {
-            let (a, b) = p.bounds;
+        self.bounds.is_some_and(|(a, b)| {
             a.x as f32 - 1.0 <= hi.x && b.x as f32 + 1.0 >= lo.x && a.y as f32 - 1.0 <= hi.y && b.y as f32 + 1.0 >= lo.y
         })
     }
@@ -348,20 +402,36 @@ impl LavaPools {
         self.pools.is_empty()
     }
 
-    /// Уровень лавы в точке плана, если она в озере.
+    /// Высота поверхности горячей лавы в точке плана, если она там есть.
     pub fn lava_at(&self, x: f32, z: f32) -> Option<f32> {
         let cell = IVec2::new(x.round() as i32, z.round() as i32);
-        self.pools.iter().find(|p| p.cells.contains(&cell)).map(|p| p.level)
+        if !self.hot.contains(&cell) {
+            return None;
+        }
+        self.cells.get(&cell).map(LavaCell::surface)
     }
 
-    /// Есть ли лава в `reach` метрах от точки плана.
+    /// Есть ли горячая лава в `reach` метрах от точки плана.
     pub fn near(&self, p: Vec2, reach: f32) -> bool {
-        self.pools.iter().any(|pool| pool.near(p, reach))
+        let Some((lo, hi)) = self.bounds else {
+            return false;
+        };
+        if p.x < lo.x as f32 - reach || p.x > hi.x as f32 + reach || p.y < lo.y as f32 - reach || p.y > hi.y as f32 + reach {
+            return false;
+        }
+        let r = reach.ceil() as i32;
+        let c = IVec2::new(p.x.round() as i32, p.y.round() as i32);
+        (-r..=r).any(|dz| {
+            (-r..=r).any(|dx| {
+                let o = IVec2::new(dx, dz);
+                o.as_vec2().length() <= reach && self.hot.contains(&(c + o))
+            })
+        })
     }
 
-    /// Ячейки всех озёр: для мини-карты.
+    /// Горячие ячейки: для мини-карты.
     pub fn cells(&self) -> impl Iterator<Item = &IVec2> {
-        self.pools.iter().flat_map(|p| p.cells.iter())
+        self.hot.iter()
     }
 }
 
@@ -387,12 +457,6 @@ struct Smoke {
     grow: f32,
 }
 
-/// Плоскость лавы: слой течения или корок.
-#[derive(Component)]
-struct LavaSurface {
-    crust: bool,
-}
-
 #[derive(Resource)]
 struct LavaAssets {
     ball: Handle<Mesh>,
@@ -401,6 +465,8 @@ struct LavaAssets {
     spark: Handle<StandardMaterial>,
     flow: Handle<StandardMaterial>,
     crust: Handle<StandardMaterial>,
+    /// Застывшая лава.
+    cooled: Handle<StandardMaterial>,
 }
 
 /// Шумовая текстура для течения и корок: светлые прожилки на тёмном.
@@ -481,6 +547,13 @@ fn create_assets(
             base_color_texture: Some(crust),
             unlit: true,
             alpha_mode: AlphaMode::Blend,
+            ..default()
+        }),
+        // Застывшая лава: тёмный базальт, освещается как рельеф. Создаётся при старте, чтобы его
+        // застал прогрев шейдеров.
+        cooled: materials.add(StandardMaterial {
+            base_color: Color::srgb(0.11, 0.09, 0.08),
+            perceptual_roughness: 0.95,
             ..default()
         }),
     });
@@ -574,16 +647,14 @@ fn watch_crust(
                 spots.spots.remove(0);
             }
         }
-        let in_pool = pools.pools.iter().any(|p| {
-            p.cells.contains(&cell) || p.origins.iter().any(|o| o.as_vec2().distance(cell.as_vec2()) < 6.0)
-        });
+        let in_pool =
+            pools.hot.contains(&cell) || pools.pools.iter().any(|p| p.origin.as_vec2().distance(cell.as_vec2()) < 6.0);
         if d < CRUST || in_pool {
             continue;
         }
         // Прорыв: извержение и новое озеро.
         info!("Лава: прорыв коры на глубине {d:.1} м");
-        pools.pools.push(Pool::new(cell, bottom.y, terrain.original_height(cell.x, cell.y)));
-        pools.revision += 1;
+        pools.pools.push(Pool::new(cell, terrain.original_height(cell.x, cell.y)));
         spots.spots.retain(|s| s.distance(bottom) > 10.0);
         // Взрыв прорыва — от того, кто пробил кору: вражеский снаряд угрозу не растит.
         let team = breacher(&blasts, bottom);
@@ -618,15 +689,6 @@ fn watch_crust(
     visible.mark_dirty(&mut commands, dirty);
 }
 
-/// Заливка от нескольких мест прорыва: объединение заливок от каждого.
-pub fn flood_all(origins: &[IVec2], level: f32, reach: i32, height: impl Fn(i32, i32) -> f32) -> HashSet<IVec2> {
-    let mut cells = HashSet::new();
-    for &origin in origins {
-        cells.extend(flood(origin, level, reach, &height));
-    }
-    cells
-}
-
 /// Заливка: связная область ячеек ниже уровня, не дальше `reach` от начала.
 pub fn flood(origin: IVec2, level: f32, reach: i32, height: impl Fn(i32, i32) -> f32) -> HashSet<IVec2> {
     let mut cells = HashSet::new();
@@ -645,7 +707,8 @@ pub fn flood(origin: IVec2, level: f32, reach: i32, height: impl Fn(i32, i32) ->
     cells
 }
 
-/// Взрыв в лаве поднимает её уровень и выплёскивает капли.
+
+/// Взрыв в лаве поднимает уровень ближнего озера и выплёскивает капли.
 fn blast_in_lava(
     mut commands: Commands,
     mut explosions: MessageReader<Explosion>,
@@ -653,11 +716,19 @@ fn blast_in_lava(
     assets: Res<LavaAssets>,
 ) {
     for e in explosions.read() {
-        let cell = IVec2::new(e.position.x.round() as i32, e.position.z.round() as i32);
         if e.power < SPLASH_POWER {
             continue;
         }
-        let Some(pool) = pools.pools.iter_mut().find(|p| p.cells.contains(&cell) && p.age > 0.5) else {
+        let Some(surface) = pools.lava_at(e.position.x, e.position.z) else {
+            continue;
+        };
+        let cell = IVec2::new(e.position.x.round() as i32, e.position.z.round() as i32);
+        let Some(pool) = pools
+            .pools
+            .iter_mut()
+            .filter(|p| p.age > 0.5)
+            .min_by_key(|p| (p.origin - cell).length_squared())
+        else {
             continue;
         };
         pool.raise(e.power);
@@ -671,111 +742,42 @@ fn blast_in_lava(
                 NotShadowCaster,
                 Mesh3d(assets.ball.clone()),
                 MeshMaterial3d(assets.drop.clone()),
-                Transform::from_translation(Vec3::new(e.position.x, pool.level + 0.3, e.position.z)).with_scale(Vec3::splat(0.3)),
+                Transform::from_translation(Vec3::new(e.position.x, surface + 0.3, e.position.z)).with_scale(Vec3::splat(0.3)),
             ));
         }
     }
 }
 
-/// Уровень озёр растёт к целевому, заливка пересчитывается, дотянувшиеся друг до друга озёра сливаются.
-/// Насколько должен сдвинуться уровень озера, чтобы заливку стоило повторить, м.
-const FLOOD_LEVEL_STEP: f32 = 0.01;
-
-fn grow_pools(
-    time: Res<Time>,
-    terrain: Res<Terrain>,
-    mut pools: ResMut<LavaPools>,
-    mut track: ResMut<TrackDamage>,
-    mut changed: MessageReader<crate::subsidence::TerrainChanged>,
-) {
+/// Шаг течения раз в [`FLOW_STEP`]: источники наполняют ямы, лава течёт по рельефу и застывает.
+/// Рельеф под лавой берётся текущий, поэтому новый кратер под лавой заполнится сам. Звенья путей
+/// в горячей лаве рвутся.
+fn grow_pools(time: Res<Time>, terrain: Res<Terrain>, mut pools: ResMut<LavaPools>, mut track: ResMut<TrackDamage>) {
     if pools.pools.is_empty() {
-        changed.clear();
         return;
     }
     let dt = time.delta_secs();
-    let mut reshaped = false;
-    let dug: Vec<(Vec2, f32)> = changed
-        .read()
-        .map(|change| (Vec2::new(change.center.x, change.center.z), change.radius))
-        .collect();
     for pool in &mut pools.pools {
-        let (low, high) = pool.bounds;
-        let near_dug = dug.iter().any(|&(at, radius)| {
-            let reach = radius + POOL_REACH as f32;
-            at.x >= low.x as f32 - reach
-                && at.x <= high.x as f32 + reach
-                && at.y >= low.y as f32 - reach
-                && at.y <= high.y as f32 + reach
-        });
-        if near_dug {
-            pool.flooded_level = None;
-        }
         pool.age += dt;
-        let t = (pool.age / FILL_TIME).clamp(0.0, 1.0);
-        let smooth = t * t * (3.0 - 2.0 * t);
-        let wanted = pool.start_level + (pool.target_level - pool.start_level) * smooth;
-        // После наполнения уровень догоняет подъёмы от взрывов.
-        pool.level = if t < 1.0 { wanted } else { pool.level + (pool.target_level - pool.level) * (dt * 2.0).min(1.0) };
-        pool.refill -= dt;
-        if pool.refill > 0.0 {
-            continue;
-        }
-        pool.refill = REFILL;
-        if pool.flooded_level.is_some_and(|level| (level - pool.level).abs() < FLOOD_LEVEL_STEP) {
-            continue;
-        }
-        pool.flooded_level = Some(pool.level);
-        let cells = flood_all(&pool.origins, pool.level, POOL_REACH, |x, z| terrain.vertex_height(x, z));
-        if cells != pool.cells {
-            pool.set_cells(cells);
-            reshaped = true;
-        }
     }
-    // Слияние: общие ячейки — одно озеро с наибольшим уровнем.
-    let mut i = 0;
-    while i < pools.pools.len() {
-        let mut j = i + 1;
-        while j < pools.pools.len() {
-            if !pools.pools[i].cells.is_disjoint(&pools.pools[j].cells) {
-                let other = pools.pools.remove(j);
-                let pool = &mut pools.pools[i];
-                // Заливка слитого озера идёт от мест прорыва обоих: дальняя часть второго не пропадает.
-                pool.origins.extend(other.origins);
-                let mut cells = std::mem::take(&mut pool.cells);
-                cells.extend(other.cells);
-                pool.set_cells(cells);
-                reshaped = true;
-                pool.flooded_level = None;
-                pool.level = pool.level.max(other.level);
-                pool.target_level = pool.target_level.max(other.target_level);
-                pool.max_level = pool.max_level.max(other.max_level);
-                // Дальше уровень догоняет целевой от текущего, а не растёт заново от дна.
-                pool.age = pool.age.max(other.age).max(FILL_TIME);
-                // Плоскость слитого озера удаляет draw_pools: её больше нет ни у одного озера.
-                continue;
-            }
-            j += 1;
-        }
-        i += 1;
+    // Долгий кадр не нагоняется пачкой шагов: лава просто течёт медленнее.
+    pools.step_clock = (pools.step_clock + dt).min(FLOW_STEP * 2.0);
+    if pools.step_clock < FLOW_STEP {
+        return;
     }
-    if reshaped {
-        pools.revision += 1;
+    pools.step_clock -= FLOW_STEP;
+    let result = pools.step(|x, z| terrain.vertex_height(x, z));
+    if !result.reshaped {
+        return;
     }
-    // Звенья путей в лаве рвутся.
     for pool in &pools.pools {
-        if !pool.dirty {
-            continue;
-        }
-        for origin in &pool.origins {
-            for near in terrain.lines().near(origin.as_vec2(), POOL_REACH as f32) {
-                let mut s = near.s - POOL_REACH as f32;
-                while s < near.s + POOL_REACH as f32 {
-                    let p = terrain.lines().point(near.line, s);
-                    if pool.cells.contains(&IVec2::new(p.x.round() as i32, p.y.round() as i32)) {
-                        track.break_link((near.line, (s / crate::rails::LINK_LENGTH).floor() as i32));
-                    }
-                    s += 1.0;
+        for near in terrain.lines().near(pool.origin.as_vec2(), FLOW_REACH as f32) {
+            let mut s = near.s - FLOW_REACH as f32;
+            while s < near.s + FLOW_REACH as f32 {
+                let p = terrain.lines().point(near.line, s);
+                if pools.hot.contains(&IVec2::new(p.x.round() as i32, p.y.round() as i32)) {
+                    track.break_link((near.line, (s / crate::rails::LINK_LENGTH).floor() as i32));
                 }
+                s += 1.0;
             }
         }
     }
@@ -811,44 +813,26 @@ pub fn surface_mesh(cells: &HashSet<IVec2>, level: f32) -> Mesh {
         .with_inserted_indices(Indices::U32(indices))
 }
 
-/// Пересобирает плоскости озёр при изменении ячеек и держит их на уровне.
+/// Свет над ямой прорыва.
+#[derive(Component)]
+struct LavaGlow;
+
+/// Пересобирает сетки лавы после шага, где она сдвинулась, и ставит свет над новыми ямами.
 fn draw_pools(
     mut commands: Commands,
     mut pools: ResMut<LavaPools>,
+    terrain: Res<Terrain>,
     assets: Res<LavaAssets>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut roots: Query<&mut Transform, With<LavaSurface>>,
-    surfaces: Query<(Entity, &LavaSurface)>,
 ) {
-    let mut alive: Vec<Entity> = Vec::new();
+    let pools = &mut *pools;
     for pool in &mut pools.pools {
-        if pool.dirty {
-            pool.dirty = false;
-            if let Some(old) = pool.mesh.take() {
-                commands.entity(old).try_despawn();
-            }
-            let flat = surface_mesh(&pool.cells, 0.0);
-            let mesh = meshes.add(flat);
-            let root = commands
-                .spawn((
-                    LavaSurface { crust: false },
-                    RunScoped,
-                    NotShadowCaster,
-                    Mesh3d(mesh.clone()),
-                    MeshMaterial3d(assets.flow.clone()),
-                    Transform::from_xyz(0.0, pool.level, 0.0),
-                    Visibility::default(),
-                ))
-                .with_children(|p| {
-                    p.spawn((
-                        LavaSurface { crust: true },
-                        NotShadowCaster,
-                        Mesh3d(mesh),
-                        MeshMaterial3d(assets.crust.clone()),
-                        Transform::from_xyz(0.0, 0.04, 0.0),
-                    ));
-                    let c = pool.center();
-                    p.spawn((
+        if pool.light.is_none() {
+            pool.light = Some(
+                commands
+                    .spawn((
+                        LavaGlow,
+                        RunScoped,
                         PointLight {
                             color: Color::srgb(1.0, 0.45, 0.1),
                             intensity: 3_000_000.0,
@@ -856,25 +840,59 @@ fn draw_pools(
                             shadow_maps_enabled: false,
                             ..default()
                         },
-                        Transform::from_xyz(c.x, 3.0, c.y),
-                    ));
-                })
-                .id();
-            pool.mesh = Some(root);
-        }
-        if let Some(root) = pool.mesh {
-            alive.push(root);
-            if let Ok(mut t) = roots.get_mut(root) {
-                t.translation.y = pool.level;
-            }
+                        Transform::from_xyz(pool.origin.x as f32, pool.target_level + 3.0, pool.origin.y as f32),
+                    ))
+                    .id(),
+            );
         }
     }
-    // Плоскости слившихся озёр. Заменённую плоскость выше уже убирает `try_despawn`, а команды
-    // применяются после системы, и здесь она ещё видна: поэтому тоже `try_despawn`.
-    for (entity, surface) in &surfaces {
-        if !surface.crust && !alive.contains(&entity) {
-            commands.entity(entity).try_despawn();
-        }
+    if !pools.dirty {
+        return;
+    }
+    pools.dirty = false;
+    let height = |x: i32, z: i32| terrain.vertex_height(x, z);
+    // Горячая лава: течение и корки поверх, высоты уже в вершинах.
+    if let Some(old) = pools.hot_surface.take() {
+        commands.entity(old).try_despawn();
+    }
+    if let Some(mesh) = lava_flow::layer_mesh(&pools.cells, Layer::Hot, height) {
+        let mesh = meshes.add(mesh);
+        let root = commands
+            .spawn((
+                RunScoped,
+                NotShadowCaster,
+                Mesh3d(mesh.clone()),
+                MeshMaterial3d(assets.flow.clone()),
+                Transform::default(),
+                Visibility::default(),
+            ))
+            .with_children(|p| {
+                p.spawn((
+                    NotShadowCaster,
+                    Mesh3d(mesh),
+                    MeshMaterial3d(assets.crust.clone()),
+                    Transform::from_xyz(0.0, 0.04, 0.0),
+                ));
+            })
+            .id();
+        pools.hot_surface = Some(root);
+    }
+    // Застывшая лава.
+    if let Some(old) = pools.cooled_surface.take() {
+        commands.entity(old).try_despawn();
+    }
+    if let Some(mesh) = lava_flow::layer_mesh(&pools.cells, Layer::Crust, height) {
+        pools.cooled_surface = Some(
+            commands
+                .spawn((
+                    RunScoped,
+                    Mesh3d(meshes.add(mesh)),
+                    MeshMaterial3d(assets.cooled.clone()),
+                    Transform::default(),
+                    Visibility::default(),
+                ))
+                .id(),
+        );
     }
 }
 
@@ -884,8 +902,7 @@ fn animate_lava(
     assets: Res<LavaAssets>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     pools: Res<LavaPools>,
-    mut lights: Query<&mut PointLight, With<ChildOf>>,
-    surfaces: Query<&Children, With<LavaSurface>>,
+    mut lights: Query<&mut PointLight, With<LavaGlow>>,
 ) {
     if pools.pools.is_empty() {
         return;
@@ -897,12 +914,8 @@ fn animate_lava(
     if let Some(mut m) = materials.get_mut(&assets.crust) {
         m.uv_transform = Affine2::from_translation(Vec2::new(-t * 0.015, t * 0.01));
     }
-    for children in &surfaces {
-        for child in children.iter() {
-            if let Ok(mut light) = lights.get_mut(child) {
-                light.intensity = 3_000_000.0 * (0.8 + 0.2 * (t * 7.0).sin() * (t * 3.1).cos());
-            }
-        }
+    for mut light in &mut lights {
+        light.intensity = 3_000_000.0 * (0.8 + 0.2 * (t * 7.0).sin() * (t * 3.1).cos());
     }
 }
 
@@ -1109,15 +1122,12 @@ fn fade_smoke(mut commands: Commands, time: Res<Time>, mut smoke: Query<(Entity,
     }
 }
 
-/// Случайная ячейка озера: несколько попыток в его границах. `None`, если не попали.
-fn random_cell(pool: &Pool, rng: &mut GameRng) -> Option<IVec2> {
-    let (lo, hi) = pool.bounds;
+/// Случайная горячая ячейка ямы прорыва толще [`BUBBLE_DEPTH`]: несколько попыток. `None`, если не попали.
+fn random_cell(cells: &Cells, origin: IVec2, rng: &mut GameRng) -> Option<(IVec2, f32)> {
+    let r = Overhang::RIM as i32;
     (0..6).find_map(|_| {
-        let c = IVec2::new(
-            lo.x + rng.below((hi.x - lo.x + 1) as usize) as i32,
-            lo.y + rng.below((hi.y - lo.y + 1) as usize) as i32,
-        );
-        pool.cells.contains(&c).then_some(c)
+        let c = origin + IVec2::new(rng.below((2 * r + 1) as usize) as i32 - r, rng.below((2 * r + 1) as usize) as i32 - r);
+        cells.get(&c).filter(|cell| cell.is_hot() && cell.hot > BUBBLE_DEPTH).map(|cell| (c, cell.surface()))
     })
 }
 
@@ -1133,8 +1143,9 @@ fn bubble_pools(
 ) {
     let dt = time.delta_secs();
     let focus = Vec2::new(focus.0.x, focus.0.z);
-    for pool in &mut pools.pools {
-        if pool.age < FILL_TIME * 0.5 || pool.center().distance(focus) > BUBBLE_RANGE + POOL_REACH as f32 {
+    let LavaPools { pools, cells, .. } = &mut *pools;
+    for pool in pools.iter_mut() {
+        if pool.age < FILL_TIME * 0.5 || pool.origin.as_vec2().distance(focus) > BUBBLE_RANGE + Overhang::RIM {
             continue;
         }
         pool.bubble -= dt;
@@ -1142,7 +1153,7 @@ fn bubble_pools(
         pool.spit -= dt;
         if pool.bubble <= 0.0 {
             pool.bubble = BUBBLE_EVERY;
-            if let Some(c) = random_cell(pool, &mut rng) {
+            if let Some((c, surface)) = random_cell(cells, pool.origin, &mut rng) {
                 commands.spawn((
                     Smoke {
                         velocity: Vec3::Y * 0.3,
@@ -1154,13 +1165,13 @@ fn bubble_pools(
                     NotShadowCaster,
                     Mesh3d(assets.ball.clone()),
                     MeshMaterial3d(assets.spark.clone()),
-                    Transform::from_xyz(c.x as f32, pool.level + 0.05, c.y as f32).with_scale(Vec3::new(0.25, 0.12, 0.25)),
+                    Transform::from_xyz(c.x as f32, surface + 0.05, c.y as f32).with_scale(Vec3::new(0.25, 0.12, 0.25)),
                 ));
             }
         }
         if pool.puff <= 0.0 {
             pool.puff = PUFF_EVERY;
-            if let Some(c) = random_cell(pool, &mut rng) {
+            if let Some((c, surface)) = random_cell(cells, pool.origin, &mut rng) {
                 commands.spawn((
                     Smoke {
                         velocity: Vec3::new(0.5, rng.range(1.2, 2.0), -0.2),
@@ -1172,13 +1183,13 @@ fn bubble_pools(
                     NotShadowCaster,
                     Mesh3d(assets.ball.clone()),
                     MeshMaterial3d(assets.smoke.clone()),
-                    Transform::from_xyz(c.x as f32, pool.level + 0.6, c.y as f32).with_scale(Vec3::splat(0.8)),
+                    Transform::from_xyz(c.x as f32, surface + 0.6, c.y as f32).with_scale(Vec3::splat(0.8)),
                 ));
             }
         }
         if pool.spit <= 0.0 {
             pool.spit = rng.range(SPIT_EVERY.0, SPIT_EVERY.1);
-            if let Some(c) = random_cell(pool, &mut rng) {
+            if let Some((c, surface)) = random_cell(cells, pool.origin, &mut rng) {
                 for i in 0..3 {
                     let a = rng.range(0.0, std::f32::consts::TAU);
                     let side = rng.range(1.5, 4.0);
@@ -1190,7 +1201,7 @@ fn bubble_pools(
                         NotShadowCaster,
                         Mesh3d(assets.ball.clone()),
                         MeshMaterial3d(assets.drop.clone()),
-                        Transform::from_xyz(c.x as f32, pool.level + 0.3, c.y as f32).with_scale(Vec3::splat(0.25)),
+                        Transform::from_xyz(c.x as f32, surface + 0.3, c.y as f32).with_scale(Vec3::splat(0.25)),
                     ));
                 }
             }
@@ -1234,11 +1245,24 @@ mod tests {
         assert!(cells.iter().all(|c| c.x < 4));
     }
 
-    /// Наполненное озеро в одну ячейку: уровень 1 м, исходная поверхность 5 м.
+    /// Наполненное озеро: целевой уровень 1 м, исходная поверхность 5 м.
     fn filled_pool() -> Pool {
-        let mut pool = Pool::new(IVec2::ZERO, 1.0, 1.0 + POOL_BELOW);
+        let mut pool = Pool::new(IVec2::ZERO, 1.0 + POOL_BELOW);
         pool.age = 10.0;
         pool
+    }
+
+    /// Лава с горячими ячейками `hot` толщиной 1 м на ровном рельефе и озером `filled_pool`.
+    fn lava_with(hot: &[IVec2]) -> LavaPools {
+        let mut pools = LavaPools {
+            pools: vec![filled_pool()],
+            ..default()
+        };
+        for c in hot {
+            pools.cells.insert(*c, LavaCell { hot: 1.0, ..default() });
+        }
+        pools.refresh_hot();
+        pools
     }
 
     #[test]
@@ -1253,20 +1277,6 @@ mod tests {
         assert!(pool.target_level <= pool.max_level + 1e-5);
         assert!(pool.target_level > start);
         assert!(pool.max_level < 1.0 + POOL_BELOW, "озеро не поднимается до исходной поверхности");
-    }
-
-    #[test]
-    fn слитое_озеро_заливается_от_обоих_прорывов() {
-        // Две низины, соединённые узким проходом ниже уровня: x 0..=4 и x 20..=24, проход по z = 0.
-        let height = |x: i32, z: i32| {
-            let pit = (0..=4).contains(&x) || (20..=24).contains(&x);
-            if (pit && z.abs() <= 2) || (z == 0 && (0..=24).contains(&x)) { 0.0 } else { 10.0 }
-        };
-        let both = flood_all(&[IVec2::new(2, 0), IVec2::new(22, 0)], 1.0, 8, height);
-        assert!(both.contains(&IVec2::new(2, 2)));
-        assert!(both.contains(&IVec2::new(22, 2)), "дальняя часть второго озера на месте");
-        let first = flood(IVec2::new(2, 0), 1.0, 8, height);
-        assert!(!first.contains(&IVec2::new(22, 2)));
     }
 
     #[test]
@@ -1286,23 +1296,27 @@ mod tests {
 
     #[test]
     fn лава_рядом_по_ячейкам() {
-        let mut pool = filled_pool();
-        pool.set_cells(HashSet::from([IVec2::ZERO, IVec2::X]));
-        assert!(pool.near(Vec2::new(3.0, 0.0), 2.0));
-        assert!(!pool.near(Vec2::new(4.0, 0.0), 2.0));
-        assert!(!pool.near(Vec2::new(50.0, 0.0), 2.0));
+        let pools = lava_with(&[IVec2::ZERO, IVec2::X]);
+        assert!(pools.near(Vec2::new(3.0, 0.0), 2.0));
+        assert!(!pools.near(Vec2::new(4.0, 0.0), 2.0));
+        assert!(!pools.near(Vec2::new(50.0, 0.0), 2.0));
     }
 
-    /// Шахта прорыва на склоне горы (сид 3, точка (20, −110), уклон около 0,73) со стенкой,
-    /// прорубленной вниз по склону: та же расстановка, что в сцене проверки `lava_slope`.
-    /// Возвращает рельеф, место прорыва и озеро сразу после прорыва.
-    pub(crate) fn pit_on_slope() -> (Terrain, IVec2, Pool) {
-        let mut terrain = Terrain::new(3);
-        let at = IVec2::new(20, -110);
-        let h = |dx: i32, dz: i32| terrain.original_height(at.x + dx, at.y + dz);
-        let down = -Vec2::new(h(5, 0) - h(-5, 0), h(0, 5) - h(0, -5)).normalize();
+    #[test]
+    fn застывшая_лава_не_жжёт() {
+        let mut pools = lava_with(&[IVec2::ZERO]);
+        pools.cells.insert(IVec2::X, LavaCell { crust: 0.5, ..default() });
+        pools.refresh_hot();
+        assert!(is_lava(&pools, Vec3::ZERO), "горячая");
+        assert!(!is_lava(&pools, Vec3::X), "корка");
+        assert_eq!(pools.lava_at(0.0, 0.0), Some(1.0), "высота поверхности горячей лавы");
+    }
+
+    /// Шесть выстрелов мортиры в точку `at` рельефа с сидом `seed` (как в craters.rs: радиус 7,
+    /// мощность 1,4) и взрыв прорыва на дне. Возвращает рельеф и место прорыва — самую глубокую вершину.
+    fn breach(seed: u32, at: IVec2) -> (Terrain, IVec2) {
+        let mut terrain = Terrain::new(seed);
         let p = Vec3::new(at.x as f32, 0.0, at.y as f32);
-        // Шесть выстрелов мортиры в одну точку (как в craters.rs: радиус 7, мощность 1,4).
         for _ in 0..6 {
             terrain.apply_crater(p, 7.0, 4.9, 1.176);
         }
@@ -1317,37 +1331,62 @@ mod tests {
             }
         }
         assert!(deepest.0 > CRUST, "шесть выстрелов пробивают кору");
-        let cell = deepest.1;
-        let pool = Pool::new(cell, terrain.vertex_height(cell.x, cell.y), terrain.original_height(cell.x, cell.y));
-        // Взрыв прорыва на дне и два выстрела в стенку ниже по склону: край ямы ниже уровня лавы.
         terrain.apply_crater(p, 4.0, 3.6, 0.864);
+        (terrain, deepest.1)
+    }
+
+    /// Шахта прорыва на склоне горы (сид 3, точка (20, −110), уклон около 0,73) со стенкой,
+    /// прорубленной вниз по склону двумя выстрелами: та же расстановка, что в сцене проверки `lava_slope`.
+    pub(crate) fn pit_on_slope() -> (Terrain, IVec2) {
+        let at = IVec2::new(20, -110);
+        let (mut terrain, cell) = breach(3, at);
+        let h = |dx: i32, dz: i32| terrain.original_height(at.x + dx, at.y + dz);
+        let down = -Vec2::new(h(5, 0) - h(-5, 0), h(0, 5) - h(0, -5)).normalize();
+        let p = Vec3::new(at.x as f32, 0.0, at.y as f32);
         for _ in 0..2 {
             terrain.apply_crater(p + Vec3::new(down.x, 0.0, down.y) * 7.0, 7.0, 4.9, 1.176);
         }
-        (terrain, cell, pool)
+        (terrain, cell)
+    }
+
+    /// Лава из прорыва в `cell` за `seconds` секунд игры.
+    fn simulate(terrain: &Terrain, cell: IVec2, seconds: f32) -> LavaPools {
+        let mut pools = LavaPools::default();
+        pools.pools.push(Pool::new(cell, terrain.original_height(cell.x, cell.y)));
+        for _ in 0..(seconds / FLOW_STEP) as usize {
+            pools.step(|x, z| terrain.vertex_height(x, z));
+        }
+        pools
     }
 
     #[test]
-    #[ignore = "баг: лава из прорубленной ямы на склоне висит горизонтальной плитой, а не течёт вниз (сцена lava_slope)"]
     fn лава_из_ямы_на_склоне_не_висит_плитой() {
-        let (terrain, cell, pool) = pit_on_slope();
-        let level = pool.target_level;
-        let cells = flood(cell, level, POOL_REACH, |x, z| terrain.vertex_height(x, z));
-        let o = Overhang::measure(&cells, &[cell], level, |x, z| terrain.vertex_height(x, z), |x, z| terrain.original_height(x, z));
-        println!("прорыв {cell}, уровень {level:.2}; {o:?}");
+        let (terrain, cell) = pit_on_slope();
+        let pools = simulate(&terrain, cell, 60.0);
+        let o = pools.overhangs(&terrain)[0];
+        println!("прорыв {cell}; {o:?}, вылилось {:.0} м³", pools.pools[0].spilled);
         assert!(o.outside > 0, "лава выходит из ямы через прорубленную стенку: {o:?}");
-        // Слой, текущий по склону, лежит на рельефе; плита над склоном стоит выше его исходной поверхности.
-        assert!(o.above_surface <= 1.0, "лава за краем не стоит над склоном выше его поверхности: {o:?}");
+        assert!(o.reach > Overhang::RIM + 10.0, "и стекает вниз по склону: {o:?}");
+        // На нетронутом склоне поток лежит слоем по рельефу (в пологих впадинах — до полутора метров);
+        // горизонтальная плита стояла над ним на 5,5 м. Кратер у пролома лава заполняет — его не считаем.
+        assert!(o.intact > 0 && o.intact_thickness <= 2.0, "лава на склоне слоем, а не плитой: {o:?}");
+    }
+
+    #[test]
+    fn шахта_без_пролома_держит_лаву_в_яме() {
+        let (terrain, cell) = breach(3, IVec2::ZERO);
+        let pools = simulate(&terrain, cell, 30.0);
+        let o = pools.overhangs(&terrain)[0];
+        assert_eq!(o.outside, 0, "лава в яме: {o:?}");
+        let (surface, target, ..) = pools.summary()[0];
+        assert!((surface - target).abs() < 0.3, "яма наполнена до уровня: {surface} при цели {target}");
     }
 
     #[test]
     fn взрыв_поднимает_уровень() {
         let mut app = App::new();
         app.add_message::<Explosion>()
-            .insert_resource(LavaPools {
-                pools: vec![filled_pool()],
-                ..default()
-            })
+            .insert_resource(lava_with(&[IVec2::ZERO]))
             .insert_resource(LavaAssets {
                 ball: Handle::default(),
                 drop: Handle::default(),
@@ -1355,6 +1394,7 @@ mod tests {
                 spark: Handle::default(),
                 flow: Handle::default(),
                 crust: Handle::default(),
+                cooled: Handle::default(),
             })
             .add_systems(Update, blast_in_lava);
         app.world_mut().write_message(Explosion {

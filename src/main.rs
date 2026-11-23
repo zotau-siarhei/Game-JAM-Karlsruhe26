@@ -50,6 +50,7 @@ mod models;
 mod laser;
 mod lod;
 mod lava;
+mod lava_flow;
 mod mortar;
 mod obstacles;
 mod music;
