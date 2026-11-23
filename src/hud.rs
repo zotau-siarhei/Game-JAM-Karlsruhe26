@@ -311,11 +311,24 @@ fn update_health_bar(
         }
     }
     for mut text in &mut text {
-        let label = format!("{:.0}", health.current.ceil());
+        let label = health_label(fraction);
         if text.0 != label {
             text.0 = label;
         }
     }
+}
+
+/// Надпись на полосе здоровья — проценты: 100 только у целого лунохода, 0 только у погибшего.
+/// Любая царапина уже даёт 99, последний клочок здоровья — 1.
+fn health_label(fraction: f32) -> String {
+    let percent = if fraction >= 1.0 {
+        100.0
+    } else if fraction <= 0.0 {
+        0.0
+    } else {
+        (fraction * 100.0).ceil().clamp(1.0, 99.0)
+    };
+    format!("{percent:.0}%")
 }
 
 fn update_time(survival: Res<SurvivalTime>, mut text: Query<&mut Text, With<TimeText>>) {
@@ -339,6 +352,16 @@ mod tests {
         assert_eq!(format_time(60.0), "1:00.0");
         assert_eq!(format_time(187.25), "3:07.2");
         assert_eq!(format_time(-3.0), "0:00.0");
+    }
+
+    #[test]
+    fn health_label_is_percent() {
+        assert_eq!(health_label(1.0), "100%");
+        assert_eq!(health_label(1499.0 / 1500.0), "99%");
+        assert_eq!(health_label(0.5), "50%");
+        assert_eq!(health_label(0.421), "43%");
+        assert_eq!(health_label(1.0 / 1500.0), "1%");
+        assert_eq!(health_label(0.0), "0%");
     }
 
     #[test]
