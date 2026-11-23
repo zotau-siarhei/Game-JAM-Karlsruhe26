@@ -23,8 +23,6 @@ pub struct AndroidPlugin;
 
 impl Plugin for AndroidPlugin {
     fn build(&self, app: &mut App) {
-        std::sync::LazyLock::force(&START);
-        restart_on_panic();
         let device = device();
         info!(
             "Android: GPU «{}», памяти {:.1} ГБ, low_ram {}, SoC {} → уровень {:?} (опрос {:.0} мс)",
@@ -426,7 +424,13 @@ fn restart_on_render_error(error: &RenderError, main_world: &mut World, _: &mut 
 /// Паника о потере видеокарты тоже перезапускает игру: wgpu паникует раньше обработчика ошибок рендера.
 /// Любая другая паника роняет процесс (`abort`): без этого перезапуск прятал бы ошибку от Play Vitals —
 /// паника рабочего потока при `panic = "unwind"` не оставляет отчёта о падении.
-fn restart_on_panic() {
+///
+/// Ставится первым делом в `main`, до сборки Bevy: рендер создаётся уже в `add_plugins`, и паника там
+/// («Unable to find a GPU» на телефоне без годного Vulkan) раньше доходила до `android-activity` —
+/// та ловит её и тихо закрывает активность, а игрок видит, что игра просто пропала, и отчёта нет.
+/// Обработчики Bevy (лог, ошибки ECS) встают позже и вызывают этот после себя.
+pub fn install_panic_hook() {
+    std::sync::LazyLock::force(&START);
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         default(info);

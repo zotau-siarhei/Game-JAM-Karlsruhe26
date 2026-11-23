@@ -132,6 +132,7 @@ fn main() {
         if STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
             std::process::exit(0);
         }
+        android::install_panic_hook();
     }
     // На Android аргументов запуска и переменных окружения нет: их задают свойства (`android.rs`).
     #[cfg(target_os = "android")]
