@@ -42,6 +42,11 @@
 14 дней подряд, только потом откроется Production. Порядок: Closed testing → создать трек, список тестировщиков
 (адреса Google), загрузить AAB, выпуск на тест.
 
+**Состояние:** 24.11.2026 выпуск 0.1.0 (447) опубликован в закрытый тест. Ждём проверки Google, затем 12
+тестировщиков 14 дней подряд (не раньше 8.12.2026), после этого — заявка на Production. Ссылка для тестировщиков
+(Testers → How testers join your test → Join on the web): https://play.google.com/apps/testing/io.github.zotausiarhei.spaceguard
+— открыть под адресом из списка, нажать Become a tester, установить из Play.
+
 ## App content (Policy → App content)
 
 | Раздел | Ответ |
