@@ -203,8 +203,14 @@ cargo test                                  # тесты
   `run_on_java_main_thread`), безопасная область — вырез и видимые панели (`android::safe_insets`); экран не гаснет
   (`KEEP_SCREEN_ON`). «Выхода» в меню нет: «назад» в главном меню сворачивает игру (`moveTaskToBack`). Игра просит
   аудиофокус и молчит во время звонка (`sound::SystemSilence`; проверка — `adb emu gsm call 5551234`, конец —
-  `adb emu gsm cancel 5551234`). Что меняется посреди игры (оператор, SIM, тема…), перечислено в `configChanges`
+  `adb emu gsm cancel 5551234`). Звонок, начавшийся во время забега, ставит паузу (`run::SystemPause`); забег,
+  начатый посреди звонка, идёт. Звонилки (WhatsApp) держат `PROXIMITY_SCREEN_OFF_WAKE_LOCK`, он гасит экран
+  поверх игры, когда рука закрывает датчик, — фокус и жизненный цикл при этом не меняются, поэтому
+  `android::watch_display` раз в 0,25 с читает `Display.getState()` и ставит паузу (проверка — `adb emu sensor
+  set proximity 0` при взятом таком wake lock). Что меняется посреди игры (оператор, SIM, тема…), перечислено в `configChanges`
   манифеста: новая активность в живом процессе завершает его (`main.rs`).
+  Пока идут тесты, сверху справа от полосы здоровья всегда видна версия пакета (`src/version_label.rs`,
+  флаг профиля `menu.version`; выключить — `adb shell setprop debug.spaceguard.menu.version false`).
   Иконка — ресурсы `android/res`; слои пересобирает `scripts/android-icon.py` из `android/icon/source.png` (нужен Pillow).
   Пакет для Google Play — `scripts/build-aab.sh` (`--install` ставит его на телефон через bundletool; bundletool —
   `brew install bundletool`, без него скрипт сам скачает jar в `target/android/tools`):

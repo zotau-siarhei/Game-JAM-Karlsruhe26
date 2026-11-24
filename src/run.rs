@@ -74,6 +74,7 @@ impl Plugin for RunPlugin {
             .add_message::<WorldRebuilt>()
             .add_message::<RunStarted>()
             .add_message::<RecordPlaced>()
+            .add_message::<SystemPause>()
             .add_systems(Startup, announce_first_world)
             .add_systems(
                 Update,
@@ -131,6 +132,13 @@ pub struct WorldRebuilt {
     /// Сид нового мира: от него строятся посёлки, объекты, пути и игровой генератор.
     pub seed: u32,
 }
+
+/// Система просит паузу, хотя окно на экране и в фокусе: начался звонок или экран погас от датчика
+/// приближения (Android, `android::watch_audio` и `android::watch_display`). Сообщение, а не состояние:
+/// забег, начатый посреди уже идущего звонка, на паузу не встаёт, а пауза от звонка, начавшегося на
+/// экране паузы, не возвращается после «продолжить».
+#[derive(Message, Debug, Clone, Copy)]
+pub struct SystemPause;
 
 /// Начался новый забег: приходит сразу за [`WorldRebuilt`], в том же кадре. Только для того,
 /// что случается именно в начале забега и не нужно в меню: приветствие штаба.
@@ -887,7 +895,7 @@ fn pause_on_escape_or_blur(
     mut lifecycle: MessageReader<bevy::window::AppLifecycle>,
     mut next: ResMut<NextState<GameState>>,
     targeting: Res<crate::airstrike::Targeting>,
-    silence: Option<Res<crate::sound::SystemSilence>>,
+    mut system: MessageReader<SystemPause>,
 ) {
     // В прогоне замера и при отладочном автозапуске окно может быть и не в фокусе.
     let unattended = bench.is_some_and(|b| b.on) || std::env::var_os("SPACE_GUARD_AUTOSTART").is_some();
@@ -896,9 +904,9 @@ fn pause_on_escape_or_blur(
     let suspended = lifecycle.read().any(|event| {
         matches!(event, bevy::window::AppLifecycle::WillSuspend | bevy::window::AppLifecycle::Suspended)
     });
-    // Звонок поверх игры (Android): окно на экране, но играть сейчас некогда.
-    let call = silence.is_some_and(|silence| silence.is_changed() && silence.0);
-    let blurred = (focus.read().any(|change| !change.focused) || suspended || call) && !unattended;
+    // Звонок или погасший экран (Android): окно на экране и в фокусе, но играть сейчас некогда.
+    let interrupted = system.read().count() > 0;
+    let blurred = (focus.read().any(|change| !change.focused) || suspended || interrupted) && !unattended;
     // Esc в наведении авиаудара отменяет его, а не ставит паузу.
     if blurred || (keys.just_pressed(KeyCode::Escape) && !targeting.open) {
         next.set(GameState::Paused);

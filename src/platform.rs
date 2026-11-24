@@ -60,6 +60,16 @@ pub fn asset_exists(dir: &str, file: &str) -> bool {
     }
 }
 
+/// Версия игры для подписи на экране (`version_label.rs`): на Android — версия установленного пакета,
+/// в остальных сборках — версия крейта.
+pub fn app_version() -> String {
+    #[cfg(target_os = "android")]
+    if let Some(version) = crate::android::app_version() {
+        return version;
+    }
+    format!("v{}", env!("CARGO_PKG_VERSION"))
+}
+
 /// Браузер на телефоне или планшете (`window.spaceGuardMobile` страницы): по нему выбирается
 /// профиль `web-mobile`. Ограничения по железу берутся из профиля платформы (`profile.rs`).
 #[cfg(target_arch = "wasm32")]

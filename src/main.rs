@@ -100,6 +100,7 @@ mod trains;
 mod tunnel_view;
 mod upgrades;
 mod vehicle;
+mod version_label;
 mod weapon_sfx;
 mod weapons;
 mod voice;
@@ -326,7 +327,7 @@ fn game_plugins(app: &mut App) {
         ))
         .add_plugins((
             combat::CombatPlugin,
-            hud::HudPlugin,
+            (hud::HudPlugin, version_label::VersionLabelPlugin),
             minimap::MinimapPlugin,
             bullet::BulletPlugin,
             enemy::EnemyPlugin,

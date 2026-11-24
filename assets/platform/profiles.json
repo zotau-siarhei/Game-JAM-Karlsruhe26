@@ -20,7 +20,7 @@
     "prewarm": { "start_frames": 0, "wait_pipelines": false, "wait_limit": 2.0, "sync_compile": false },
     "threads": { "compute": null, "async_compute": null },
     "input": { "touch_default": false, "cursor": true, "rumble": true },
-    "menu": { "quit": true },
+    "menu": { "quit": true, "version": false },
     "audio": { "pause_in_background": false, "world_sounds": 20 }
   },
 
@@ -64,7 +64,7 @@
     "prewarm": { "wait_pipelines": true },
     "threads": { "compute": 4, "async_compute": [2, 6] },
     "input": { "touch_default": true, "cursor": false, "rumble": false },
-    "menu": { "quit": false },
+    "menu": { "quit": false, "version": true },
     "audio": { "pause_in_background": true }
   },
   "android-low": {

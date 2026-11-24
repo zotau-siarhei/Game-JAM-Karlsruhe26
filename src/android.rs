@@ -42,7 +42,7 @@ impl Plugin for AndroidPlugin {
         hide_system_bars();
         app.add_systems(Last, drop_point_shadow_sampling)
             .init_resource::<Load>()
-            .add_systems(PreUpdate, (keep_immersive, watch_audio))
+            .add_systems(PreUpdate, (keep_immersive, watch_audio, watch_display))
             .add_systems(
                 Update,
                 back_to_background
@@ -624,6 +624,28 @@ pub fn debug_launch() -> Vec<String> {
 
 /// Системное свойство Android (`adb shell setprop <имя> <значение>`); `None` — не задано.
 /// Свойства `debug.*` ставятся без root: ими замеры переключаются без пересборки.
+/// Версия установленного пакета: `versionName (versionCode)` из `PackageManager` — та, что пришла из Play
+/// или `adb install`, а не та, с которой собран код.
+pub fn app_version() -> Option<String> {
+    use jni::objects::{JObject, JString, JValue};
+    with_activity(|env, activity| {
+        let manager = env.call_method(activity, "getPackageManager", "()Landroid/content/pm/PackageManager;", &[])?.l()?;
+        let name = env.call_method(activity, "getPackageName", "()Ljava/lang/String;", &[])?.l()?;
+        let info = env
+            .call_method(
+                &manager,
+                "getPackageInfo",
+                "(Ljava/lang/String;I)Landroid/content/pm/PackageInfo;",
+                &[JValue::Object(&name), JValue::Int(0)],
+            )?
+            .l()?;
+        let version: JObject = env.get_field(&info, "versionName", "Ljava/lang/String;")?.l()?;
+        let version: String = if version.is_null() { "?".into() } else { env.get_string(&JString::from(version))?.into() };
+        let code = env.call_method(&info, "getLongVersionCode", "()J", &[])?.j()?;
+        Ok(format!("v{version} ({code})"))
+    })
+}
+
 pub fn system_property(name: &std::ffi::CStr) -> Option<String> {
     unsafe extern "C" {
         fn __system_property_get(name: *const std::ffi::c_char, value: *mut std::ffi::c_char) -> i32;
@@ -841,6 +863,7 @@ fn watch_audio(
     mut away: Local<bool>,
     mut next: Local<f32>,
     mut silence: ResMut<crate::sound::SystemSilence>,
+    mut pause: MessageWriter<crate::run::SystemPause>,
 ) {
     use bevy::window::AppLifecycle;
     for event in lifecycle.read() {
@@ -877,12 +900,56 @@ fn watch_audio(
         silence.0 = call;
         // Звонок забрал фокус, а слушателя нет: после звонка — просить заново.
         *granted = false;
+        if call {
+            pause.write(crate::run::SystemPause);
+        }
     }
     /// `AudioManager.AUDIOFOCUS_REQUEST_GRANTED`.
     const GRANTED: i32 = 1;
     if !*away && !call && !*granted && audio_focus("requestAudioFocus") == Some(GRANTED) {
         *granted = true;
         info!("Android: аудиофокус получен");
+    }
+}
+
+/// Экран погас, а игра осталась на экране: датчик приближения во время звонка. WhatsApp и другие звонилки
+/// держат `PROXIMITY_SCREEN_OFF_WAKE_LOCK`, а он гасит экран поверх любого приложения, когда рука закрывает
+/// датчик у камеры. Фокус и жизненный цикл при этом не меняются, и забег шёл бы вслепую. Раз в 0,25 с —
+/// `Display.getState()` (кэш `DisplayInfo` в процессе, без обращения к системе): экран погас — пауза.
+fn watch_display(
+    time: Res<Time<Real>>,
+    mut next: Local<f32>,
+    mut dark: Local<bool>,
+    mut pause: MessageWriter<crate::run::SystemPause>,
+) {
+    /// `Display.STATE_OFF`, `STATE_DOZE`, `STATE_DOZE_SUSPEND`.
+    const DARK: [i32; 3] = [1, 3, 4];
+    let now = time.elapsed_secs();
+    if now < *next {
+        return;
+    }
+    *next = now + 0.25;
+    let Some(state) = with_activity(|env, activity| {
+        let manager = env.call_method(activity, "getWindowManager", "()Landroid/view/WindowManager;", &[])?.l()?;
+        let display = env.call_method(&manager, "getDefaultDisplay", "()Landroid/view/Display;", &[])?.l()?;
+        if display.is_null() {
+            return Ok(None);
+        }
+        env.call_method(&display, "getState", "()I", &[])?.i().map(Some)
+    })
+    .flatten() else {
+        return;
+    };
+    let now_dark = DARK.contains(&state);
+    if now_dark == *dark {
+        return;
+    }
+    *dark = now_dark;
+    if now_dark {
+        info!("Android: экран погас при открытой игре (датчик приближения?) — пауза");
+        pause.write(crate::run::SystemPause);
+    } else {
+        info!("Android: экран снова горит");
     }
 }
 

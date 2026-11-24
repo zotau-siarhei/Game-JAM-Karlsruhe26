@@ -15,10 +15,10 @@ use crate::run::GameState;
 use crate::weapons::CurrentWeapon;
 
 /// Отступ интерфейса от краёв окна.
-const MARGIN: f32 = 16.0;
+pub const MARGIN: f32 = 16.0;
 
 /// Размер полосы здоровья.
-const BAR_SIZE: Vec2 = Vec2::new(260.0, 22.0);
+pub const BAR_SIZE: Vec2 = Vec2::new(260.0, 22.0);
 
 /// Тёмная подложка под элементами, чтобы они читались на зелёном и коричневом.
 const PANEL_COLOR: Color = Color::srgba(0.0, 0.0, 0.0, 0.65);

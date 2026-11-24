@@ -157,6 +157,8 @@ pub struct Input {
 pub struct Menu {
     /// Пункт «Выход» в главном меню.
     pub quit: bool,
+    /// Версия игры всегда на экране сверху (`version_label.rs`): на Android, пока идут тесты.
+    pub version: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -952,6 +954,7 @@ mod tests {
             (Some(4), Some([2, 6]))
         );
         assert!(android.input.touch_default && !android.input.cursor && !android.input.rumble && !android.menu.quit);
+        assert!(android.menu.version);
         assert!(android.audio.pause_in_background);
     }
 
