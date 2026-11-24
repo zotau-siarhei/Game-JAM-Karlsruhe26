@@ -33,6 +33,7 @@ wgpu = { version = "30.0.2", default-features = false }
 [patch.crates-io]
 android-activity = { path = "../target/android/patched/android-activity" }
 bevy_audio = { path = "../vendor/bevy_audio" }
+wgpu-hal = { path = "../vendor/wgpu-hal" }
 
 [profile.release]
 # Крейт игры компилируется параллельно: сборка быстрее, игра почти не медленнее.

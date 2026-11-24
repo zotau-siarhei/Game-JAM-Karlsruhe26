@@ -348,6 +348,13 @@ cargo test                                  # тесты
 - `bevy_hanabi` — GPU-частицы: взрывы, дым, искры.
 - `bevy_audio` — своя копия 0.20.1 в `vendor/bevy_audio` (`[patch.crates-io]`, и в `android/Cargo.toml`): вывод звука переоткрывается
   при пропаже или смене устройства (наушники отключились и вернулись), см. `vendor/bevy_audio/PATCH.md`.
+- `wgpu-hal` — своя копия 30.0.2 в `vendor/wgpu-hal` (`[patch.crates-io]`, и в `android/Cargo.toml`) с тремя
+  исправлениями Vulkan из trunk wgpu, которых нет в 30.x: удаление поверхности после потери видеокарты без паники
+  (#10230 — вылет на POCO X4 Pro 5G), пул дескрипторов без размеров на старых драйверах (#10124, Adreno 6xx),
+  `ERROR_FRAGMENTED_POOL` без `unreachable!()` (#10264, Mali). См. `vendor/wgpu-hal/PATCH.md`.
+- **При обновлении Bevy или wgpu пересмотри обе копии.** Заплатка действует только при той же версии; иначе cargo
+  лишь предупреждает, и исправления молча пропадают. Тест `tests/vendor_patches.rs` падает, если в `Cargo.lock`
+  оказалась не своя копия, и говорит, что делать.
 - `bevy_trauma_shake` — тряска камеры.
 - `noise` — шум для ландшафта.
 - `serde`, `serde_json` — чтение списка реплик штаба.

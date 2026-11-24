@@ -73,3 +73,5 @@ codegen-units = 16
 # (наушники отключились и вернулись). Правка — vendor/bevy_audio/PATCH.md.
 [patch.crates-io]
 bevy_audio = { path = "vendor/bevy_audio" }
+# Исправления Vulkan из trunk wgpu (потеря видеокарты, пулы дескрипторов) — vendor/wgpu-hal/PATCH.md.
+wgpu-hal = { path = "vendor/wgpu-hal" }
