@@ -135,7 +135,7 @@ pub(crate) fn follow_output_device(
     use rodio::cpal::traits::{DeviceTrait, HostTrait};
 
     if suspended.0 {
-        if audio_output.stream.take().is_some() {
+        if close_stream(audio_output.stream.take()) {
             release_sinks(&mut commands, &sinks);
             audio_output.reopen = true;
             info!("Audio output closed while the app is in the background.");
@@ -159,7 +159,7 @@ pub(crate) fn follow_output_device(
         return;
     }
     // The old stream goes first: some backends refuse a second stream on the same device.
-    audio_output.stream = None;
+    close_stream(audio_output.stream.take());
     let flag = audio_output.lost.clone();
     let (stream, device) = open_default(&flag);
     audio_output.device = device;
@@ -170,6 +170,18 @@ pub(crate) fn follow_output_device(
     audio_output.stream = stream;
     info!("Audio output reopened on the current default device.");
     release_sinks(&mut commands, &sinks);
+}
+
+/// Space Guard: closes the stream; `true` if there was one. `ndk` 0.9 closes an AAudio stream with
+/// `unwrap()` in `Drop`, so an error from the system on close (old Android audio stacks) would be a panic
+/// that ends the game; here it only costs a warning.
+#[cfg(not(target_arch = "wasm32"))]
+fn close_stream(stream: Option<MixerDeviceSink>) -> bool {
+    let had = stream.is_some();
+    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || drop(stream))).is_err() {
+        warn!("Audio output closed with an error.");
+    }
+    had
 }
 
 /// Sinks of a closed stream: looping sounds lose their sink and are queued again for the next

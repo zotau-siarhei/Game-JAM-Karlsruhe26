@@ -411,7 +411,17 @@ static START: std::sync::LazyLock<bevy::platform::time::Instant> =
 /// сборке шейдеров в загрузке. Тогда wgpu паникует в пуле задач, а если успеет Bevy — закрывает игру
 /// ошибкой рендера; игра выглядит упавшей. Вместо этого она открывается заново: новая активность
 /// в живом процессе завершает его (`main`), и система поднимает её в новом процессе с новым устройством.
+///
+/// Другие ошибки (проверка, нехватка памяти, внутренняя) перезапуском не лечатся: процесс падает (`abort`),
+/// и падение с причиной попадает в Play Vitals. Тихий выход прятал бы их.
 fn restart_on_render_error(error: &RenderError, main_world: &mut World, _: &mut World) -> RenderErrorPolicy {
+    use bevy::render::error_handler::ErrorType;
+    let reason = format!("render error {:?}: {}", error.ty, error.description);
+    crate::trail::fail(&reason);
+    if error.ty != ErrorType::DeviceLost {
+        error!("Ошибка рендера {:?}: {} — игра падает с отчётом", error.ty, error.description);
+        std::process::abort();
+    }
     if restart_once() {
         error!("Ошибка рендера {:?}: игра открывается заново", error.ty);
     } else {
@@ -436,6 +446,13 @@ pub fn install_panic_hook() {
         default(info);
         // Стандартный обработчик пишет в stderr, а его на Android никто не читает: сообщение — в logcat.
         let message = info.to_string();
+        // `ndk` 0.9 закрывает поток AAudio через `unwrap()`: ошибку закрытия ловит копия `bevy_audio`
+        // (`catch_unwind`), игра идёт дальше.
+        if audio_close_panic(info) {
+            warn!("Ошибка при закрытии потока звука, игра продолжается: {message}");
+            return;
+        }
+        crate::trail::fail(&format!("panic: {message}"));
         if device_lost_panic(&message) && restart_once() {
             error!("Паника: видеокарта потеряна, игра открывается заново: {message}");
             return;
@@ -444,6 +461,14 @@ pub fn install_panic_hook() {
         error!("Паника: {message}");
         std::process::abort();
     }));
+}
+
+/// Паника в закрытии потока AAudio (`Drop` у `ndk::audio::AudioStream`).
+fn audio_close_panic(info: &std::panic::PanicHookInfo) -> bool {
+    info.location().is_some_and(|location| {
+        let file = location.file().replace('\\', "/");
+        file.contains("/ndk-") && file.ends_with("src/audio.rs")
+    })
 }
 
 /// Паника о потерянном устройстве GPU (wgpu: «Parent device is lost», «Device is lost», `DeviceLost`).
@@ -457,12 +482,14 @@ const RESTARTED_EXTRA: &str = "space_guard.restarted";
 /// Перезапуск, упавший раньше этого срока, игру уже не перезапускает: так не будет круга запусков.
 const RESTART_GRACE_SECONDS: f32 = 60.0;
 
-/// Перезапускает игру один раз за процесс. `false` — не стал или не вышло.
+/// Перезапускает игру один раз за процесс. `false` — не стал или не вышло. Повторный вызов отвечает
+/// так же, как первый: перезапуск уже идёт или его не будет.
 fn restart_once() -> bool {
-    static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    if DONE.swap(true, std::sync::atomic::Ordering::SeqCst) {
-        return true;
-    }
+    static DONE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DONE.get_or_init(try_restart)
+}
+
+fn try_restart() -> bool {
     if START.elapsed().as_secs_f32() < RESTART_GRACE_SECONDS && with_activity(|env, activity| {
         let intent = env.call_method(activity, "getIntent", "()Landroid/content/Intent;", &[])?.l()?;
         let name = env.new_string(RESTARTED_EXTRA)?;
@@ -886,8 +913,9 @@ fn watch_audio(
         return;
     }
     *next = now + 1.0;
-    /// `AudioManager.MODE_RINGTONE`, `MODE_IN_CALL`, `MODE_IN_COMMUNICATION`.
-    const CALL_MODES: [i32; 3] = [1, 2, 3];
+    /// `AudioManager.MODE_RINGTONE`, `MODE_IN_CALL`, `MODE_IN_COMMUNICATION`, `MODE_CALL_SCREENING`,
+    /// `MODE_CALL_REDIRECT`, `MODE_COMMUNICATION_REDIRECT` (последние три — Android 10–13).
+    const CALL_MODES: [i32; 6] = [1, 2, 3, 4, 5, 6];
     let Some(mode) = with_activity(|env, activity| {
         let manager = audio_manager(env, activity)?;
         env.call_method(&manager, "getMode", "()I", &[])?.i()

@@ -481,10 +481,13 @@ pub fn node_contains(
 
 /// Игра ушла в фон или потеряла фокус (жест «Домой», звонок, блокировка): всё, что держали пальцы,
 /// отпускается. Система обычно присылает отмену касаний, но не обязана; палец, который она так
-/// и не отпустила, после возврата ничего не держит — его уже нет в `TouchControls`.
+/// и не отпустила, после возврата ничего не держит — его уже нет в `TouchControls`. Так же — пауза
+/// от системы (`run::SystemPause`): экран, погашенный датчиком приближения, отключает и сенсор, а
+/// фокус остаётся у игры.
 fn release_on_blur(
     mut focus: MessageReader<bevy::window::WindowFocused>,
     mut lifecycle: MessageReader<bevy::window::AppLifecycle>,
+    mut system: MessageReader<crate::run::SystemPause>,
     mut controls: ResMut<TouchControls>,
     mut touches: ResMut<Touches>,
     mut keys: ResMut<ButtonInput<KeyCode>>,
@@ -494,7 +497,8 @@ fn release_on_blur(
     let suspended = lifecycle.read().any(|event| {
         matches!(event, bevy::window::AppLifecycle::WillSuspend | bevy::window::AppLifecycle::Suspended)
     });
-    if !blurred && !suspended {
+    let interrupted = system.read().count() > 0;
+    if !blurred && !suspended && !interrupted {
         return;
     }
     // Пальцы забываются и в `Touches`: отпускания, которое система не прислала, уже не будет, а палец

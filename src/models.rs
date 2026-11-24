@@ -472,6 +472,7 @@ fn track_loading(
         // На телефоне сетка упрощается до сцены: все экземпляры модели берут уже упрощённую.
         // Доля — `mobile_detail` модели, умноженная на `models.detail` профиля платформы
         // (для замера — `detail 0.4`, см. `profile.rs`).
+        crate::trail::mark(format!("model {id}: loaded, {triangles} triangles"));
         let lod = &crate::profile::get().models;
         let detail = model.entry.mobile_detail * lod.detail;
         // Силуэт для тени строится из полной сетки, до её упрощения.
@@ -481,6 +482,7 @@ fn track_loading(
             && !crate::perf::off("proxies")
             && let Some(gltf) = gltfs.get(&handles.gltf)
         {
+            crate::trail::mark(format!("model {id}: shadow proxy"));
             let (mut before, mut after) = (0, 0);
             for primitive in gltf.meshes.iter().filter_map(|m| gltf_meshes.get(m)).flat_map(|m| &m.primitives) {
                 let Some(proxy) = meshes.get(&primitive.mesh).and_then(|mesh| {
@@ -495,6 +497,7 @@ fn track_loading(
             info!("Модели: «{id}» отбрасывает тень силуэтом: треугольников {before} → {after}");
         }
         if lod.simplify && detail < 1.0 && let Some(gltf) = gltfs.get(&handles.gltf) {
+            crate::trail::mark(format!("model {id}: simplify"));
             let (mut before, mut after) = (0, 0);
             for primitive in gltf.meshes.iter().filter_map(|m| gltf_meshes.get(m)).flat_map(|m| &m.primitives) {
                 if let Some(mesh) = meshes.get_mut(&primitive.mesh)
@@ -506,6 +509,7 @@ fn track_loading(
             }
             info!("Модели: «{id}» упрощена для телефона: треугольников {before} → {after}");
         }
+        crate::trail::mark(format!("model {id}: ready"));
         model.state = ModelState::Ready(handles);
     }
 }

@@ -82,7 +82,9 @@ impl Plugin for RunPlugin {
                     // Ввод меню (`menu.rs`) идёт после полёта: иначе полёт спрятал бы луноход, только что
                     // поставленный на старт.
                     fly_over_planet.run_if(in_state(GameState::Menu)),
-                    pause_on_escape_or_blur.run_if(in_state(GameState::Playing)),
+                    // Работает всегда: сообщения потери фокуса и паузы от системы читаются и вне забега,
+                    // иначе пришедшее на экране паузы вернуло бы паузу сразу после «продолжить».
+                    pause_on_escape_or_blur,
                     (pause_input, highlight_pause_choice)
                         .chain()
                         .run_if(in_state(GameState::Paused))
@@ -889,6 +891,7 @@ fn moved_choice(current: usize, step: i32) -> usize {
 
 /// Забег встаёт на паузу по Esc и когда окно теряет фокус.
 fn pause_on_escape_or_blur(
+    state: Res<State<GameState>>,
     keys: Res<ButtonInput<KeyCode>>,
     bench: Option<Res<crate::perf::Bench>>,
     mut focus: MessageReader<WindowFocused>,
@@ -907,6 +910,9 @@ fn pause_on_escape_or_blur(
     // Звонок или погасший экран (Android): окно на экране и в фокусе, но играть сейчас некогда.
     let interrupted = system.read().count() > 0;
     let blurred = (focus.read().any(|change| !change.focused) || suspended || interrupted) && !unattended;
+    if *state.get() != GameState::Playing {
+        return;
+    }
     // Esc в наведении авиаудара отменяет его, а не ставит паузу.
     if blurred || (keys.just_pressed(KeyCode::Escape) && !targeting.open) {
         next.set(GameState::Paused);

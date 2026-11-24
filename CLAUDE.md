@@ -211,6 +211,12 @@ cargo test                                  # тесты
   манифеста: новая активность в живом процессе завершает его (`main.rs`).
   Пока идут тесты, на стартовом экране (в меню) слева сверху видна версия пакета (`src/version_label.rs`,
   флаг профиля `menu.version`; выключить — `adb shell setprop debug.spaceguard.menu.version false`).
+  По тому же флагу игра ведёт след запуска (`src/trail.rs`, файл `launch_trail.txt` рядом с настройками): этап
+  загрузки, модель, конвейеры в сборке, реплику и свободную память. Если прошлый запуск оборвался, на экране
+  загрузки и в меню слева сверху видна строка «LAST LAUNCH STOPPED AT: …» — тестировщику без adb хватит снимка.
+  Новый опасный этап отмечай `trail::mark`, причину выхода — `trail::fail`. Ошибка рендера, кроме `DeviceLost`,
+  роняет процесс (`abort`), чтобы попасть в Play Vitals; паника закрытия потока AAudio (`ndk` 0.9, `unwrap()` в
+  `Drop`) игру не роняет: копия `bevy_audio` закрывает поток в `catch_unwind`.
   Иконка — ресурсы `android/res`; слои пересобирает `scripts/android-icon.py` из `android/icon/source.png` (нужен Pillow).
   Пакет для Google Play — `scripts/build-aab.sh` (`--install` ставит его на телефон через bundletool; bundletool —
   `brew install bundletool`, без него скрипт сам скачает jar в `target/android/tools`):
@@ -233,7 +239,9 @@ cargo test                                  # тесты
   бы сама: в манифесте `enableOnBackInvokedCallback="false"`.
   Скорость на телефоне (A059, Adreno 810): кадр рисуется не плотнее 1,25/1,5/2 пикселя на точку по ступени
   качества (`src/render_scale.rs`: в рендер-мире уменьшаются цепочка кадров окна и цели камер, растягивает
-  система); на medium один каскад теней. Все эти числа — в профиле платформы (см. «Профили платформ» ниже).
+  система); на medium один каскад теней. На Android wgpu выделяет видеопамять экономно (`render.gpu_memory memory`),
+  у `android-low` фильтр теней Hardware2x2 (`render.shadow_filter`) и сборка шейдеров в 1–3 потоках: вылеты на POCO
+  X4 Pro и Huawei P30. Все эти числа — в профиле платформы (см. «Профили платформ» ниже).
   Главная нагрузка — модели: на телефоне (`models.simplify` профиля, на компьютере `SPACE_GUARD_MOBILE=1`)
   сетки моделей с полем `mobile_detail` в `models.json` упрощает
   meshoptimizer (`src/lod.rs`, крейт `meshopt` на C++, не в WASM; для Android C++ собирается без исключений),

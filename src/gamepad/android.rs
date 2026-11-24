@@ -322,12 +322,14 @@ fn poll(
 fn release_on_blur(
     mut focus: MessageReader<bevy::window::WindowFocused>,
     mut lifecycle: MessageReader<bevy::window::AppLifecycle>,
+    mut system: MessageReader<crate::run::SystemPause>,
 ) {
     let blurred = focus.read().any(|change| !change.focused);
     let suspended = lifecycle.read().any(|event| {
         matches!(event, bevy::window::AppLifecycle::WillSuspend | bevy::window::AppLifecycle::Suspended)
     });
-    if blurred || suspended {
+    let interrupted = system.read().count() > 0;
+    if blurred || suspended || interrupted {
         release_all(&mut shared());
     }
 }

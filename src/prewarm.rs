@@ -134,6 +134,7 @@ impl PipelineWatch {
 fn compile_pipelines(mut cache: ResMut<PipelineCache>, watch: Res<PipelineWatch>) {
     let start = Instant::now();
     cache.process_queue();
+    mark_compiling(&cache, "compiling", |p| matches!(p.state, bevy::render::render_resource::CachedPipelineState::Creating(_)));
     let prewarm = &crate::profile::get().prewarm;
     if prewarm.wait_pipelines {
         use bevy::render::render_resource::CachedPipelineState;
@@ -165,6 +166,20 @@ fn compile_pipelines(mut cache: ResMut<PipelineCache>, watch: Res<PipelineWatch>
     state.fresh = fresh;
     state.total = total;
     state.waiting = cache.waiting_pipelines().count();
+}
+
+/// Отметка следа (`trail.rs`): сколько конвейеров в очереди или сборке и метки первых из них. Если
+/// драйвер упадёт на сборке, при следующем запуске видно, на каких.
+fn mark_compiling(
+    cache: &PipelineCache,
+    what: &str,
+    filter: impl Fn(&&bevy::render::render_resource::CachedPipeline) -> bool,
+) {
+    let pending: Vec<_> = cache.pipelines().filter(filter).collect();
+    crate::trail::mark_pipelines((!pending.is_empty()).then(|| {
+        let labels: Vec<String> = pending.iter().take(3).map(|p| label(&p.descriptor)).collect();
+        format!("pipelines {what}: {} ({})", pending.len(), labels.join(", "))
+    }));
 }
 
 fn label(descriptor: &PipelineDescriptor) -> String {

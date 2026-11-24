@@ -167,9 +167,10 @@ pub fn spawn_camera(mut commands: Commands, focus: Res<Focus>) {
         GameCamera::default(),
         Camera3d::default(),
         // Без сглаживания MSAA: так плавнее на слабой видеокарте. Края теней размывает фильтр
-        // Gaussian (9 выборок, как ядро 5×5): с одной выборкой Hardware2x2 они шли «пилой».
+        // Gaussian (9 выборок, как ядро 5×5): с одной выборкой Hardware2x2 они шли «пилой». На слабом
+        // Android — Hardware2x2: шейдер проще для старых драйверов (`render.shadow_filter` профиля).
         bevy::render::view::Msaa::Off,
-        bevy::light::ShadowFilteringMethod::Gaussian,
+        crate::profile::get().render.shadow_filter.method(),
         Transform::from_translation(focus.0 + camera_offset(0.0)).with_rotation(camera_rotation(0.0)),
     ));
 }

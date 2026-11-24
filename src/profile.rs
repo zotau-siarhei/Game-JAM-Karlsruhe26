@@ -85,6 +85,48 @@ pub struct Render {
     pub frame_limit: Option<f32>,
     /// Ждать ли развёртку экрана; без неё видно, сколько игра может.
     pub vsync: bool,
+    /// Фильтр краёв теней у камеры.
+    pub shadow_filter: ShadowFilter,
+    /// Как wgpu выделяет видеопамять.
+    pub gpu_memory: GpuMemory,
+}
+
+/// Фильтр краёв теней.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ShadowFilter {
+    /// Одна аппаратная выборка 2×2: края «пилой», зато шейдер простой (слабые драйверы Android).
+    Hardware,
+    /// 9 выборок, как ядро 5×5: мягкие края.
+    Gaussian,
+}
+
+impl ShadowFilter {
+    pub fn method(self) -> bevy::light::ShadowFilteringMethod {
+        match self {
+            ShadowFilter::Hardware => bevy::light::ShadowFilteringMethod::Hardware2x2,
+            ShadowFilter::Gaussian => bevy::light::ShadowFilteringMethod::Gaussian,
+        }
+    }
+}
+
+/// Выделение видеопамяти.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GpuMemory {
+    /// Крупные блоки (по умолчанию wgpu): быстрее, но на телефоне откусывает сотни мегабайт общей памяти.
+    Performance,
+    /// Мелкие блоки по мере надобности.
+    Memory,
+}
+
+impl GpuMemory {
+    pub fn hints(self) -> bevy::render::settings::MemoryHints {
+        match self {
+            GpuMemory::Performance => bevy::render::settings::MemoryHints::Performance,
+            GpuMemory::Memory => bevy::render::settings::MemoryHints::MemoryUsage,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -956,6 +998,10 @@ mod tests {
         assert!(android.input.touch_default && !android.input.cursor && !android.input.rumble && !android.menu.quit);
         assert!(android.menu.version);
         assert!(android.audio.pause_in_background);
+        assert_eq!(
+            (android.render.shadow_filter, android.render.gpu_memory),
+            (ShadowFilter::Gaussian, GpuMemory::Memory)
+        );
     }
 
     #[test]
@@ -1070,6 +1116,19 @@ mod tests {
             assert_eq!((p.threads.compute, p.prewarm.wait_pipelines), (mid.threads.compute, true));
             assert!(p.input.touch_default && p.audio.pause_in_background);
         }
+        // Слабый — простой фильтр теней и меньше потоков сборки шейдеров: бережёт старые драйверы и память.
+        assert_eq!(low.render.shadow_filter, ShadowFilter::Hardware);
+        assert_eq!(low.threads.async_compute, Some([1, 3]));
+        assert_eq!(high.threads.async_compute, mid.threads.async_compute);
+        assert_eq!(low.render.gpu_memory, GpuMemory::Memory);
+        // На компьютере — как было.
+        let desktop = build("macos", &[]);
+        assert_eq!(
+            (desktop.render.shadow_filter, desktop.render.gpu_memory),
+            (ShadowFilter::Gaussian, GpuMemory::Performance)
+        );
+        let forced = build("android", &[("render.shadow_filter", "hardware")]);
+        assert_eq!(forced.render.shadow_filter, ShadowFilter::Hardware);
     }
 
     #[test]

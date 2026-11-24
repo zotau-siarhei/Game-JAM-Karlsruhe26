@@ -100,6 +100,7 @@ mod trains;
 mod tunnel_view;
 mod upgrades;
 mod vehicle;
+mod trail;
 mod version_label;
 mod weapon_sfx;
 mod weapons;
@@ -132,6 +133,8 @@ fn main() {
     {
         static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         if STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            warn!("Вторая активность в живом процессе: процесс уходит, система откроет игру заново");
+            trail::fail("exit: activity recreated in a live process");
             std::process::exit(0);
         }
         android::install_panic_hook();
@@ -149,6 +152,8 @@ fn main() {
     // переменными окружения, которые он ставит. На iOS класс устройства спрашивается здесь, в
     // главном потоке.
     let profile = profile::get();
+    // След запуска (`trail.rs`): что игра делала, если процесс оборвётся.
+    trail::begin();
     // Развёртку для замера выключает и профиль: `novsync 1` или `render.vsync false`.
     let no_vsync = bench.on || !profile.render.vsync;
     let plugins = DefaultPlugins.set(WindowPlugin {
@@ -198,6 +203,14 @@ fn main() {
     // ждёт начатые конвейеры (`prewarm::compile_pipelines`).
     let plugins = plugins.set(bevy::render::RenderPlugin {
         synchronous_pipeline_compilation: profile.prewarm.sync_compile,
+        // Экономная видеопамять (`render.gpu_memory`): на телефоне видеопамять — общая с системой, а
+        // по умолчанию wgpu резервирует её блоками по 128–256 МБ.
+        render_creation: bevy::render::settings::RenderCreation::Automatic(Box::new(
+            bevy::render::settings::WgpuSettings {
+                memory_hints: profile.render.gpu_memory.hints(),
+                ..default()
+            },
+        )),
         ..default()
     });
     let plugins = plugins.set(task_pools(&profile.threads));
@@ -217,6 +230,7 @@ fn main() {
         .add_plugins(game_plugins)
         .add_systems(Startup, spawn_light)
         .run();
+    trail::clean("exit");
     // winit строит цикл событий один раз на процесс. Android держит процесс после выхода из игры
     // и открывает в нём новую активность (иконка, «открыть» после установки): второй запуск
     // падал с «Failed to build event loop: RecreationAttempt». Процесс уходит вместе с игрой.
@@ -327,7 +341,7 @@ fn game_plugins(app: &mut App) {
         ))
         .add_plugins((
             combat::CombatPlugin,
-            (hud::HudPlugin, version_label::VersionLabelPlugin),
+            (hud::HudPlugin, version_label::VersionLabelPlugin, trail::TrailPlugin),
             minimap::MinimapPlugin,
             bullet::BulletPlugin,
             enemy::EnemyPlugin,

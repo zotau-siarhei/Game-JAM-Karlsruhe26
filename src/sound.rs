@@ -281,6 +281,12 @@ fn pause_audio_in_background(
         spatial_sinks.iter().filter(|(_, i)| wakes(*i)).for_each(|(sink, _)| sink.play());
         // Звук мира на паузе игры остаётся придержанным: его отпустит `resume_world_sounds`.
         for (entity, mut settings, instance) in &mut held {
+            // Разовый звук, заказанный за звонок или в фоне, уже опоздал: выстрелы и взрывы прошлых
+            // секунд не звучат залпом. Музыка и зацикленные звуки продолжаются.
+            if matches!(settings.mode, bevy::audio::PlaybackMode::Despawn) {
+                commands.entity(entity).despawn();
+                continue;
+            }
             if wakes(instance) {
                 settings.paused = false;
                 commands.entity(entity).remove::<HeldInBackground>();

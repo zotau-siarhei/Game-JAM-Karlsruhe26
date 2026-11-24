@@ -152,6 +152,7 @@ fn play_voice(
         commands.entity(entity).despawn();
     }
     info!("Штаб ({}): {}", loaded.entry.event, loaded.entry.text);
+    crate::trail::mark(format!("voice {id}"));
     commands.spawn((
         VoicePlayback {
             id: id.clone(),

@@ -180,6 +180,9 @@ fn track_loading(
     } else {
         Step::Ready
     });
+    if let Some(step) = &run.step {
+        crate::trail::mark(step.line());
+    }
 
     let elapsed = now - started;
     let timed_out = elapsed > MAX_SECONDS;
