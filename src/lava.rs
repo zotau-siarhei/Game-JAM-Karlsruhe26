@@ -27,7 +27,7 @@ use crate::craters;
 use crate::enemy::Enemy;
 use crate::explosion::Explosion;
 use crate::frame::{GameSet, RunMessages};
-use crate::lava_flow::{self, Cells, FLOW_STEP, LavaCell, Layer, StepResult};
+use crate::lava_flow::{self, FLOW_STEP, Field, LavaCell, StepResult};
 use crate::pickups::Pickup;
 use crate::props::{Prop, PropKind};
 use crate::rails::TrackDamage;
@@ -145,8 +145,10 @@ pub struct Pool {
     /// Выше этого взрывы уровень не поднимают.
     max_level: f32,
     age: f32,
-    /// Сколько лавы вылилось за край ямы, м³.
+    /// Сколько лавы вылилось за край ямы, м³: застывшее там плюс горячее.
     spilled: f32,
+    /// Сколько вылившейся лавы застыло целиком (и ушло из шага течения), м³.
+    frozen_out: f32,
     /// Свет над ямой.
     light: Option<Entity>,
     /// Сколько до следующего пузыря, клуба дыма и плевка, с.
@@ -164,6 +166,7 @@ impl Pool {
             max_level: surface - POOL_CEILING_BELOW,
             age: 0.0,
             spilled: 0.0,
+            frozen_out: 0.0,
             light: None,
             bubble: 0.0,
             puff: 0.0,
@@ -183,17 +186,19 @@ impl Pool {
 #[derive(Resource, Default)]
 pub struct LavaPools {
     pools: Vec<Pool>,
-    cells: Cells,
+    field: Field,
     /// Горячие ячейки и их рамка: для быстрых проверок «где лава».
     hot: HashSet<IVec2>,
     bounds: Option<(IVec2, IVec2)>,
     /// Сколько накопилось времени до следующего шага течения, с.
     step_clock: f32,
-    /// Сетки надо пересобрать.
-    dirty: bool,
-    /// Сетка горячей лавы (с дочерней сеткой корок поверх) и сетка застывшей.
+    /// Сетку горячей лавы надо пересобрать.
+    hot_dirty: bool,
+    /// Сетка горячей лавы (с дочерней сеткой корок поверх) и сетки застывшей по квадратам плана.
     hot_surface: Option<Entity>,
-    cooled_surface: Option<Entity>,
+    cooled_surfaces: HashMap<IVec2, Entity>,
+    /// Квадраты застывшей лавы, сетку которых надо пересобрать.
+    cooled_dirty: HashSet<IVec2>,
     /// Сколько накопилось времени до следующего тика урона, с.
     burn_clock: f32,
     /// Растёт при каждом изменении горячих ячеек, не сбрасывается и при перестройке мира.
@@ -207,7 +212,7 @@ impl LavaPools {
         self.pools
             .iter()
             .map(|p| {
-                let surface = self.cells.get(&p.origin).map_or(f32::NAN, LavaCell::surface);
+                let surface = self.field.cells.get(&p.origin).map_or(f32::NAN, LavaCell::surface);
                 (surface, p.target_level, self.hot.len(), self.hot_surface.is_some())
             })
             .collect()
@@ -219,11 +224,15 @@ impl LavaPools {
         self.pools
             .iter()
             .map(|p| {
-                let near = self
-                    .cells
+                let hot = self.field.cells.iter().map(|(c, cell)| (*c, cell.surface()));
+                let cooled = self
+                    .field
+                    .cooled
                     .iter()
-                    .filter(|(c, _)| (**c - p.origin).length_squared() <= FLOW_REACH * FLOW_REACH)
-                    .map(|(c, cell)| (*c, cell.surface()));
+                    .map(|(c, crust)| (*c, terrain.vertex_height(c.x, c.y) + crust));
+                let near = hot
+                    .chain(cooled)
+                    .filter(|(c, _)| (*c - p.origin).length_squared() <= FLOW_REACH * FLOW_REACH);
                 Overhang::measure(near, &origins, |x, z| terrain.vertex_height(x, z), |x, z| terrain.original_height(x, z))
             })
             .collect()
@@ -234,23 +243,39 @@ impl LavaPools {
         let origins: Vec<IVec2> = self.pools.iter().map(|p| p.origin).collect();
         let pit = |c: IVec2| origins.iter().any(|o| (c - *o).as_vec2().length() <= Overhang::RIM);
         let allowed = |c: IVec2| origins.iter().any(|o| (c - *o).length_squared() <= FLOW_REACH * FLOW_REACH);
-        for pool in &mut self.pools {
-            pool.spilled = self
+        // Чья лава в ячейке: ближнего места прорыва в пределе удаления.
+        let owner = |c: IVec2| {
+            origins
+                .iter()
+                .enumerate()
+                .filter(|(_, o)| (c - **o).length_squared() <= FLOW_REACH * FLOW_REACH)
+                .min_by_key(|(_, o)| (c - **o).length_squared())
+                .map(|(i, _)| i)
+        };
+        let mut covered = Vec::new();
+        for i in 0..self.pools.len() {
+            let pool = &self.pools[i];
+            // Вылилось: застывшее за краем плюс горячее за краем сейчас. Застывшие ячейки не
+            // перебираются — их объём копится в `frozen_out`.
+            let hot_out: f32 = self
+                .field
                 .cells
                 .iter()
-                .filter(|(c, _)| !pit(**c) && (**c - pool.origin).length_squared() <= FLOW_REACH * FLOW_REACH)
+                .filter(|(c, _)| !pit(**c) && owner(**c) == Some(i))
                 .map(|(_, cell)| cell.hot + cell.crust)
                 .sum();
-            if pool.spilled >= SPILL_BUDGET {
+            let spilled = pool.frozen_out + hot_out;
+            self.pools[i].spilled = spilled;
+            if spilled >= SPILL_BUDGET {
                 continue;
             }
             // Источник льёт в ячейки вокруг места прорыва, где поверхность ниже уровня озера.
-            let surface = |c: IVec2| self.cells.get(&c).map_or_else(|| height(c.x, c.y), LavaCell::surface);
+            let pool = &self.pools[i];
             let spots: Vec<(IVec2, f32)> = (-SOURCE_RADIUS..=SOURCE_RADIUS)
                 .flat_map(|dz| (-SOURCE_RADIUS..=SOURCE_RADIUS).map(move |dx| IVec2::new(dx, dz)))
                 .filter(|o| o.length_squared() <= SOURCE_RADIUS * SOURCE_RADIUS)
                 .map(|o| pool.origin + o)
-                .map(|c| (c, pool.target_level - surface(c)))
+                .map(|c| (c, pool.target_level - self.field.surface_at(c, &height)))
                 .filter(|(_, room)| *room > 0.0)
                 .collect();
             if spots.is_empty() {
@@ -258,12 +283,26 @@ impl LavaPools {
             }
             let share = SOURCE_RATE * FLOW_STEP / spots.len() as f32;
             for (c, room) in spots {
-                lava_flow::pour(&mut self.cells, c, share.min(room), height);
+                if let Some(crust) = self.field.pour(c, share.min(room), height) {
+                    covered.push((c, crust));
+                }
             }
         }
-        let result = lava_flow::flow_step(&mut self.cells, FLOW_STEP, height, allowed, pit);
-        if result.reshaped || result.moved > MESH_EPS {
-            self.dirty = true;
+        let mut result = self.field.step(FLOW_STEP, height, allowed, pit);
+        result.covered.extend(covered);
+        // Застывшая за краем ямы лава остаётся в счёте своего прорыва, хотя и ушла из шага.
+        for (sign, list) in [(1.0, &result.frozen), (-1.0, &result.covered)] {
+            for (c, crust) in list {
+                if let Some(i) = owner(*c).filter(|_| !pit(*c)) {
+                    self.pools[i].frozen_out += sign * crust;
+                }
+            }
+        }
+        if result.reshaped || result.moved > MESH_EPS || result.cooled_changed() {
+            self.hot_dirty = true;
+        }
+        for (c, _) in result.frozen.iter().chain(&result.covered) {
+            self.cooled_dirty.extend(lava_flow::crust_tiles_at(*c));
         }
         if result.reshaped {
             self.refresh_hot();
@@ -273,7 +312,7 @@ impl LavaPools {
 
     /// Пересчитывает набор горячих ячеек и рамку.
     fn refresh_hot(&mut self) {
-        let hot: HashSet<IVec2> = self.cells.iter().filter(|(_, c)| c.is_hot()).map(|(k, _)| *k).collect();
+        let hot: HashSet<IVec2> = self.field.cells.iter().filter(|(_, c)| c.is_hot()).map(|(k, _)| *k).collect();
         if hot == self.hot {
             return;
         }
@@ -408,7 +447,7 @@ impl LavaPools {
         if !self.hot.contains(&cell) {
             return None;
         }
-        self.cells.get(&cell).map(LavaCell::surface)
+        self.field.cells.get(&cell).map(LavaCell::surface)
     }
 
     /// Есть ли горячая лава в `reach` метрах от точки плана.
@@ -431,7 +470,7 @@ impl LavaPools {
 
     /// Сколько ячеек застыло коркой: для отладочных сцен.
     pub fn crust_cells(&self) -> usize {
-        self.cells.values().filter(|c| c.crust > 0.0).count()
+        self.field.cooled.len() + self.field.cells.values().filter(|c| c.crust > 0.0).count()
     }
 
     /// Горячие ячейки: для мини-карты.
@@ -851,44 +890,42 @@ fn draw_pools(
             );
         }
     }
-    if !pools.dirty {
-        return;
-    }
-    pools.dirty = false;
     let height = |x: i32, z: i32| terrain.vertex_height(x, z);
     // Горячая лава: течение и корки поверх, высоты уже в вершинах.
-    if let Some(old) = pools.hot_surface.take() {
-        commands.entity(old).try_despawn();
-    }
-    if let Some(mesh) = lava_flow::layer_mesh(&pools.cells, Layer::Hot, height) {
-        let mesh = meshes.add(mesh);
-        let root = commands
-            .spawn((
-                RunScoped,
-                NotShadowCaster,
-                Mesh3d(mesh.clone()),
-                MeshMaterial3d(assets.flow.clone()),
-                Transform::default(),
-                Visibility::default(),
-            ))
-            .with_children(|p| {
-                p.spawn((
+    if std::mem::take(&mut pools.hot_dirty) {
+        if let Some(old) = pools.hot_surface.take() {
+            commands.entity(old).try_despawn();
+        }
+        if let Some(mesh) = pools.field.hot_mesh(height) {
+            let mesh = meshes.add(mesh);
+            let root = commands
+                .spawn((
+                    RunScoped,
                     NotShadowCaster,
-                    Mesh3d(mesh),
-                    MeshMaterial3d(assets.crust.clone()),
-                    Transform::from_xyz(0.0, 0.04, 0.0),
-                ));
-            })
-            .id();
-        pools.hot_surface = Some(root);
+                    Mesh3d(mesh.clone()),
+                    MeshMaterial3d(assets.flow.clone()),
+                    Transform::default(),
+                    Visibility::default(),
+                ))
+                .with_children(|p| {
+                    p.spawn((
+                        NotShadowCaster,
+                        Mesh3d(mesh),
+                        MeshMaterial3d(assets.crust.clone()),
+                        Transform::from_xyz(0.0, 0.04, 0.0),
+                    ));
+                })
+                .id();
+            pools.hot_surface = Some(root);
+        }
     }
-    // Застывшая лава.
-    if let Some(old) = pools.cooled_surface.take() {
-        commands.entity(old).try_despawn();
-    }
-    if let Some(mesh) = lava_flow::layer_mesh(&pools.cells, Layer::Crust, height) {
-        pools.cooled_surface = Some(
-            commands
+    // Застывшая лава: только квадраты, где что-то застыло или натекло.
+    for tile in std::mem::take(&mut pools.cooled_dirty) {
+        if let Some(old) = pools.cooled_surfaces.remove(&tile) {
+            commands.entity(old).try_despawn();
+        }
+        if let Some(mesh) = pools.field.crust_mesh(tile, height) {
+            let surface = commands
                 .spawn((
                     RunScoped,
                     Mesh3d(meshes.add(mesh)),
@@ -896,8 +933,9 @@ fn draw_pools(
                     Transform::default(),
                     Visibility::default(),
                 ))
-                .id(),
-        );
+                .id();
+            pools.cooled_surfaces.insert(tile, surface);
+        }
     }
 }
 
@@ -1128,7 +1166,7 @@ fn fade_smoke(mut commands: Commands, time: Res<Time>, mut smoke: Query<(Entity,
 }
 
 /// Случайная горячая ячейка ямы прорыва толще [`BUBBLE_DEPTH`]: несколько попыток. `None`, если не попали.
-fn random_cell(cells: &Cells, origin: IVec2, rng: &mut GameRng) -> Option<(IVec2, f32)> {
+fn random_cell(cells: &lava_flow::Cells, origin: IVec2, rng: &mut GameRng) -> Option<(IVec2, f32)> {
     let r = Overhang::RIM as i32;
     (0..6).find_map(|_| {
         let c = origin + IVec2::new(rng.below((2 * r + 1) as usize) as i32 - r, rng.below((2 * r + 1) as usize) as i32 - r);
@@ -1148,7 +1186,8 @@ fn bubble_pools(
 ) {
     let dt = time.delta_secs();
     let focus = Vec2::new(focus.0.x, focus.0.z);
-    let LavaPools { pools, cells, .. } = &mut *pools;
+    let LavaPools { pools, field, .. } = &mut *pools;
+    let cells = &field.cells;
     for pool in pools.iter_mut() {
         if pool.age < FILL_TIME * 0.5 || pool.origin.as_vec2().distance(focus) > BUBBLE_RANGE + Overhang::RIM {
             continue;
@@ -1264,7 +1303,7 @@ mod tests {
             ..default()
         };
         for c in hot {
-            pools.cells.insert(*c, LavaCell { hot: 1.0, ..default() });
+            pools.field.cells.insert(*c, LavaCell { hot: 1.0, ..default() });
         }
         pools.refresh_hot();
         pools
@@ -1310,7 +1349,7 @@ mod tests {
     #[test]
     fn застывшая_лава_не_жжёт() {
         let mut pools = lava_with(&[IVec2::ZERO]);
-        pools.cells.insert(IVec2::X, LavaCell { crust: 0.5, ..default() });
+        pools.field.cooled.insert(IVec2::X, 0.5);
         pools.refresh_hot();
         assert!(is_lava(&pools, Vec3::ZERO), "горячая");
         assert!(!is_lava(&pools, Vec3::X), "корка");
