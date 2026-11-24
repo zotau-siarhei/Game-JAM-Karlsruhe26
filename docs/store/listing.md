@@ -60,6 +60,19 @@ Made at Game Jam Karlsruhe 2026 by Nidzhat Guseynov, Ivan Tsarev and Sergei Zoto
 Requires Android 10 or newer, a 64-bit (ARM64) device and a GPU with Vulkan 1.1.
 ```
 
+## Release notes 0.4.0 (до 500 символов)
+
+```text
+<en-US>
+What's new in 0.4.0:
+• Fixed crashes after a graphics driver reset (e.g. POCO X4 Pro 5G): the game now restarts instead
+• Fixed crashes on older Adreno 6xx and on Mali GPUs
+• No more false crash reports when the game restarts itself
+• The "last launch stopped" line now shows the first cause and where in the game it happened
+Please report crashes, freezes and stutters.
+</en-US>
+```
+
 ## Release notes 0.3.0 (до 500 символов)
 
 ```text
