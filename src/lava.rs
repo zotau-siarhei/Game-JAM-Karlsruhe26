@@ -251,6 +251,18 @@ impl LavaPools {
         // Вылилось: всё, что налил источник, кроме горячего в его яме (ячейка ямы — к ближнему месту
         // прорыва). Бюджет считается по истоку, а не по тому, чья корка где лежит: соседний прорыв
         // не забирает чужой поток в свой счёт.
+        // Ямы ближе двух радиусов перекрываются: у таких прорывов счёт общий (группа), иначе горячая
+        // лава общего озера скачком переходила бы из ямы одного прорыва в яму другого и меняла их
+        // перелив без всякого течения. Бюджет группы — по бюджету на каждый прорыв в ней.
+        let mut group: Vec<usize> = (0..origins.len()).collect();
+        for i in 0..origins.len() {
+            for j in 0..i {
+                if (origins[i] - origins[j]).length_squared() <= 4 * RIM_SQ && group[i] != group[j] {
+                    let (from, to) = (group[i].max(group[j]), group[i].min(group[j]));
+                    group.iter_mut().filter(|g| **g == from).for_each(|g| *g = to);
+                }
+            }
+        }
         let mut in_pit = vec![0.0f32; self.pools.len()];
         for (c, cell) in &self.field.cells {
             let nearest = origins
@@ -260,13 +272,19 @@ impl LavaPools {
                 .filter(|(_, d)| *d <= RIM_SQ)
                 .min_by_key(|(_, d)| *d);
             if let Some((i, _)) = nearest {
-                in_pit[i] += cell.hot;
+                in_pit[group[i]] += cell.hot;
             }
         }
+        let mut poured = vec![0.0f32; self.pools.len()];
+        let mut size = vec![0usize; self.pools.len()];
+        for (pool, g) in self.pools.iter().zip(&group) {
+            poured[*g] += pool.poured;
+            size[*g] += 1;
+        }
         let mut pours = Vec::new();
-        for (pool, in_pit) in self.pools.iter_mut().zip(in_pit) {
-            pool.spilled = (pool.poured - in_pit).max(0.0);
-            if pool.spilled >= SPILL_BUDGET {
+        for (pool, g) in self.pools.iter_mut().zip(group) {
+            pool.spilled = (poured[g] - in_pit[g]).max(0.0);
+            if pool.spilled >= SPILL_BUDGET * size[g] as f32 {
                 continue;
             }
             // Источник льёт в ячейки вокруг места прорыва, где поверхность ниже уровня озера.
@@ -302,7 +320,7 @@ impl LavaPools {
     /// Рельеф изменился в круге (кратер, провал, вскрытый туннель): сетки лавы там пересобираются.
     /// Корка лежит на рельефе (рельеф плюс толщина), поэтому после пересборки она ляжет в воронку,
     /// а не повиснет над ней. Саму корку не трогаем: объём и счёт прорыва не меняются.
-    fn terrain_changed(&mut self, center: Vec3, radius: f32) {
+    fn terrain_changed(&mut self, center: Vec3, radius: f32, height: impl Fn(i32, i32) -> f32) {
         let lo = Vec2::new(center.x, center.z) - Vec2::splat(radius + 1.0);
         let hi = Vec2::new(center.x, center.z) + Vec2::splat(radius + 1.0);
         let tile = |p: Vec2| IVec2::new(p.x.floor() as i32, p.y.floor() as i32).div_euclid(IVec2::splat(lava_flow::CRUST_TILE));
@@ -316,6 +334,8 @@ impl LavaPools {
             }
         }
         if self.touches(lo, hi) {
+            let c = IVec2::new(center.x.round() as i32, center.z.round() as i32);
+            self.field.refresh_ground(c, radius.ceil() as i32 + 1, height);
             self.hot_dirty = true;
         }
     }
@@ -447,15 +467,13 @@ impl LavaPools {
         (a.y..=b.y).any(|tz| (a.x..=b.x).any(|tx| self.hot_tiles.contains(&IVec2::new(tx, tz))))
     }
 
-    /// Высота поверхности горячей лавы в точке плана — как у её сетки, между вершинами плавно.
-    /// `None` — ни в одной из четырёх вершин вокруг точки горячей лавы нет.
-    pub fn surface_at(&self, x: f32, z: f32, height: impl Fn(i32, i32) -> f32) -> Option<f32> {
+    /// Видна ли в точке плана горячая лава — как у её сетки, между вершинами плавно: поверхность
+    /// выше корки или рельефа под ней. Здесь лава жжёт.
+    pub fn burns_at(&self, x: f32, z: f32, height: impl Fn(i32, i32) -> f32) -> bool {
         let square = IVec2::new(x.floor() as i32, z.floor() as i32);
         let corners = [IVec2::ZERO, IVec2::X, IVec2::ONE, IVec2::Y];
-        if !corners.iter().any(|o| self.hot.contains(&(square + *o))) {
-            return None;
-        }
-        self.field.hot_surface_at(x, z, height)
+        corners.iter().any(|o| self.hot.contains(&(square + *o)))
+            && self.field.hot_depth_at(x, z, height).is_some_and(|d| d > 0.0)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -824,7 +842,7 @@ fn grow_pools(
 ) {
     for change in changes.read() {
         if !pools.pools.is_empty() {
-            pools.terrain_changed(change.center, change.radius);
+            pools.terrain_changed(change.center, change.radius, |x, z| terrain.vertex_height(x, z));
         }
     }
     if pools.pools.is_empty() {
@@ -1023,12 +1041,7 @@ fn burn_in_lava(
     let pools = &*pools;
     // Поверхность лавы между вершинами берётся как у её сетки: на склоне жжёт вся видимая лава, а
     // на стенке ямы выше глади — нет.
-    let in_lava = |t: &Transform| {
-        let (x, z) = (t.translation.x, t.translation.z);
-        pools
-            .surface_at(x, z, |vx, vz| terrain.vertex_height(vx, vz))
-            .is_some_and(|level| terrain.height_at(x, z) < level)
-    };
+    let in_lava = |t: &Transform| pools.burns_at(t.translation.x, t.translation.z, |vx, vz| terrain.vertex_height(vx, vz));
     let mut burn = |target: Entity, per_second: f32| {
         damage.write(Damage {
             target,
@@ -1398,12 +1411,37 @@ mod tests {
         pools.pools.push(Pool::new(IVec2::ZERO, 0.0));
         pools.field.cooled.insert(IVec2::new(40, 0), 0.5);
         pools.cooled_surfaces.insert(IVec2::new(1, 0), Entity::PLACEHOLDER);
-        pools.terrain_changed(Vec3::new(40.0, 0.0, 0.0), 3.0);
+        pools.terrain_changed(Vec3::new(40.0, 0.0, 0.0), 3.0, |_, _| 0.0);
         assert!(pools.cooled_dirty.contains(&IVec2::new(1, 0)), "квадрат корки пересоберётся");
         assert_eq!(pools.field.cooled.get(&IVec2::new(40, 0)), Some(&0.5), "корка на месте — ляжет в воронку");
         assert!(!pools.hot_dirty, "горячей лавы рядом нет");
-        pools.terrain_changed(Vec3::new(1.0, 0.0, 1.0), 3.0);
+        pools.terrain_changed(Vec3::new(1.0, 0.0, 1.0), 3.0, |_, _| -1.0);
+        assert_eq!(pools.field.cells[&IVec2::ZERO].ground, -1.0, "земля под лавой уже новая");
         assert!(pools.hot_dirty, "воронка у горячей лавы");
+    }
+
+    #[test]
+    fn соседний_прорыв_не_глушит_источник() {
+        // Две перекрытые шахты радиусом 8 м и глубиной 10 м, места прорыва в 10 м друг от друга.
+        let height = |x: i32, z: i32| {
+            let p = IVec2::new(x, z);
+            if p.length_squared() <= 64 || (p - IVec2::new(10, 0)).length_squared() <= 64 { -10.0 } else { 0.0 }
+        };
+        let mut pools = LavaPools::default();
+        pools.pools.push(Pool::new(IVec2::ZERO, 0.0));
+        for _ in 0..50 {
+            pools.step(height);
+        }
+        let before = pools.pools[0].spilled;
+        pools.pools.push(Pool::new(IVec2::new(10, 0), 0.0));
+        pools.step(height);
+        assert!(pools.pools[0].spilled <= before + 1.0, "перелив №0 не прыгнул: {before} → {}", pools.pools[0].spilled);
+        for _ in 0..100 {
+            pools.step(height);
+        }
+        for p in &pools.pools {
+            assert!(p.spilled < 30.0, "из закрытой чаши почти ничего не вылилось: {}", p.spilled);
+        }
     }
 
     #[test]
@@ -1426,10 +1464,9 @@ mod tests {
         }
         pools.refresh_hot();
         for x in [9.6f32, 9.9, 10.2, 10.45] {
-            let s = pools.surface_at(x, 0.0, height).expect("лава");
-            assert!(-0.73 * x < s, "в x = {x} жжёт");
+            assert!(pools.burns_at(x, 0.0, height), "в x = {x} жжёт");
         }
-        assert!(pools.surface_at(30.0, 0.0, height).is_none());
+        assert!(!pools.burns_at(30.0, 0.0, height));
     }
 
     /// Шесть выстрелов мортиры в точку `at` рельефа с сидом `seed` (как в craters.rs: радиус 7,

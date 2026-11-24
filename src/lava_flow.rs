@@ -174,9 +174,13 @@ impl Field {
         pit: impl Fn(IVec2) -> bool,
     ) -> StepResult {
         let hot_before: HashSet<IVec2> = self.cells.iter().filter(|(_, c)| c.is_hot()).map(|(k, _)| *k).collect();
-        // Рельеф под лавой мог измениться (кратер, провал): поверхность считается от текущего.
+        // Рельеф под лавой мог измениться (кратер, провал): поверхность считается от текущего, а
+        // сдвиг земли под лавой входит в `moved` — сетка ляжет на новый рельеф.
+        let mut ground_moved = 0.0f32;
         for (at, cell) in self.cells.iter_mut() {
-            cell.ground = height(at.x, at.y);
+            let ground = height(at.x, at.y);
+            ground_moved = ground_moved.max((ground - cell.ground).abs());
+            cell.ground = ground;
         }
         let start: HashMap<IVec2, f32> = self.cells.iter().map(|(k, c)| (*k, c.hot)).collect();
         let mut covered = Vec::new();
@@ -191,14 +195,15 @@ impl Field {
             .cells
             .iter()
             .map(|(at, cell)| (cell.hot - start.get(at).copied().unwrap_or(0.0)).abs())
-            .fold(0.0f32, f32::max);
+            .fold(ground_moved, f32::max);
 
-        // Лава за краем ямы остывает в корку, плёнка тоньше горячей застывает целиком. Крошки в яме
-        // пропадают, а за краем тоже уходят в корку: иначе ячейка корки у кромки озера каждый шаг
-        // принимала бы крошку, теряла её и снова застывала с той же высотой — без конца.
+        // Лава за краем ямы остывает в корку, плёнка тоньше горячей застывает целиком. Крошки
+        // пропадают, а на корке за краем ямы уходят в неё: иначе ячейка корки у кромки озера каждый
+        // шаг принимала бы крошку, теряла её и снова застывала с той же высотой — без конца. На голой
+        // земле крошка корки не даёт: не будет ореола корки в доли миллиметра вокруг потока.
         for (&at, cell) in self.cells.iter_mut() {
             if cell.hot < DUST {
-                if !pit(at) {
+                if !pit(at) && cell.crust > 0.0 {
                     cell.crust += cell.hot;
                 }
                 cell.hot = 0.0;
@@ -317,14 +322,31 @@ impl Field {
         self.cells.get(&at).map_or_else(|| self.base(at, height), |c| c.ground + c.crust)
     }
 
-    /// Высота поверхности горячей лавы в точке плана — та же, что у её сетки (без подъёма над
-    /// рельефом): между вершинами по четырём углам квадрата, сухой угол уходит под землю.
-    /// `None` — ни в одном углу квадрата горячей лавы нет.
-    pub fn hot_surface_at(&self, x: f32, z: f32, height: impl Fn(i32, i32) -> f32) -> Option<f32> {
+    /// Высота поверхности горячей лавы над тем, что под ней (корка или рельеф), в точке плана —
+    /// как у её сетки (без подъёма над рельефом): поверхность и основание между вершинами по четырём
+    /// углам квадрата, сухой угол уходит под основание. Больше нуля — горячая лава там видна и жжёт;
+    /// у стенки ямы выше глади и у края корки — меньше нуля. `None` — ни в одном углу квадрата горячей
+    /// лавы нет.
+    pub fn hot_depth_at(&self, x: f32, z: f32, height: impl Fn(i32, i32) -> f32) -> Option<f32> {
         let square = IVec2::new(x.floor() as i32, z.floor() as i32);
-        let [c00, c10, c11, c01] = square_corners(square, |at| self.hot_top(at), |at| self.hot_base(at, &height))?;
+        let base = |at: IVec2| self.hot_base(at, &height);
+        let tops = square_corners(square, |at| self.hot_top(at), base)?;
+        let bases = CORNERS.map(|o| base(square + o));
         let (fx, fz) = (x - square.x as f32, z - square.y as f32);
-        Some(c00 * (1.0 - fx) * (1.0 - fz) + c10 * fx * (1.0 - fz) + c11 * fx * fz + c01 * (1.0 - fx) * fz)
+        let lerp = |[c00, c10, c11, c01]: [f32; 4]| {
+            c00 * (1.0 - fx) * (1.0 - fz) + c10 * fx * (1.0 - fz) + c11 * fx * fz + c01 * (1.0 - fx) * fz
+        };
+        Some(lerp(tops) - lerp(bases))
+    }
+
+    /// Рельеф изменился: земля под горячей лавой в круге сразу берётся новая (шаг течения сделал бы
+    /// это только через до 0,2 с), чтобы сетка и жжение в этом кадре шли по новому рельефу.
+    pub fn refresh_ground(&mut self, center: IVec2, radius: i32, height: impl Fn(i32, i32) -> f32) {
+        for (at, cell) in self.cells.iter_mut() {
+            if (*at - center).length_squared() <= radius * radius {
+                cell.ground = height(at.x, at.y);
+            }
+        }
     }
 
     /// Сетка застывших ячеек в квадрате плана `tile` (стороной [`CRUST_TILE`] м): корка копится до
@@ -553,17 +575,27 @@ mod tests {
                 field.cells.insert(IVec2::new(x, z), LavaCell { hot: 0.2, ground: height(x, z), ..default() });
             }
         }
+        let _ = ground;
         for x in [9.6, 9.9, 10.1, 10.4] {
-            let s = field.hot_surface_at(x, 0.3, height).expect("лава");
-            assert!(s > ground(x) + 0.15, "в x = {x} лава над землёй: {s} против {}", ground(x));
+            let d = field.hot_depth_at(x, 0.3, height).expect("лава");
+            assert!(d > 0.15, "в x = {x} лава над землёй на {d}");
         }
         // Чаша: сухая стенка выше глади — лавы там нет.
         let bowl = |x: i32, _: i32| if x <= 0 { -2.0 } else { 0.0 };
         let mut lake = Field::default();
         lake.cells.insert(IVec2::ZERO, LavaCell { hot: 1.0, ground: -2.0, ..default() });
-        let s = lake.hot_surface_at(0.8, 0.0, bowl).expect("угол с лавой");
-        assert!(s < 0.0, "на стенке ({s}) лава ниже кромки");
-        assert!(lake.hot_surface_at(5.5, 0.0, bowl).is_none());
+        assert!(lake.hot_depth_at(0.2, 0.0, bowl).expect("угол с лавой") > 0.0, "у горячей вершины жжёт");
+        assert!(lake.hot_depth_at(0.8, 0.0, bowl).expect("угол с лавой") < 0.0, "на стенке выше глади не жжёт");
+        assert!(lake.hot_depth_at(5.5, 0.0, bowl).is_none());
+        // Край потока у застывшей корки 0,3 м: у застывших вершин лава ушла под корку и не жжёт.
+        let flat = |_: i32, _: i32| 0.0;
+        let mut edge = Field::default();
+        edge.cells.insert(IVec2::ZERO, LavaCell { hot: 0.1, crust: 0.3, ground: 0.0, ..default() });
+        for at in [IVec2::X, IVec2::ONE, IVec2::Y] {
+            edge.cooled.insert(at, 0.3);
+        }
+        assert!(edge.hot_depth_at(0.1, 0.1, flat).expect("лава") > 0.0, "у горячей вершины жжёт");
+        assert!(edge.hot_depth_at(0.95, 0.95, flat).expect("угол") < 0.0, "на корке не жжёт");
     }
 
     #[test]
