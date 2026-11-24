@@ -209,7 +209,7 @@ cargo test                                  # тесты
   `android::watch_display` раз в 0,25 с читает `Display.getState()` и ставит паузу (проверка — `adb emu sensor
   set proximity 0` при взятом таком wake lock). Что меняется посреди игры (оператор, SIM, тема…), перечислено в `configChanges`
   манифеста: новая активность в живом процессе завершает его (`main.rs`).
-  Пока идут тесты, сверху справа от полосы здоровья всегда видна версия пакета (`src/version_label.rs`,
+  Пока идут тесты, на стартовом экране (в меню) слева сверху видна версия пакета (`src/version_label.rs`,
   флаг профиля `menu.version`; выключить — `adb shell setprop debug.spaceguard.menu.version false`).
   Иконка — ресурсы `android/res`; слои пересобирает `scripts/android-icon.py` из `android/icon/source.png` (нужен Pillow).
   Пакет для Google Play — `scripts/build-aab.sh` (`--install` ставит его на телефон через bundletool; bundletool —

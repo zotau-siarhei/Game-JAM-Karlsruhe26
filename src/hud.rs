@@ -18,7 +18,7 @@ use crate::weapons::CurrentWeapon;
 pub const MARGIN: f32 = 16.0;
 
 /// Размер полосы здоровья.
-pub const BAR_SIZE: Vec2 = Vec2::new(260.0, 22.0);
+const BAR_SIZE: Vec2 = Vec2::new(260.0, 22.0);
 
 /// Тёмная подложка под элементами, чтобы они читались на зелёном и коричневом.
 const PANEL_COLOR: Color = Color::srgba(0.0, 0.0, 0.0, 0.65);
