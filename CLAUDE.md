@@ -214,8 +214,10 @@ cargo test                                  # тесты
   По тому же флагу игра ведёт след запуска (`src/trail.rs`, файл `launch_trail.txt` рядом с настройками): этап
   загрузки, модель, конвейеры в сборке, реплику и свободную память. Если прошлый запуск оборвался, на экране
   загрузки и в меню слева сверху видна строка «LAST LAUNCH STOPPED AT: …» — тестировщику без adb хватит снимка.
-  Новый опасный этап отмечай `trail::mark`, причину выхода — `trail::fail`. Ошибка рендера, кроме `DeviceLost`,
-  роняет процесс (`abort`), чтобы попасть в Play Vitals; паника закрытия потока AAudio (`ndk` 0.9, `unwrap()` в
+  Новый опасный этап отмечай `trail::mark`, причину выхода — `trail::fail`: она пишется с этапом (и после чистой
+  отметки: меню, забег, пауза), вторая дописывается к первой. Ошибка рендера, кроме `DeviceLost`,
+  роняет процесс (`abort`), чтобы попасть в Play Vitals. Паники wgpu после потери видеокарты («SwapchainAcquireSemaphore
+  … still in use» при удалении поверхности, «Validation Error … is invalid» из пула) идут путём `DeviceLost`; паника закрытия потока AAudio (`ndk` 0.9, `unwrap()` в
   `Drop`) игру не роняет: копия `bevy_audio` закрывает поток в `catch_unwind`.
   Иконка — ресурсы `android/res`; слои пересобирает `scripts/android-icon.py` из `android/icon/source.png` (нужен Pillow).
   Пакет для Google Play — `scripts/build-aab.sh` (`--install` ставит его на телефон через bundletool; bundletool —

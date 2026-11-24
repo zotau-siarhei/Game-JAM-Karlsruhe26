@@ -472,9 +472,22 @@ fn audio_close_panic(info: &std::panic::PanicHookInfo) -> bool {
 }
 
 /// Паника о потерянном устройстве GPU (wgpu: «Parent device is lost», «Device is lost», `DeviceLost`).
+///
+/// Сюда же — паника wgpu-hal «Trying to destroy a SwapchainAcquireSemaphore (SwapchainPresentSemaphores) that
+/// is still in use by a SurfaceTexture» при удалении поверхности (wgpu #8243): взятый кадр остаётся неотпущенным,
+/// когда `Surface::discard` в wgpu-core видит потерянное устройство и выходит раньше. Так было на POCO X4 Pro 5G
+/// (Adreno 619): ошибка рендера DeviceLost, перезапуск, а при закрытии старого процесса — эта паника и `abort`.
+///
+/// И ошибка проверки о негодном ресурсе («Validation Error … Buffer with '' label is invalid»): после потери
+/// видеокарты поток пула, создающий буфер, паникует раньше, чем обработчик ошибок рендера узнаёт о потере
+/// (`setprop debug.spaceguard.lose`). Ресурс негоден и при нехватке видеопамяти — перезапуск уместен и тогда.
 fn device_lost_panic(message: &str) -> bool {
     let message = message.to_lowercase();
-    message.contains("device is lost") || message.contains("device lost") || message.contains("devicelost")
+    message.contains("device is lost")
+        || message.contains("device lost")
+        || message.contains("devicelost")
+        || message.contains("still in use by a surfacetexture")
+        || (message.contains("validation error") && message.contains("is invalid"))
 }
 
 /// Дополнение запуска, по которому новый процесс знает, что он — перезапуск.

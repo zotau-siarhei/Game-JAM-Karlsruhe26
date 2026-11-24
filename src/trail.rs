@@ -5,8 +5,10 @@
 //! достаточно прислать снимок экрана.
 //!
 //! Через [`MENU_SECONDS`] с в меню, в начале забега, при уходе в фон и при обычном выходе след
-//! помечается чистым, и дальше отметки не пишутся. Причину выхода (паника, ошибка рендера) пишет
-//! [`fail`] — и после чистой отметки. Включается флагом профиля `menu.version`.
+//! помечается чистым, и дальше отметки не пишутся, но помнятся: меню, забег, пауза, конец забега. Причину
+//! выхода (паника, ошибка рендера) пишет [`fail`] с этапом — и после чистой отметки; вторая причина дописывается к
+//! первой: паника при закрытии после потери видеокарты не должна прятать саму потерю. Включается флагом профиля
+//! `menu.version`.
 //!
 //! ```ignore
 //! crate::trail::mark(format!("model {id}: simplify"));
@@ -29,6 +31,8 @@ const FILE_NAME: &str = "launch_trail.txt";
 const CLEAN: &str = "ok";
 /// Столько секунд в меню — и запуск считается удавшимся.
 const MENU_SECONDS: f32 = 10.0;
+/// Предел длины записи о выходе, знаков.
+const FAILURE_CHARS: usize = 600;
 /// Сдвиг строки вниз от верхнего поля: над ней в меню стоит подпись версии.
 const BELOW_VERSION: f32 = 26.0;
 
@@ -40,8 +44,10 @@ struct Trail {
     stage: String,
     /// Конвейеры, которые сейчас собираются (рендер-поток): сборка идёт одновременно с загрузкой.
     pipelines: Option<String>,
-    /// След уже помечен чистым или записана причина выхода: отметки больше не пишутся.
+    /// След уже помечен чистым или записана причина выхода: отметки больше не пишутся, только помнятся.
     finished: bool,
+    /// Записанная причина выхода: следующая дописывается к ней.
+    failure: Option<String>,
     /// Игра в фоне: след чистый, отметки копятся без записи.
     background: bool,
 }
@@ -71,6 +77,7 @@ pub fn begin() {
         stage: String::new(),
         pipelines: None,
         finished: false,
+        failure: None,
         background: false,
     });
     mark("start");
@@ -88,11 +95,11 @@ pub fn mark(stage: impl AsRef<str>) {
     let Some(trail) = guard.as_mut() else {
         return;
     };
-    if trail.finished || trail.stage == stage {
+    if trail.stage == stage {
         return;
     }
     trail.stage = stage.to_owned();
-    if !trail.background {
+    if !trail.finished && !trail.background {
         write(trail.path.as_ref(), &trail.line());
     }
 }
@@ -103,17 +110,17 @@ pub fn mark_pipelines(pipelines: Option<String>) {
     let Some(trail) = guard.as_mut() else {
         return;
     };
-    if trail.finished || trail.pipelines == pipelines {
+    if trail.pipelines == pipelines {
         return;
     }
     trail.pipelines = pipelines;
-    if !trail.background {
+    if !trail.finished && !trail.background {
         write(trail.path.as_ref(), &trail.line());
     }
 }
 
-/// Записывает причину выхода: паника, ошибка рендера, молчаливый выход. Пишется и в чистый след.
-/// Может звать обработчик паник, поэтому занятый замок не ждёт.
+/// Записывает причину выхода: паника, ошибка рендера, молчаливый выход. Пишется и в чистый след, с этапом;
+/// вторая причина дописывается к первой. Может звать обработчик паник, поэтому занятый замок не ждёт.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub fn fail(reason: &str) {
     let Ok(mut guard) = TRAIL.try_lock() else {
@@ -122,13 +129,10 @@ pub fn fail(reason: &str) {
     let Some(trail) = guard.as_mut() else {
         return;
     };
-    let text = if trail.finished || trail.stage.is_empty() {
-        line(reason)
-    } else {
-        format!("{reason} (after: {})", trail.line())
-    };
+    let text = failure_text(trail.failure.as_deref(), reason, &trail.line());
     trail.finished = true;
     write(trail.path.as_ref(), &text);
+    trail.failure = Some(text);
 }
 
 /// Помечает след чистым: запуск удался или игра закрывается сама.
@@ -160,6 +164,18 @@ fn set_background(background: bool) {
         trail.line()
     };
     write(trail.path.as_ref(), &text);
+}
+
+/// Запись о выходе: причина с этапом, а если причина уже была — она и « → then » новая.
+fn failure_text(first: Option<&str>, reason: &str, stage_line: &str) -> String {
+    let text = match first {
+        Some(first) => format!("{first} → then {reason}"),
+        None => format!("{reason} (after: {stage_line})"),
+    };
+    match text.char_indices().nth(FAILURE_CHARS) {
+        Some((end, _)) => format!("{}…", &text[..end]),
+        None => text,
+    }
 }
 
 impl Trail {
@@ -266,22 +282,29 @@ fn show_note(state: Res<State<GameState>>, mut notes: Query<&mut Visibility, Wit
     }
 }
 
-/// Этапы забега в следе: меню, а через [`MENU_SECONDS`] с в нём или в начале забега след чистый.
+/// Этапы забега в следе: меню, забег, пауза, конец забега; через [`MENU_SECONDS`] с в меню или в начале
+/// забега след чистый, а этапы дальше только помнятся — для причины выхода.
 fn follow_run(
     state: Res<State<GameState>>,
     time: Res<Time<Real>>,
     mut in_menu: Local<f32>,
     mut started: MessageReader<RunStarted>,
 ) {
+    if state.is_changed() {
+        match state.get() {
+            GameState::Loading => {}
+            GameState::Menu => mark("menu"),
+            GameState::Playing => mark("run"),
+            GameState::Paused => mark("paused"),
+            GameState::GameOver => mark("game over"),
+        }
+    }
     if started.read().count() > 0 {
         clean("run started");
         return;
     }
     if *state.get() != GameState::Menu {
         return;
-    }
-    if *in_menu == 0.0 {
-        mark("menu");
     }
     *in_menu += time.delta_secs();
     if *in_menu >= MENU_SECONDS {
@@ -296,5 +319,32 @@ fn follow_lifecycle(mut lifecycle: MessageReader<AppLifecycle>) {
             AppLifecycle::Running | AppLifecycle::WillResume => set_background(false),
             AppLifecycle::Idle => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn первая_причина_с_этапом() {
+        let text = failure_text(None, "render error DeviceLost", "run · free 900 MB · 40.0 s");
+        assert_eq!(text, "render error DeviceLost (after: run · free 900 MB · 40.0 s)");
+    }
+
+    #[test]
+    fn вторая_причина_дописывается_к_первой() {
+        let first = failure_text(None, "render error DeviceLost", "run · 40.0 s");
+        let text = failure_text(Some(&first), "panic: semaphore", "run · 40.1 s");
+        assert!(text.starts_with("render error DeviceLost (after: run"), "{text}");
+        assert!(text.ends_with(" → then panic: semaphore"), "{text}");
+    }
+
+    #[test]
+    fn длинная_запись_обрезается() {
+        let reason = "ж".repeat(FAILURE_CHARS * 2);
+        let text = failure_text(None, &reason, "run");
+        assert_eq!(text.chars().count(), FAILURE_CHARS + 1);
+        assert!(text.ends_with('…'));
     }
 }
