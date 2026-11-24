@@ -135,7 +135,7 @@ fn main() {
         if STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
             warn!("Вторая активность в живом процессе: процесс уходит, система откроет игру заново");
             trail::fail("exit: activity recreated in a live process");
-            std::process::exit(0);
+            android::exit_process();
         }
         android::install_panic_hook();
     }
@@ -235,7 +235,7 @@ fn main() {
     // и открывает в нём новую активность (иконка, «открыть» после установки): второй запуск
     // падал с «Failed to build event loop: RecreationAttempt». Процесс уходит вместе с игрой.
     #[cfg(target_os = "android")]
-    std::process::exit(0);
+    android::exit_process();
 }
 
 /// Пулы потоков по профилю. Вычислительный пул — системы игры и рендера, запись команд кадра:

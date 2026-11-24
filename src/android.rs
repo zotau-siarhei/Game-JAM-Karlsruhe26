@@ -490,6 +490,19 @@ fn device_lost_panic(message: &str) -> bool {
         || (message.contains("validation error") && message.contains("is invalid"))
 }
 
+/// Завершает процесс сразу, без деструкторов C и C++ (`_exit`, а не `exit`). `std::process::exit` зовёт
+/// `atexit`-обработчики, и они разрушают статические мьютексы, пока системные потоки процесса ещё работают:
+/// после перезапуска из-за потери видеокарты старый процесс падал в `hwuiTask0` («FORTIFY: pthread_mutex_lock
+/// called on a destroyed mutex», SIGABRT), и в Play Vitals такой выход попал бы как падение. Файлы игры
+/// (настройки, рекорды, след) к этому моменту записаны и закрыты.
+pub fn exit_process() -> ! {
+    unsafe extern "C" {
+        fn _exit(status: std::ffi::c_int) -> !;
+    }
+    // SAFETY: `_exit` из libc Android (bionic) только завершает процесс.
+    unsafe { _exit(0) }
+}
+
 /// Дополнение запуска, по которому новый процесс знает, что он — перезапуск.
 const RESTARTED_EXTRA: &str = "space_guard.restarted";
 /// Перезапуск, упавший раньше этого срока, игру уже не перезапускает: так не будет круга запусков.
