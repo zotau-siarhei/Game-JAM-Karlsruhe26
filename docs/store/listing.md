@@ -60,6 +60,34 @@ Made at Game Jam Karlsruhe 2026 by Nidzhat Guseynov, Ivan Tsarev and Sergei Zoto
 Requires Android 10 or newer, a 64-bit (ARM64) device and a GPU with Vulkan 1.1.
 ```
 
+## Release notes 0.3.0 (до 500 символов)
+
+```text
+<en-US>
+What's new in 0.3.0:
+• The run pauses when a call comes in, or when the screen turns off near your ear during a call
+• Fixed crashes on some phones (e.g. POCO X4 Pro, Huawei P30) and when the audio output closes
+• Sounds no longer play all at once after a call
+• The menu shows the game version
+• If the last launch stopped, the loading screen and menu show where: please send us a screenshot
+Please report crashes, freezes and stutters.
+</en-US>
+```
+
+## Release notes 0.2.0 (до 500 символов)
+
+```text
+<en-US>
+What's new in 0.2.0:
+• Lava now flows: it fills the breach, runs down the slopes and cools into a solid crust. Only hot lava burns
+• Smoother frame rate with lots of lava on the map
+• Trees burning in lava no longer flicker
+• Health bar shows percent
+• Better crash reports when a phone's GPU can't start the game
+Please report crashes, freezes and stutters.
+</en-US>
+```
+
 ## Release notes 0.1.0 (до 500 символов)
 
 ```text

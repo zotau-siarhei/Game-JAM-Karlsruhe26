@@ -9,7 +9,7 @@
 # Один раз поставить: rustup target add aarch64-linux-android x86_64-linux-android
 #                     sdkmanager 'ndk;29.0.14206865' 'platforms;android-36' 'build-tools;36.1.0'
 # Подпись — отладочным ключом ~/.android/debug.keystore (создаётся сам, если его нет).
-# Версия: SPACE_GUARD_VERSION_NAME (по умолчанию 0.1.0) и SPACE_GUARD_VERSION_CODE (по умолчанию —
+# Версия: SPACE_GUARD_VERSION_NAME (по умолчанию — version из Cargo.toml) и SPACE_GUARD_VERSION_CODE (по умолчанию —
 # число коммитов; в клоне с неполной историей его надо задать).
 set -euo pipefail
 
@@ -133,7 +133,7 @@ fi
 
 # Код версии растёт с каждым коммитом; в клоне с неполной историей (CI с fetch-depth 1) число коммитов
 # неверное, и Play отклонил бы пакет с кодом не больше прежнего.
-version_name=${SPACE_GUARD_VERSION_NAME:-0.1.0}
+version_name=${SPACE_GUARD_VERSION_NAME:-$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)}
 if [[ -n "${SPACE_GUARD_VERSION_CODE:-}" ]]; then
     version_code=$SPACE_GUARD_VERSION_CODE
 elif [[ $(git rev-parse --is-shallow-repository) == true ]]; then

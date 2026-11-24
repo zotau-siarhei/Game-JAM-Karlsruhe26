@@ -9,7 +9,8 @@
 - Сборка: `scripts/build-aab.sh` → `target/android/space-guard.aab`. Ключ загрузки скрипт берёт сам из
   `~/.android/spaceguard-upload.keystore` и проверяет подпись. В выводе — отпечаток SHA-256 сертификата, он
   должен совпасть с сертификатом загрузки в консоли (Test and release → App integrity).
-- Версия: `SPACE_GUARD_VERSION_NAME` (по умолчанию 0.1.0), код версии — число коммитов в `main`. Play не примет
+- Версия: `SPACE_GUARD_VERSION_NAME` (по умолчанию — `version` из `Cargo.toml`; поднимать там же, в
+  `android/Cargo.toml` и `ios/Info.plist`), код версии — число коммитов в `main`. Play не примет
   код, который уже видел: новый выпуск собирать из `main` с новыми коммитами.
 - Устройства: Android 10+ (minSdk 29), target SDK 36, только arm64-v8a, Vulkan 1.1 обязателен
   (`uses-feature`). Play сам скроет игру на устройствах без них. Библиотека выровнена под страницы 16 КБ.
@@ -101,6 +102,6 @@
 
 1. Собрать AAB из `main`: `scripts/build-aab.sh`; сверить отпечаток сертификата в выводе.
 2. Closed testing (а позже Production) → Create new release → загрузить `target/android/space-guard.aab`.
-3. Release name — версия (например, `0.1.0 (447)`), release notes — из `listing.md`.
+3. Release name — версия (например, `0.3.0 (470)`), release notes — из `listing.md`.
 4. Review release → Start rollout. Отчёт pre-launch (автотест на устройствах Firebase) приходит через ~час:
    проверить падения и ANR.

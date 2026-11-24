@@ -14,7 +14,7 @@
 #   SPACE_GUARD_UPLOAD_PASSWORD=…                  пароль хранилища
 #   SPACE_GUARD_UPLOAD_KEY_PASSWORD=…              пароль ключа, если не совпадает с паролем хранилища
 # Без ключа пакет подписывается отладочным: годится для проверки на телефоне, не для Play.
-# Версия для пользователей — SPACE_GUARD_VERSION_NAME (по умолчанию 0.1.0), код версии —
+# Версия для пользователей — SPACE_GUARD_VERSION_NAME (по умолчанию — version из Cargo.toml), код версии —
 # SPACE_GUARD_VERSION_CODE или число коммитов, как у APK (в клоне с неполной историей — только
 # переменная). Библиотеку и ассеты готовит scripts/build-android.sh (arm64-v8a); символы библиотеки
 # для Play Vitals (имена функций в стеках падений) лежат в пакете отдельно, сама библиотека — без них.
@@ -33,7 +33,7 @@ done
 
 min_sdk=29
 target_sdk=36
-version_name=${SPACE_GUARD_VERSION_NAME:-0.1.0}
+version_name=${SPACE_GUARD_VERSION_NAME:-$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)}
 if [[ -n "${SPACE_GUARD_VERSION_CODE:-}" ]]; then
     version_code=$SPACE_GUARD_VERSION_CODE
 elif [[ $(git rev-parse --is-shallow-repository) == true ]]; then

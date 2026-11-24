@@ -228,7 +228,7 @@ cargo test                                  # тесты
   политика конфиденциальности — `PRIVACY.md`: игра без интернета и сбора данных, новое разрешение или SDK — правь их.
   Таблица символов библиотеки лежит в метаданных пакета (`BUNDLE-METADATA/com.android.tools.build.debugsymbols`): по
   ней Play Vitals показывает имена функций в падениях и ANR; сама библиотека в пакете без символов. Версия —
-  `SPACE_GUARD_VERSION_NAME` и `SPACE_GUARD_VERSION_CODE` (по умолчанию — число коммитов; в клоне с неполной
+  `SPACE_GUARD_VERSION_NAME` (по умолчанию — `version` из `Cargo.toml`) и `SPACE_GUARD_VERSION_CODE` (по умолчанию — число коммитов; в клоне с неполной
   историей скрипты требуют переменную). Текстуры моделей в APK и AAB уменьшаются до 1024 при сборке (`scripts/web_textures.py`).
   Play требует страниц 16 КБ: библиотека линкуется с `max-page-size=16384`, APK выравнивается `zipalign -P 16`,
   а `BundleConfig.json` пакета объявляет `PAGE_ALIGNMENT_16K` — скрипт сверяет это `bundletool dump config`.
