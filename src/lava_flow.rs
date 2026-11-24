@@ -148,6 +148,7 @@ impl Field {
 
     /// Добавляет горячую лаву объёмом `volume` м³ в ячейку `at`. Возвращает корку, если ячейка
     /// была застывшей (её объём переходит из застывших в горячие).
+    #[cfg(test)]
     pub fn pour(&mut self, at: IVec2, volume: f32, height: impl Fn(i32, i32) -> f32) -> Option<f32> {
         let mut covered = Vec::new();
         self.cell_mut(at, &height, &mut covered).hot += volume;
@@ -160,11 +161,14 @@ impl Field {
         self.cells.get(&at).map_or_else(|| self.cooled.get(&at).copied().unwrap_or(0.0), |c| c.crust)
     }
 
-    /// Один шаг течения длиной `dt` секунд. `height` — рельеф, `allowed` — может ли ячейка принять
-    /// лаву (предел удаления от прорыва), `pit` — ячейка ямы прорыва: такие не застывают.
+    /// Один шаг течения длиной `dt` секунд. `pours` — что источники вливают в этот шаг (ячейка,
+    /// объём м³): заливка входит в шаг после снимка, поэтому новая горячая ячейка и подъём озера
+    /// видны в итоге. `height` — рельеф, `allowed` — может ли ячейка принять лаву (предел удаления от
+    /// прорыва), `pit` — ячейка ямы прорыва: такие не застывают.
     pub fn step(
         &mut self,
         dt: f32,
+        pours: &[(IVec2, f32)],
         height: impl Fn(i32, i32) -> f32,
         allowed: impl Fn(IVec2) -> bool,
         pit: impl Fn(IVec2) -> bool,
@@ -176,6 +180,9 @@ impl Field {
         }
         let start: HashMap<IVec2, f32> = self.cells.iter().map(|(k, c)| (*k, c.hot)).collect();
         let mut covered = Vec::new();
+        for (at, volume) in pours {
+            self.cell_mut(*at, &height, &mut covered).hot += volume;
+        }
         let substeps = (dt / SUBSTEP).round().max(1.0) as usize;
         for _ in 0..substeps {
             self.substep(&height, &allowed, &mut covered);
@@ -186,9 +193,14 @@ impl Field {
             .map(|(at, cell)| (cell.hot - start.get(at).copied().unwrap_or(0.0)).abs())
             .fold(0.0f32, f32::max);
 
-        // Лава за краем ямы остывает в корку, плёнка тоньше горячей застывает целиком, крошки пропадают.
+        // Лава за краем ямы остывает в корку, плёнка тоньше горячей застывает целиком. Крошки в яме
+        // пропадают, а за краем тоже уходят в корку: иначе ячейка корки у кромки озера каждый шаг
+        // принимала бы крошку, теряла её и снова застывала с той же высотой — без конца.
         for (&at, cell) in self.cells.iter_mut() {
             if cell.hot < DUST {
+                if !pit(at) {
+                    cell.crust += cell.hot;
+                }
                 cell.hot = 0.0;
                 continue;
             }
@@ -213,6 +225,13 @@ impl Field {
         for (at, crust) in &frozen {
             self.cooled.insert(*at, *crust);
         }
+        // Ячейка, которую в этом шаге и закрыли, и снова заморозили почти той же коркой, не меняет
+        // сетку корки: такая пара не считается изменением.
+        let was: HashMap<IVec2, f32> = covered.iter().copied().collect();
+        let same = |at: &IVec2, crust: f32| was.get(at).is_some_and(|old| (crust - old).abs() < CRUST_EPS);
+        let now: HashMap<IVec2, f32> = frozen.iter().copied().collect();
+        frozen.retain(|(at, crust)| !same(at, *crust));
+        covered.retain(|(at, old)| !now.get(at).is_some_and(|crust| (crust - old).abs() < CRUST_EPS));
 
         let reshaped = self.cells.iter().filter(|(_, c)| c.is_hot()).count() != hot_before.len()
             || self.cells.iter().any(|(k, c)| c.is_hot() && !hot_before.contains(k));
@@ -283,9 +302,29 @@ impl Field {
         }
         layer_mesh(
             squares,
-            |at| self.cells.get(&at).filter(|c| c.is_hot()).map(|c| c.surface() + SURFACE_LIFT),
-            |at| self.cells.get(&at).map_or_else(|| self.base(at, &height), |c| c.ground + c.crust),
+            |at| self.hot_top(at).map(|top| top + SURFACE_LIFT),
+            |at| self.hot_base(at, &height),
         )
+    }
+
+    /// Поверхность горячей лавы в вершине, если она там есть.
+    fn hot_top(&self, at: IVec2) -> Option<f32> {
+        self.cells.get(&at).filter(|c| c.is_hot()).map(LavaCell::surface)
+    }
+
+    /// Что под горячей лавой в вершине: корка или рельеф.
+    fn hot_base(&self, at: IVec2, height: &impl Fn(i32, i32) -> f32) -> f32 {
+        self.cells.get(&at).map_or_else(|| self.base(at, height), |c| c.ground + c.crust)
+    }
+
+    /// Высота поверхности горячей лавы в точке плана — та же, что у её сетки (без подъёма над
+    /// рельефом): между вершинами по четырём углам квадрата, сухой угол уходит под землю.
+    /// `None` — ни в одном углу квадрата горячей лавы нет.
+    pub fn hot_surface_at(&self, x: f32, z: f32, height: impl Fn(i32, i32) -> f32) -> Option<f32> {
+        let square = IVec2::new(x.floor() as i32, z.floor() as i32);
+        let [c00, c10, c11, c01] = square_corners(square, |at| self.hot_top(at), |at| self.hot_base(at, &height))?;
+        let (fx, fz) = (x - square.x as f32, z - square.y as f32);
+        Some(c00 * (1.0 - fx) * (1.0 - fz) + c10 * fx * (1.0 - fz) + c11 * fx * fz + c01 * (1.0 - fx) * fz)
     }
 
     /// Сетка застывших ячеек в квадрате плана `tile` (стороной [`CRUST_TILE`] м): корка копится до
@@ -302,6 +341,9 @@ impl Field {
     }
 }
 
+/// Изменение корки меньше этого, м, сетку корки не пересобирает.
+const CRUST_EPS: f32 = 0.005;
+
 /// Сторона квадрата плана для сетки корки, м.
 pub const CRUST_TILE: i32 = 32;
 
@@ -313,6 +355,26 @@ fn squares_at(at: IVec2) -> impl Iterator<Item = IVec2> {
 /// Квадраты корки, сетку которых меняет изменение в точке `at`.
 pub fn crust_tiles_at(at: IVec2) -> impl Iterator<Item = IVec2> {
     squares_at(at).map(|s| s.div_euclid(IVec2::splat(CRUST_TILE)))
+}
+
+/// Углы квадрата плана по порядку обхода.
+const CORNERS: [IVec2; 4] = [IVec2::new(0, 0), IVec2::new(1, 0), IVec2::new(1, 1), IVec2::new(0, 1)];
+
+/// Высоты углов квадрата `square` (по [`CORNERS`]) для слоя: угол со слоем — на его поверхности
+/// (`top`), угол без слоя — под тем, что под слоем (`base`), на [`EDGE_SINK`], но не выше средней
+/// поверхности углов со слоем. `None` — слоя нет ни в одном углу.
+fn square_corners(square: IVec2, top: impl Fn(IVec2) -> Option<f32>, base: impl Fn(IVec2) -> f32) -> Option<[f32; 4]> {
+    let tops: [Option<f32>; 4] = CORNERS.map(|o| top(square + o));
+    let (sum, count) = tops.iter().flatten().fold((0.0, 0), |(s, n), h| (s + h, n + 1));
+    if count == 0 {
+        return None;
+    }
+    let mean = sum / count as f32;
+    let mut heights = [0.0; 4];
+    for (i, (o, top)) in CORNERS.iter().zip(tops).enumerate() {
+        heights[i] = top.unwrap_or_else(|| (base(square + *o) - EDGE_SINK).min(mean));
+    }
+    Some(heights)
 }
 
 /// Сетка слоя по рельефу из квадратов `squares` (по левому нижнему углу): квадрат рисуется, если
@@ -328,19 +390,13 @@ fn layer_mesh(
     let mut positions = Vec::new();
     let mut uvs = Vec::new();
     let mut indices = Vec::new();
-    const CORNERS: [IVec2; 4] = [IVec2::new(0, 0), IVec2::new(1, 0), IVec2::new(1, 1), IVec2::new(0, 1)];
     for square in squares {
-        let square = &square;
-        let tops: [Option<f32>; 4] = CORNERS.map(|o| top(*square + o));
-        let (sum, count) = tops.iter().flatten().fold((0.0, 0), |(s, n), h| (s + h, n + 1));
-        if count == 0 {
+        let Some(heights) = square_corners(square, &top, &base) else {
             continue;
-        }
-        let mean = sum / count as f32;
+        };
         let first = positions.len() as u32;
-        for (o, top) in CORNERS.iter().zip(tops) {
-            let v = *square + *o;
-            let y = top.unwrap_or_else(|| (base(v) - EDGE_SINK).min(mean));
+        for (o, y) in CORNERS.iter().zip(heights) {
+            let v = square + *o;
             positions.push([v.x as f32, y, v.y as f32]);
             uvs.push([v.x as f32 / 8.0, v.y as f32 / 8.0]);
         }
@@ -370,7 +426,7 @@ mod tests {
     /// Шаги, пока лава не перестанет двигаться (или `limit` шагов). Застывания нет.
     fn settle(field: &mut Field, height: impl Fn(i32, i32) -> f32 + Copy, allowed: impl Fn(IVec2) -> bool + Copy, limit: usize) -> usize {
         for i in 0..limit {
-            let r = field.step(FLOW_STEP, height, allowed, |_| true);
+            let r = field.step(FLOW_STEP, &[], height, allowed, |_| true);
             if r.moved < 1e-4 && !r.reshaped {
                 return i;
             }
@@ -399,7 +455,7 @@ mod tests {
             if i < 20 {
                 field.pour(IVec2::ZERO, 0.5, height);
             }
-            field.step(FLOW_STEP, height, |_| true, |_| true);
+            field.step(FLOW_STEP, &[], height, |_| true, |_| true);
         }
         let hot: Vec<IVec2> = field.cells.iter().filter(|(_, c)| c.hot > DUST).map(|(k, _)| *k).collect();
         assert!(hot.iter().any(|c| c.x > 10), "лава ушла вниз по склону");
@@ -460,7 +516,7 @@ mod tests {
         field.pour(IVec2::ZERO, 9.0 * 2.0 + 6.0, height);
         let mut reshaped = false;
         for _ in 0..(60.0 / FLOW_STEP) as usize {
-            reshaped |= field.step(FLOW_STEP, height, |_| true, pit).reshaped;
+            reshaped |= field.step(FLOW_STEP, &[], height, |_| true, pit).reshaped;
         }
         assert!(reshaped);
         assert!(field.cells.iter().filter(|(k, _)| pit(**k)).all(|(_, c)| c.is_hot()), "яма не застывает");
@@ -480,10 +536,61 @@ mod tests {
         }
         field.pour(IVec2::ZERO, 5.0, height);
         for _ in 0..60 {
-            field.step(FLOW_STEP, height, |_| true, |_| true);
+            field.step(FLOW_STEP, &[], height, |_| true, |_| true);
         }
         assert!(field.cells.iter().any(|(k, c)| k.x > 3 && c.hot > DUST), "лава перетекла через корку");
         assert!((1..=3).all(|x| field.crust_at(IVec2::new(x, 0)) >= 1.0), "корка на месте");
+    }
+
+    #[test]
+    fn поверхность_горячей_лавы_между_вершинами_как_у_сетки() {
+        // Склон 0,73 м/м, сплошной поток толщиной 0,2 м.
+        let height = |x: i32, _: i32| -0.73 * x as f32;
+        let ground = |x: f32| -0.73 * x;
+        let mut field = Field::default();
+        for x in 5..15 {
+            for z in -2..=2 {
+                field.cells.insert(IVec2::new(x, z), LavaCell { hot: 0.2, ground: height(x, z), ..default() });
+            }
+        }
+        for x in [9.6, 9.9, 10.1, 10.4] {
+            let s = field.hot_surface_at(x, 0.3, height).expect("лава");
+            assert!(s > ground(x) + 0.15, "в x = {x} лава над землёй: {s} против {}", ground(x));
+        }
+        // Чаша: сухая стенка выше глади — лавы там нет.
+        let bowl = |x: i32, _: i32| if x <= 0 { -2.0 } else { 0.0 };
+        let mut lake = Field::default();
+        lake.cells.insert(IVec2::ZERO, LavaCell { hot: 1.0, ground: -2.0, ..default() });
+        let s = lake.hot_surface_at(0.8, 0.0, bowl).expect("угол с лавой");
+        assert!(s < 0.0, "на стенке ({s}) лава ниже кромки");
+        assert!(lake.hot_surface_at(5.5, 0.0, bowl).is_none());
+    }
+
+    #[test]
+    fn заливка_источника_видна_в_итоге_шага() {
+        let height = |_: i32, _: i32| 0.0;
+        let mut field = Field::default();
+        let r = field.step(FLOW_STEP, &[(IVec2::ZERO, 1.0)], height, |_| true, |_| true);
+        assert!(r.reshaped, "новая горячая ячейка от заливки");
+        assert!(r.moved > 0.0, "заливка меняет толщину");
+    }
+
+    #[test]
+    fn корка_у_кромки_озера_не_пересобирается_без_конца() {
+        // Чаша 3×3 глубиной 1 м: яма не остывает, вокруг ровно. Источник держит уровень у кромки.
+        let pit = |c: IVec2| c.x.abs() <= 1 && c.y.abs() <= 1;
+        let height = move |x: i32, z: i32| if pit(IVec2::new(x, z)) { -1.0 } else { 0.0 };
+        let mut field = Field::default();
+        let mut busy = 0;
+        for i in 0..1500 {
+            let room = (0.05 - field.surface_at(IVec2::ZERO, &height)).max(0.0);
+            let r = field.step(FLOW_STEP, &[(IVec2::ZERO, room)], height, |c| c.length_squared() <= 100, pit);
+            if i >= 1000 && r.cooled_changed() {
+                busy += 1;
+            }
+        }
+        assert!(!field.cooled.is_empty(), "вокруг застыла корка");
+        assert!(busy < 25, "корка давно стоит, а меняется в {busy} шагах из 500");
     }
 
     #[test]
@@ -497,7 +604,7 @@ mod tests {
             }
         }
         field.pour(IVec2::ZERO, 2.0, height);
-        let r = field.step(FLOW_STEP, height, |_| true, |_| true);
+        let r = field.step(FLOW_STEP, &[], height, |_| true, |_| true);
         assert!(field.cells.len() < 20, "в шаге только горячие: {}", field.cells.len());
         assert!(!r.cooled_changed(), "застывшие не тронуты");
         assert_eq!(field.cooled.len(), 10_000);
