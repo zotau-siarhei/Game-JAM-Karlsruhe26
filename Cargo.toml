@@ -63,6 +63,15 @@ opt-level = 3
 codegen-units = 1
 lto = "thin"
 
+# Быстрая оптимизированная сборка для проверок на компьютере (`cargo run --profile fast`):
+# как release, но без LTO, параллельно и инкрементально — пересборка за секунды, а не минуты.
+# Сборки для магазинов (Google Play, App Store) остаются на release.
+[profile.fast]
+inherits = "release"
+codegen-units = 16
+lto = false
+incremental = true
+
 # Браузерная сборка для выкладки (`scripts/build-web.sh --release`, GitHub Pages): как release,
 # но крейт игры компилируется параллельно — без этого он один собирается на раннере 6 минут.
 [profile.web]

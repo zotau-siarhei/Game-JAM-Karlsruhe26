@@ -145,6 +145,7 @@
 ```sh
 cargo run                                   # запуск
 cargo run --features bevy/dynamic_linking   # быстрая пересборка при разработке
+cargo run --profile fast                    # как release, но без LTO: собирается в разы быстрее
 cargo run -- --immortal                     # проверка волн: луноход не теряет здоровья
 cargo run -- --bench=180                    # замер: забег сам, без vsync, сводка в лог (src/perf.rs)
 cargo check                                 # проверка компиляции
