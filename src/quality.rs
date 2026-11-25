@@ -96,7 +96,7 @@ impl Plugin for QualityPlugin {
                 Update,
                 (
                     switch_quality.run_if(in_state(GameState::Paused)).run_if(not(crate::prewarm::covered)),
-                    (apply_quality, remember_quality).run_if(resource_changed::<Quality>),
+                    (apply_quality.run_if(quality_due), remember_quality.run_if(resource_changed::<Quality>)),
                     show_label,
                 )
                     .chain()
@@ -127,7 +127,7 @@ fn supported_samples(wanted: u32, supported: impl Fn(u32) -> bool) -> u32 {
 
 /// Q на паузе меняет ступень по кругу.
 /// Не посреди перехода через затемнение: занавес повторного прогрева сбил бы переход.
-fn switch_quality(
+pub fn switch_quality(
     keys: Res<ButtonInput<KeyCode>>,
     transition: Res<crate::run::Transition>,
     mut quality: ResMut<Quality>,
@@ -149,9 +149,20 @@ fn remember_quality(mut commands: Commands, quality: Res<Quality>, mut settings:
     }
 }
 
+/// Пора применить новую ступень. Где кадры не рисуются при сборке конвейеров (`prewarm.hold_draw`), сначала
+/// на экран выходит занавес с надписью, иначе меню просто замерло бы.
+fn quality_due(quality: Res<Quality>, prewarm: Option<Res<crate::prewarm::Prewarm>>, mut pending: Local<bool>) -> bool {
+    *pending |= quality.is_changed();
+    if !*pending || prewarm.is_some_and(|prewarm| prewarm.delays_quality()) {
+        return false;
+    }
+    *pending = false;
+    true
+}
+
 /// Применяет ступень к камере, солнцу и карте теней. Тени настраиваются только здесь:
 /// солнце создаётся в `main.rs` без них и получает их в первом же кадре.
-fn apply_quality(
+pub fn apply_quality(
     mut commands: Commands,
     quality: Res<Quality>,
     camera: Query<Entity, With<GameCamera>>,

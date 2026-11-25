@@ -25,8 +25,9 @@ impl Plugin for AndroidPlugin {
     fn build(&self, app: &mut App) {
         let device = device();
         info!(
-            "Android: GPU «{}», памяти {:.1} ГБ, low_ram {}, SoC {} → уровень {:?} (опрос {:.0} мс)",
+            "Android: GPU «{}» ({}), памяти {:.1} ГБ, low_ram {}, SoC {} → уровень {:?} (опрос {:.0} мс)",
             device.gpu,
+            device.driver,
             device.memory as f64 / (1u64 << 30) as f64,
             device.low_ram,
             device.soc,
@@ -78,6 +79,8 @@ impl Plugin for AndroidPlugin {
 pub struct Device {
     /// Имя GPU у адаптера Vulkan: «Adreno (TM) 810», «Mali-G715», пусто — не узнали.
     pub gpu: String,
+    /// Версия Vulkan и драйвера; пусто — не узнали.
+    pub driver: String,
     /// `MemTotal` из `/proc/meminfo`, байт; 0 — не прочитали.
     pub memory: u64,
     /// Система считает устройство слабым (`ro.config.low_ram`).
@@ -99,7 +102,7 @@ pub fn device() -> &'static Device {
     static DEVICE: std::sync::OnceLock<Device> = std::sync::OnceLock::new();
     DEVICE.get_or_init(|| {
         let start = bevy::platform::time::Instant::now();
-        let gpu = vulkan_gpu_name().unwrap_or_default();
+        let (gpu, driver) = vulkan_gpu().unwrap_or_default();
         let memory = std::fs::read_to_string("/proc/meminfo")
             .ok()
             .and_then(|text| {
@@ -113,24 +116,54 @@ pub fn device() -> &'static Device {
             .filter_map(system_property)
             .collect::<Vec<_>>()
             .join(" ");
-        Device { gpu, memory, low_ram, soc, probe_ms: start.elapsed().as_secs_f32() * 1000.0 }
+        Device { gpu, driver, memory, low_ram, soc, probe_ms: start.elapsed().as_secs_f32() * 1000.0 }
     })
 }
 
-/// Имя первого не программного GPU у временного экземпляра Vulkan: Bevy своё создаёт позже, а профиль
+/// Флаги экземпляра wgpu: как у Bevy, но без проверки непрямых вызовов (см. `main.rs`).
+pub fn instance_flags() -> wgpu::InstanceFlags {
+    let mut flags = bevy::render::settings::WgpuSettings::default().instance_flags;
+    flags.remove(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL);
+    flags
+}
+
+/// Имя и драйвер первого не программного GPU у временного экземпляра Vulkan: Bevy своё создаёт позже, а профиль
 /// нужен раньше — по нему настраиваются пулы потоков и окно.
-fn vulkan_gpu_name() -> Option<String> {
+fn vulkan_gpu() -> Option<(String, String)> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::VULKAN,
         flags: wgpu::InstanceFlags::empty(),
         ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
     let adapters = bevy::tasks::block_on(instance.enumerate_adapters(wgpu::Backends::VULKAN));
-    adapters
-        .iter()
-        .map(wgpu::Adapter::get_info)
-        .find(|info| info.device_type != wgpu::DeviceType::Cpu)
-        .map(|info| info.name)
+    adapters.iter().find_map(|adapter| {
+        let info = adapter.get_info();
+        (info.device_type != wgpu::DeviceType::Cpu).then(|| (info.name.clone(), driver_text(adapter, &info)))
+    })
+}
+
+/// «Vulkan 1.1.128, driver 512.502.0 (Driver Build: …)»: версии из свойств устройства и описание драйвера.
+fn driver_text(adapter: &wgpu::Adapter, info: &wgpu::AdapterInfo) -> String {
+    // SAFETY: адаптер Vulkan только читается, его объекты не удаляются.
+    let versions = unsafe { adapter.as_hal::<wgpu::hal::api::Vulkan>() }.map(|hal| {
+        // SAFETY: физическое устройство принадлежит этому экземпляру, оба живы.
+        let properties = unsafe {
+            hal.shared_instance().raw_instance().get_physical_device_properties(hal.raw_physical_device())
+        };
+        (properties.api_version, properties.driver_version)
+    });
+    let version = |v: u32| format!("{}.{}.{}", (v >> 22) & 0x7f, (v >> 12) & 0x3ff, v & 0xfff);
+    let mut text = match versions {
+        Some((api, driver)) => format!("Vulkan {}, driver {}", version(api), version(driver)),
+        None => String::new(),
+    };
+    let details = info.driver_info.lines().next().unwrap_or_default().trim();
+    if !details.is_empty() {
+        // Описание у некоторых драйверов длиной в абзац: в строке следа хватит начала.
+        let short: String = details.chars().take(60).collect();
+        text.push_str(&format!(" ({short})"));
+    }
+    text
 }
 
 /// Функции `libandroid.so` новее minSdk 29: ищутся при первом обращении, нет на телефоне — `None`.
@@ -505,6 +538,9 @@ pub fn exit_process() -> ! {
 
 /// Дополнение запуска, по которому новый процесс знает, что он — перезапуск.
 const RESTARTED_EXTRA: &str = "space_guard.restarted";
+/// Дополнение запуска: видеокарта потерялась при загрузке, открыться осторожнее (`profile::make_safe`).
+/// Проверка без потери: `adb shell am start --ez space_guard.safe true -n <пакет>/<активность>`.
+const SAFE_EXTRA: &str = "space_guard.safe";
 /// Перезапуск, упавший раньше этого срока, игру уже не перезапускает: так не будет круга запусков.
 const RESTART_GRACE_SECONDS: f32 = 60.0;
 
@@ -516,16 +552,28 @@ fn restart_once() -> bool {
 }
 
 fn try_restart() -> bool {
-    if START.elapsed().as_secs_f32() < RESTART_GRACE_SECONDS && with_activity(|env, activity| {
-        let intent = env.call_method(activity, "getIntent", "()Landroid/content/Intent;", &[])?.l()?;
-        let name = env.new_string(RESTARTED_EXTRA)?;
-        env.call_method(&intent, "getBooleanExtra", "(Ljava/lang/String;Z)Z", &[jni::objects::JValue::Object(&name), false.into()])?
-            .z()
-    }) != Some(false)
-    {
+    let early = START.elapsed().as_secs_f32() < RESTART_GRACE_SECONDS;
+    if early && launch_extra(RESTARTED_EXTRA) != Some(false) {
         return false;
     }
-    relaunch()
+    relaunch(early || crate::prewarm::warming())
+}
+
+/// Дополнение запуска `name` (да/нет); `None` — JNI недоступен.
+fn launch_extra(name: &str) -> Option<bool> {
+    with_activity(|env, activity| {
+        let intent = env.call_method(activity, "getIntent", "()Landroid/content/Intent;", &[])?.l()?;
+        let name = env.new_string(name)?;
+        env.call_method(&intent, "getBooleanExtra", "(Ljava/lang/String;Z)Z", &[jni::objects::JValue::Object(&name), false.into()])?
+            .z()
+    })
+}
+
+/// Безопасный запуск: прошлый процесс потерял видеокарту при загрузке, в первую минуту или при сборке
+/// шейдеров после смены качества.
+pub fn safe_start() -> bool {
+    static SAFE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SAFE.get_or_init(|| launch_extra(SAFE_EXTRA) == Some(true))
 }
 
 /// Вызов Java в подключённом к JVM потоке; `None` — JNI недоступен или вызов бросил исключение.
@@ -554,8 +602,9 @@ fn with_activity<T>(
     with_env(|env| call(env, &activity))
 }
 
-/// Запускает свою активность заново в новой задаче, прежнюю закрывает. `false` — не вышло.
-fn relaunch() -> bool {
+/// Запускает свою активность заново в новой задаче, прежнюю закрывает; `safe` — безопасный запуск.
+/// `false` — не вышло.
+fn relaunch(safe: bool) -> bool {
     use jni::objects::JValue;
     with_activity(|env, activity| {
         let manager = env
@@ -575,13 +624,15 @@ fn relaunch() -> bool {
         }
         // FLAG_ACTIVITY_NEW_TASK | FLAG_ACTIVITY_CLEAR_TASK.
         env.call_method(&intent, "addFlags", "(I)Landroid/content/Intent;", &[JValue::Int(0x1000_0000 | 0x0000_8000)])?;
-        let name = env.new_string(RESTARTED_EXTRA)?;
-        env.call_method(
-            &intent,
-            "putExtra",
-            "(Ljava/lang/String;Z)Landroid/content/Intent;",
-            &[JValue::Object(&name), true.into()],
-        )?;
+        for (extra, value) in [(RESTARTED_EXTRA, true), (SAFE_EXTRA, safe)] {
+            let name = env.new_string(extra)?;
+            env.call_method(
+                &intent,
+                "putExtra",
+                "(Ljava/lang/String;Z)Landroid/content/Intent;",
+                &[JValue::Object(&name), value.into()],
+            )?;
+        }
         env.call_method(activity, "startActivity", "(Landroid/content/Intent;)V", &[JValue::Object(&intent)])?;
         Ok(true)
     })

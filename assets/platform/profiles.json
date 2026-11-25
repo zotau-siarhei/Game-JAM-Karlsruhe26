@@ -19,7 +19,10 @@
     "debris": { "max_resting": 1500, "shadow_min_size": 0.8 },
     "lights": { "fire": [4, 6, 8], "flashes": 6 },
     "models": { "simplify": false, "detail": 1.0, "shadow_proxies": false, "texture_max": null },
-    "prewarm": { "start_frames": 0, "wait_pipelines": false, "wait_limit": 2.0, "sync_compile": false },
+    "prewarm": {
+      "start_frames": 0, "wait_pipelines": false, "wait_limit": 2.0, "sync_compile": false,
+      "hold_draw": false, "hold_late": false, "hold_limit": 40.0, "particles": true
+    },
     "threads": { "compute": null, "async_compute": null },
     "input": { "touch_default": false, "cursor": true, "rumble": true },
     "menu": { "quit": true, "version": false },
@@ -63,7 +66,7 @@
   "android": {
     "parent": "mobile",
     "render": { "msaa_high": 1, "frame_limit": 60.0, "gpu_memory": "memory" },
-    "prewarm": { "wait_pipelines": true },
+    "prewarm": { "wait_pipelines": true, "hold_draw": true },
     "threads": { "compute": 4, "async_compute": [2, 6] },
     "input": { "touch_default": true, "cursor": false, "rumble": false },
     "menu": { "quit": false, "version": true },

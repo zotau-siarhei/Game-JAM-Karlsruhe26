@@ -185,7 +185,10 @@ fn track_loading(
     }
 
     let elapsed = now - started;
-    let timed_out = elapsed > MAX_SECONDS;
+    // Где кадры ждут сборки шейдеров не рисуясь, загрузка терпит и это ожидание.
+    let prewarm_profile = &crate::profile::get().prewarm;
+    let max_seconds = MAX_SECONDS + if prewarm_profile.hold_draw { prewarm_profile.hold_limit } else { 0.0 };
+    let timed_out = elapsed > max_seconds;
     if !(settled && elapsed >= MIN_SECONDS) && !timed_out {
         return;
     }
@@ -196,7 +199,7 @@ fn track_loading(
     }
     if timed_out && !settled {
         warn!(
-            "Загрузка не закончилась за {MAX_SECONDS} с: звуки {}/{}, модели {}/{}, шейдеры {}",
+            "Загрузка не закончилась за {max_seconds} с: звуки {}/{}, модели {}/{}, шейдеры {}",
             sounds.1, sounds.0, models.1, models.0, if warm { "готовы" } else { "не прогреты" }
         );
     }

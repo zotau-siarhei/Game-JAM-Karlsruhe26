@@ -208,6 +208,10 @@ fn main() {
         render_creation: bevy::render::settings::RenderCreation::Automatic(Box::new(
             bevy::render::settings::WgpuSettings {
                 memory_hints: profile.render.gpu_memory.hints(),
+                // Проверка непрямых вызовов добавляет свой compute-проход к каждому вызову частиц. Bevy убирает
+                // её сам, но не тогда, когда в списке бэкендов есть DX12 (bevy #26405); на Android его нет.
+                #[cfg(target_os = "android")]
+                instance_flags: android::instance_flags(),
                 ..default()
             },
         )),

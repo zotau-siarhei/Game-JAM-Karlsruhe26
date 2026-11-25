@@ -11,9 +11,15 @@
 //! Конвейер, собранный после прогрева, — поздний: он пишется в лог с меткой и временем,
 //! а число поздних конвейеров попадает в сводку `--bench` (`src/perf.rs`).
 //!
+//! На Android (`prewarm.hold_draw` профиля) сборка и рисование разделены: пока конвейеры собираются,
+//! кадры на видеокарту не уходят (цикл игры и ввод идут), а собранное рисуется частями — сначала меши и
+//! модели, потом эффекты по нескольку за кадр. Старые драйверы Adreno теряют видеокарту, когда рисование
+//! идёт вперемешку со сборкой или первый кадр рисует всё сразу.
+//!
 //! `SPACE_GUARD_NO_PREWARM=1` выключает прогрев: так видно, сколько конвейеров собирается в игре.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bevy::asset::AssetEventSystems;
@@ -21,7 +27,9 @@ use bevy::mesh::PrimitiveTopology;
 use bevy::pbr::StandardMaterialKey;
 use bevy::platform::time::Instant;
 use bevy::prelude::*;
-use bevy::render::render_resource::{PipelineCache, PipelineDescriptor};
+use bevy::render::render_resource::{CachedPipelineState, PipelineCache, PipelineDescriptor};
+use bevy::render::renderer::{RenderGraph, RenderGraphSystems};
+use bevy::render::view::window::ExtractedWindow;
 use bevy::render::{Render, RenderApp, RenderSystems};
 use bevy_hanabi::prelude::{EffectAsset, EffectMaterial, ParticleEffect};
 
@@ -41,10 +49,17 @@ const EFFECT_DEPTH: f32 = 40.0;
 const QUIET_FRAMES: u32 = 10;
 /// Предел прогрева, с.
 const TIMEOUT: f32 = 30.0;
+/// Пока кадры не рисуются, один кадр ждёт сборки не дольше этого, с: загрузка идёт дальше, ввод живёт.
+const HELD_WAIT: f32 = 0.1;
+/// Столько кадров спрятанные объекты прогрева ждут показа: рендер отстаёт от игры на кадр.
+const SETTLE_FRAMES: u8 = 3;
+/// Столько мешей и моделей прогрева рисует один кадр.
+const SHOW_MESHES: usize = 8;
+/// Столько эффектов частиц прогрева рисует один кадр.
+const SHOW_EFFECTS: usize = 2;
 /// Столько кадров прогрев ждёт перед началом (`prewarm.start_frames` профиля платформы: на телефонах 3).
-/// На Android кадр ждёт сборки всех конвейеров (`compile_pipelines`), и сборка занимает один кадр
-/// в 15 с: без ожидания всё это время был бы чёрный экран, а не экран загрузки. Дробить прогрев по
-/// кадрам нельзя: кадры между сборками теряли устройство GPU Adreno 810 (3 запуска из 6).
+/// На Android при сборке кадры не рисуются: без ожидания всё это время был бы чёрный экран, а не экран
+/// загрузки. Поэтому там считаются нарисованные кадры.
 fn start_frames() -> u32 {
     crate::profile::get().prewarm.start_frames
 }
@@ -61,6 +76,7 @@ impl Plugin for PrewarmPlugin {
             info!("Прогрев шейдеров выключен (SPACE_GUARD_NO_PREWARM)");
             prewarm.done = true;
             watch.lock().warm = true;
+            WARMING.store(false, Ordering::Relaxed);
         }
         app.insert_resource(watch.clone())
             .insert_resource(prewarm)
@@ -72,7 +88,12 @@ impl Plugin for PrewarmPlugin {
             )
             .add_systems(
                 Update,
-                (restart_on_quality, cover_recompile, warm, follow_camera)
+                (
+                    restart_on_quality.after(crate::quality::switch_quality).before(crate::quality::apply_quality),
+                    cover_recompile,
+                    warm,
+                    follow_camera,
+                )
                     .chain()
                     // Занавес красится в том же кадре, что и встаёт надпись.
                     .before(crate::fade::CurtainMove)
@@ -81,12 +102,18 @@ impl Plugin for PrewarmPlugin {
             // Под занавесом повторного прогрева меню и пауза ввод не принимают: игрок не видит строк.
             .configure_sets(Update, crate::menu::MenuInput.run_if(not(covered)));
         if let Some(render) = app.get_sub_app_mut(RenderApp) {
-            render.insert_resource(watch).add_systems(
-                Render,
-                compile_pipelines
-                    .after(RenderSystems::Prepare)
-                    .before(RenderSystems::Render),
-            );
+            render
+                .insert_resource(watch)
+                .init_resource::<DrawGate>()
+                .add_systems(
+                    Render,
+                    compile_pipelines
+                        .after(RenderSystems::Prepare)
+                        .before(RenderSystems::Render),
+                )
+                // Проходы кадра (камеры, частицы) пропускаются целиком, а запись в буферы и текстуры
+                // уходит на видеокарту как обычно: `render_system` и без них отправляет очередь.
+                .configure_sets(RenderGraph, RenderGraphSystems::Render.run_if(draw_allowed));
         }
     }
 }
@@ -105,6 +132,49 @@ pub struct WatchState {
     /// Поздних конвейеров и время их компиляции, мс.
     late: usize,
     late_ms: f32,
+    /// Собираются сейчас.
+    creating: usize,
+    /// Прогрев собирает конвейеры: кадры не рисовать, даже если в этот миг ничего не собирается.
+    hold: bool,
+    /// Нарисованных кадров за запуск и сколько из них — при идущей сборке.
+    drawn: u32,
+    drawn_compiling: u32,
+}
+
+/// Рендер-мир: рисуется ли этот кадр.
+#[derive(Resource)]
+struct DrawGate {
+    draw: bool,
+    /// Сколько секунд и кадров подряд кадры задержаны.
+    held: f32,
+    frames: u32,
+    last: Option<Instant>,
+    /// Кадров, нарисованных при идущей сборке (для следа запуска).
+    drawn_compiling: u32,
+}
+
+impl Default for DrawGate {
+    fn default() -> Self {
+        Self { draw: true, held: 0.0, frames: 0, last: None, drawn_compiling: 0 }
+    }
+}
+
+fn draw_allowed(gate: Res<DrawGate>) -> bool {
+    gate.draw
+}
+
+/// Задержать ли кадр: профиль велит, идёт прогрев (или задерживаются и поздние конвейеры), что-то
+/// собирается и предел задержки не вышел.
+fn hold_frame(profile: &crate::profile::Prewarm, warm: bool, hold: bool, creating: usize, held: f32) -> bool {
+    profile.hold_draw && (!warm || profile.hold_late) && (hold || creating > 0) && held < profile.hold_limit
+}
+
+/// Идёт прогрев: потеря видеокарты сейчас — из-за сборки или первого рисования (`android.rs`).
+static WARMING: AtomicBool = AtomicBool::new(true);
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub fn warming() -> bool {
+    WARMING.load(Ordering::Relaxed)
 }
 
 /// Общий для основного и рендер-мира ресурс состояния конвейеров.
@@ -131,17 +201,30 @@ impl PipelineWatch {
 /// начатые не соберутся: отрисовка вперемешку со сборкой вешала GPU Adreno 810 (DeviceLost),
 /// а по одному в рендер-потоке прогрев шёл 15 с. Одно ожидание — не дольше `prewarm.wait_limit`:
 /// пока кадр стоит, ввод не обрабатывается, и Android после 5 с показал бы «не отвечает» (ANR).
-fn compile_pipelines(mut cache: ResMut<PipelineCache>, watch: Res<PipelineWatch>) {
+/// Предел означает, что несобранное рисовалось бы вперемешку со сборкой, поэтому на Android
+/// (`prewarm.hold_draw`) такой кадр не рисуется вовсе ([`DrawGate`]), пока не выйдет `prewarm.hold_limit`.
+fn compile_pipelines(
+    mut cache: ResMut<PipelineCache>,
+    watch: Res<PipelineWatch>,
+    mut gate: ResMut<DrawGate>,
+    mut windows: Query<&mut ExtractedWindow>,
+) {
     let start = Instant::now();
+    let frame = gate.last.replace(start).map_or(0.0, |last| start.duration_since(last).as_secs_f32());
     cache.process_queue();
-    mark_compiling(&cache, "compiling", |p| matches!(p.state, bevy::render::render_resource::CachedPipelineState::Creating(_)));
+    let creating = |cache: &PipelineCache| {
+        cache.pipelines().filter(|p| matches!(p.state, CachedPipelineState::Creating(_))).count()
+    };
+    mark_compiling(&cache, gate.drawn_compiling);
     let prewarm = &crate::profile::get().prewarm;
+    let (warm, hold) = {
+        let state = watch.lock();
+        (state.warm, state.hold)
+    };
     if prewarm.wait_pipelines {
-        use bevy::render::render_resource::CachedPipelineState;
-        let creating = |cache: &PipelineCache| {
-            cache.pipelines().filter(|p| matches!(p.state, CachedPipelineState::Creating(_))).count()
-        };
-        while creating(&cache) > 0 && start.elapsed().as_secs_f32() < prewarm.wait_limit {
+        let held = hold_frame(prewarm, warm, hold, creating(&cache), gate.held);
+        let limit = if held && !warm { HELD_WAIT } else { prewarm.wait_limit };
+        while creating(&cache) > 0 && start.elapsed().as_secs_f32() < limit {
             std::thread::sleep(std::time::Duration::from_millis(1));
             cache.process_queue();
         }
@@ -149,6 +232,33 @@ fn compile_pipelines(mut cache: ResMut<PipelineCache>, watch: Res<PipelineWatch>
         if waited > 0.25 {
             let left = creating(&cache);
             info!("Конвейеры: кадр ждал сборки {:.0} мс, собирается ещё {left}", waited * 1000.0);
+        }
+    }
+    let left = creating(&cache);
+    gate.draw = !hold_frame(prewarm, warm, hold, left, gate.held);
+    if gate.draw {
+        if left > 0 {
+            gate.drawn_compiling += 1;
+            if prewarm.hold_draw && gate.frames > 0 && gate.held >= prewarm.hold_limit {
+                warn!("Конвейеры: за {:.0} с не собрались {left}, кадры рисуются при сборке", gate.held);
+                gate.frames = 0;
+            }
+        } else if !hold {
+            if gate.frames > 0 {
+                info!("Конвейеры: кадры не рисовались {:.1} с ({} кадров)", gate.held, gate.frames);
+            }
+            gate.held = 0.0;
+            gate.frames = 0;
+        }
+    } else {
+        // Долгий перерыв — игра была свёрнута, а не собирала.
+        gate.held += frame.min(1.0);
+        gate.frames += 1;
+        // Иначе Bevy показал бы ненарисованный кадр нового окна. Без него окно видно только на Wayland.
+        if cfg!(target_os = "android") {
+            for mut window in &mut windows {
+                window.needs_initial_present = false;
+            }
         }
     }
     let ms = start.elapsed().as_secs_f32() * 1000.0;
@@ -163,22 +273,22 @@ fn compile_pipelines(mut cache: ResMut<PipelineCache>, watch: Res<PipelineWatch>
         state.late += fresh;
         state.late_ms += ms;
     }
+    state.creating = left;
+    state.drawn = state.drawn.wrapping_add(u32::from(gate.draw));
+    state.drawn_compiling = gate.drawn_compiling;
     state.fresh = fresh;
     state.total = total;
     state.waiting = cache.waiting_pipelines().count();
 }
 
-/// Отметка следа (`trail.rs`): сколько конвейеров в очереди или сборке и метки первых из них. Если
-/// драйвер упадёт на сборке, при следующем запуске видно, на каких.
-fn mark_compiling(
-    cache: &PipelineCache,
-    what: &str,
-    filter: impl Fn(&&bevy::render::render_resource::CachedPipeline) -> bool,
-) {
-    let pending: Vec<_> = cache.pipelines().filter(filter).collect();
+/// Отметка следа (`trail.rs`): сколько конвейеров собирается, метки первых из них и сколько кадров
+/// нарисовано при идущей сборке. Если драйвер упадёт на сборке, при следующем запуске видно, на каких.
+fn mark_compiling(cache: &PipelineCache, drawn: u32) {
+    let pending: Vec<_> =
+        cache.pipelines().filter(|p| matches!(p.state, CachedPipelineState::Creating(_))).collect();
     crate::trail::mark_pipelines((!pending.is_empty()).then(|| {
         let labels: Vec<String> = pending.iter().take(3).map(|p| label(&p.descriptor)).collect();
-        format!("pipelines {what}: {} ({})", pending.len(), labels.join(", "))
+        format!("pipelines compiling: {} ({}), frames drawn meanwhile: {drawn}", pending.len(), labels.join(", "))
     }));
 }
 
@@ -380,6 +490,35 @@ enum Warmed {
     Scene(AssetId<WorldAsset>),
 }
 
+/// Этап прогрева там, где сборка и рисование разделены (`prewarm.hold_draw`).
+#[derive(Default, PartialEq, Eq, Clone, Copy, Debug)]
+enum Stage {
+    /// Объекты ставятся, конвейеры собираются. Без `hold_draw` другого этапа нет.
+    #[default]
+    Compile,
+    /// Объекты спрятаны, кадры ещё задержаны: рендер должен это увидеть.
+    Settle(u8),
+    /// Собранное рисуется частями; число — следующая часть, второе — нарисованных кадров на прошлой.
+    Show(usize, u32),
+}
+
+/// Что рисует часть `part` показа: меши и модели, потом эффекты. `None` — показано всё.
+#[derive(PartialEq, Eq, Debug)]
+enum Portion {
+    Meshes(std::ops::Range<usize>),
+    Effects(std::ops::Range<usize>),
+}
+
+fn portion(part: usize, meshes: usize, effects: usize) -> Option<Portion> {
+    let mesh_parts = meshes.div_ceil(SHOW_MESHES);
+    if part < mesh_parts {
+        let start = part * SHOW_MESHES;
+        return Some(Portion::Meshes(start..(start + SHOW_MESHES).min(meshes)));
+    }
+    let start = (part - mesh_parts) * SHOW_EFFECTS;
+    (start < effects).then(|| Portion::Effects(start..(start + SHOW_EFFECTS).min(effects)))
+}
+
 /// Ход прогрева. Загрузка (`src/loading.rs`) ждёт его конца.
 #[derive(Resource, Default)]
 pub struct Prewarm {
@@ -398,9 +537,19 @@ pub struct Prewarm {
     quality: Option<Quality>,
     warmed_qualities: Vec<Quality>,
     quiet_restart: bool,
+    stage: Stage,
+    /// Меши и модели, эффекты показа и объекты текущей части.
+    show_meshes: Vec<Entity>,
+    show_effects: Vec<AssetId<EffectAsset>>,
+    shown: Vec<Entity>,
 }
 
 impl Prewarm {
+    /// Новая ступень качества ждёт, пока на экран выйдет занавес (`quality::apply_quality`).
+    pub fn delays_quality(&self) -> bool {
+        crate::profile::get().prewarm.hold_draw && self.hold > 0
+    }
+
     /// Прогрев закончен.
     pub fn done(&self) -> bool {
         self.done
@@ -434,12 +583,25 @@ fn restart_on_quality(
     }
     // Кадр ждёт сборки только там, где `wait_pipelines`: туда же и занавес; два кадра — чтобы кадр
     // с занавесом успел выйти на экран раньше, чем ожидание сборки остановит следующий.
-    prewarm.hold = if crate::profile::get().prewarm.wait_pipelines && !prewarm.quiet_restart { 2 } else { 0 };
+    let profile = &crate::profile::get().prewarm;
+    prewarm.hold = match (profile.wait_pipelines && !prewarm.quiet_restart, profile.hold_draw) {
+        (false, _) => 0,
+        (true, false) => 2,
+        // Задержанный кадр не рисуется вовсе, и рендер отстаёт на кадр.
+        (true, true) => 3,
+    };
+    prewarm.stage = Stage::Compile;
+    prewarm.show_meshes.clear();
+    prewarm.show_effects.clear();
+    prewarm.shown.clear();
+    WARMING.store(true, Ordering::Relaxed);
     prewarm.done = false;
     prewarm.warmed.clear();
     prewarm.quiet = 0;
     prewarm.started = None;
-    watch.lock().warm = false;
+    let mut state = watch.lock();
+    state.warm = false;
+    state.hold = false;
 }
 
 /// Непрозрачность занавеса на время повторного прогрева.
@@ -505,25 +667,33 @@ fn warm(
     mut flames: ResMut<Assets<FlameMaterial>>,
     watch: Res<PipelineWatch>,
     time: Res<Time<Real>>,
-    mut waited: Local<u32>,
+    children: Query<&Children>,
+    mut waited: Local<(u32, u32)>,
 ) {
     if prewarm.done {
         return;
     }
+    let profile = &crate::profile::get().prewarm;
     if prewarm.hold > 0 {
         prewarm.hold -= 1;
         return;
     }
-    if *waited < start_frames() {
-        *waited += 1;
+    if waited.0 < start_frames() {
+        let drawn = watch.lock().drawn;
+        if !profile.hold_draw || drawn != waited.1 {
+            *waited = (waited.0 + 1, drawn);
+        }
         return;
     }
     let now = time.elapsed_secs();
     let prewarm = &mut *prewarm;
+    // Ступень уже прогрета: собирать нечего, и задерживать кадры незачем.
+    let split = profile.hold_draw && !prewarm.quiet_restart;
     if prewarm.started.is_none() {
         prewarm.started = Some(now);
         prewarm.pipelines_before = watch.lock().total;
         bank.request_all(&asset_server);
+        watch.lock().hold = split;
     }
     let (mesh_root, effect_root) = *prewarm.roots.get_or_insert_with(|| {
         let root = |commands: &mut Commands, name: &str| {
@@ -533,6 +703,13 @@ fn warm(
         };
         (root(&mut commands, "Прогрев: меши"), root(&mut commands, "Прогрев: частицы"))
     });
+
+    if prewarm.stage != Stage::Compile {
+        if show(&mut commands, prewarm, &mut effects, &watch, effect_root) {
+            finish(&mut commands, prewarm, &watch);
+        }
+        return;
+    }
 
     let small = Transform::from_scale(Vec3::splat(SCALE));
     let mut added = 0;
@@ -560,19 +737,8 @@ fn warm(
     }
     let effect_ids: Vec<AssetId<EffectAsset>> = effects.ids().collect();
     for id in effect_ids {
-        if !add(prewarm, Warmed::Effect(id)) {
-            continue;
-        }
-        let Some(handle) = effects.get_strong_handle(id) else {
-            continue;
-        };
-        // Конвейер зависит от раскладки слотов текстур, а не от картинок: годится любая.
-        let slots = effects.get(id).map_or(0, |effect| effect.texture_layout().layout.len());
-        let mut entity = commands.spawn((ParticleEffect::new(handle), Transform::default(), ChildOf(effect_root)));
-        if slots > 0 {
-            entity.insert(EffectMaterial {
-                images: vec![Handle::<Image>::default(); slots],
-            });
+        if profile.particles && add(prewarm, Warmed::Effect(id)) {
+            spawn_effect(&mut commands, &mut effects, id, effect_root);
         }
     }
     for scene in bank.ready_scenes() {
@@ -582,16 +748,22 @@ fn warm(
     }
 
     let state = watch.lock();
-    let busy = added > 0 || state.fresh > 0 || state.waiting > 0 || bank.loading() > 0;
+    let creating = split && state.creating > 0;
+    let busy = added > 0 || state.fresh > 0 || state.waiting > 0 || creating || bank.loading() > 0;
     prewarm.quiet = if busy { 0 } else { prewarm.quiet + 1 };
     let started = prewarm.started.unwrap_or(now);
-    let timed_out = now - started > TIMEOUT;
+    // Задержанные кадры не рисуются при сборке, пока не выйдет их предел: прогрев ждёт его же.
+    let timeout = if split { TIMEOUT.max(profile.hold_limit) } else { TIMEOUT };
+    let timed_out = now - started > timeout;
+    if split {
+        crate::trail::mark_prewarm(Some(format!("prewarm: compile {}", prewarm.warmed.len())));
+    }
     if prewarm.quiet < QUIET_FRAMES && !timed_out {
         return;
     }
     if timed_out {
         warn!(
-            "Прогрев шейдеров не закончился за {TIMEOUT} с: ждут {} конвейеров, грузится моделей {}",
+            "Прогрев шейдеров не закончился за {timeout} с: ждут {} конвейеров, грузится моделей {}",
             state.waiting,
             bank.loading()
         );
@@ -605,7 +777,114 @@ fn warm(
         prewarm.warmed.len()
     );
     drop(state);
-    watch.lock().warm = true;
+    if split {
+        // Меши и модели прячутся и показываются частями. Эффекты ставятся заново: пока кадры были
+        // задержаны, видеокарта не запускала их частиц, и счётчики CPU и GPU разошлись.
+        prewarm.show_meshes = children.get(mesh_root).map(|list| list.iter().collect()).unwrap_or_default();
+        for entity in &prewarm.show_meshes {
+            commands.entity(*entity).insert(Visibility::Hidden);
+        }
+        commands.entity(effect_root).despawn_children();
+        prewarm.show_effects = if profile.particles { effects.ids().collect() } else { Vec::new() };
+        prewarm.stage = Stage::Settle(SETTLE_FRAMES);
+        return;
+    }
+    finish(&mut commands, prewarm, &watch);
+}
+
+/// Ставит эффект частиц прогрева.
+fn spawn_effect(
+    commands: &mut Commands,
+    effects: &mut Assets<EffectAsset>,
+    id: AssetId<EffectAsset>,
+    root: Entity,
+) -> Option<Entity> {
+    let handle = effects.get_strong_handle(id)?;
+    // Конвейер зависит от раскладки слотов текстур, а не от картинок: годится любая.
+    let slots = effects.get(id).map_or(0, |effect| effect.texture_layout().layout.len());
+    let mut entity = commands.spawn((ParticleEffect::new(handle), Transform::default(), ChildOf(root)));
+    if slots > 0 {
+        entity.insert(EffectMaterial {
+            images: vec![Handle::<Image>::default(); slots],
+        });
+    }
+    Some(entity.id())
+}
+
+/// Показ собранного частями: каждая часть видна, пока рендер не нарисует с ней кадр. `true` — показано всё.
+fn show(
+    commands: &mut Commands,
+    prewarm: &mut Prewarm,
+    effects: &mut Assets<EffectAsset>,
+    watch: &PipelineWatch,
+    effect_root: Entity,
+) -> bool {
+    let (part, since) = match prewarm.stage {
+        Stage::Compile => return false,
+        Stage::Settle(0) => {
+            let mut state = watch.lock();
+            state.hold = false;
+            prewarm.stage = Stage::Show(0, state.drawn);
+            return false;
+        }
+        Stage::Settle(left) => {
+            prewarm.stage = Stage::Settle(left - 1);
+            return false;
+        }
+        Stage::Show(part, since) => (part, since),
+    };
+    // Рендер отстаёт на кадр: первый из нарисованных мог быть ещё без этой части.
+    let (drawn, compiling) = {
+        let state = watch.lock();
+        (state.drawn, state.drawn_compiling)
+    };
+    if drawn.wrapping_sub(since) < 2 {
+        return false;
+    }
+    for entity in prewarm.shown.drain(..) {
+        commands.entity(entity).despawn();
+    }
+    let Some(next) = portion(part, prewarm.show_meshes.len(), prewarm.show_effects.len()) else {
+        return true;
+    };
+    crate::trail::mark_prewarm(Some(format!("prewarm: draw {next:?}, frames drawn while compiling: {compiling}")));
+    match next {
+        Portion::Meshes(range) => {
+            for entity in prewarm.show_meshes[range].to_vec() {
+                commands.entity(entity).insert(Visibility::Inherited);
+                prewarm.shown.push(entity);
+            }
+        }
+        Portion::Effects(range) => {
+            for id in prewarm.show_effects[range].to_vec() {
+                prewarm.shown.extend(spawn_effect(commands, effects, id, effect_root));
+            }
+        }
+    }
+    prewarm.stage = Stage::Show(part + 1, drawn);
+    false
+}
+
+/// Прогрев закончен: объекты убираются, дальше новые конвейеры — поздние.
+fn finish(commands: &mut Commands, prewarm: &mut Prewarm, watch: &PipelineWatch) {
+    {
+        let mut state = watch.lock();
+        state.warm = true;
+        state.hold = false;
+    }
+    if prewarm.stage != Stage::Compile {
+        info!(
+            "Прогрев шейдеров: показано по частям объектов {}, эффектов {}",
+            prewarm.show_meshes.len(),
+            prewarm.show_effects.len()
+        );
+    }
+    crate::trail::mark_prewarm(None);
+    WARMING.store(false, Ordering::Relaxed);
+    prewarm.stage = Stage::Compile;
+    prewarm.show_meshes.clear();
+    prewarm.show_effects.clear();
+    prewarm.shown.clear();
     prewarm.done = true;
     prewarm.quiet_restart = false;
     if let Some(quality) = prewarm.quality
@@ -644,6 +923,41 @@ fn follow_camera(
 mod tests {
     use super::*;
     use bevy::asset::RenderAssetUsages;
+
+    #[test]
+    fn кадр_задержан_только_пока_прогрев_собирает() {
+        let mut p = crate::profile::get().prewarm.clone();
+        (p.hold_draw, p.hold_late, p.hold_limit) = (true, false, 40.0);
+        // Прогрев: задерживают и сборка, и сам этап.
+        assert!(hold_frame(&p, false, false, 3, 0.0));
+        assert!(hold_frame(&p, false, true, 0, 0.0));
+        assert!(!hold_frame(&p, false, false, 0, 0.0));
+        // Предел вышел — рисуем и при сборке.
+        assert!(!hold_frame(&p, false, true, 3, 40.0));
+        // В игре поздний конвейер кадр не задерживает, в безопасном запуске — задерживает.
+        assert!(!hold_frame(&p, true, false, 1, 0.0));
+        p.hold_late = true;
+        assert!(hold_frame(&p, true, false, 1, 0.0));
+        p.hold_draw = false;
+        assert!(!hold_frame(&p, false, true, 3, 0.0));
+    }
+
+    #[test]
+    fn показ_сначала_меши_потом_эффекты() {
+        let (meshes, effects) = (SHOW_MESHES + 1, SHOW_EFFECTS * 2 + 1);
+        let parts: Vec<Portion> = (0..).map_while(|part| portion(part, meshes, effects)).collect();
+        assert_eq!(
+            parts,
+            vec![
+                Portion::Meshes(0..SHOW_MESHES),
+                Portion::Meshes(SHOW_MESHES..meshes),
+                Portion::Effects(0..SHOW_EFFECTS),
+                Portion::Effects(SHOW_EFFECTS..SHOW_EFFECTS * 2),
+                Portion::Effects(SHOW_EFFECTS * 2..effects),
+            ]
+        );
+        assert_eq!(portion(0, 0, 0), None);
+    }
 
     #[test]
     fn меши_одной_раскладки_в_одном_классе() {

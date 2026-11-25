@@ -44,6 +44,8 @@ struct Trail {
     stage: String,
     /// Конвейеры, которые сейчас собираются (рендер-поток): сборка идёт одновременно с загрузкой.
     pipelines: Option<String>,
+    /// Шаг прогрева шейдеров (`prewarm.rs`).
+    prewarm: Option<String>,
     /// След уже помечен чистым или записана причина выхода: отметки больше не пишутся, только помнятся.
     finished: bool,
     /// Записанная причина выхода: следующая дописывается к ней.
@@ -76,6 +78,7 @@ pub fn begin() {
         path,
         stage: String::new(),
         pipelines: None,
+        prewarm: None,
         finished: false,
         failure: None,
         background: false,
@@ -119,6 +122,21 @@ pub fn mark_pipelines(pipelines: Option<String>) {
     }
 }
 
+/// Отмечает шаг прогрева шейдеров; `None` — прогрев не идёт.
+pub fn mark_prewarm(step: Option<String>) {
+    let mut guard = lock();
+    let Some(trail) = guard.as_mut() else {
+        return;
+    };
+    if trail.prewarm == step {
+        return;
+    }
+    trail.prewarm = step;
+    if !trail.finished && !trail.background {
+        write(trail.path.as_ref(), &trail.line());
+    }
+}
+
 /// Записывает причину выхода: паника, ошибка рендера, молчаливый выход. Пишется и в чистый след, с этапом;
 /// вторая причина дописывается к первой. Может звать обработчик паник, поэтому занятый замок не ждёт.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
@@ -129,9 +147,9 @@ pub fn fail(reason: &str) {
     let Some(trail) = guard.as_mut() else {
         return;
     };
-    let text = failure_text(trail.failure.as_deref(), reason, &trail.line());
+    let text = failure_text(trail.failure.as_deref(), reason, &trail.stage_line());
     trail.finished = true;
-    write(trail.path.as_ref(), &text);
+    write(trail.path.as_ref(), &with_device(&text));
     trail.failure = Some(text);
 }
 
@@ -179,13 +197,32 @@ fn failure_text(first: Option<&str>, reason: &str, stage_line: &str) -> String {
 }
 
 impl Trail {
-    /// Строка следа: отметка, конвейеры в сборке, свободная память, секунды от запуска.
+    /// Отметка, шаг прогрева, конвейеры в сборке, свободная память, секунды от запуска.
+    fn stage_line(&self) -> String {
+        line(&stage_text(&self.stage, self.prewarm.as_deref(), self.pipelines.as_deref()))
+    }
+
+    /// Строка следа: то же и видеокарта с драйвером.
     fn line(&self) -> String {
-        match &self.pipelines {
-            Some(pipelines) => line(&format!("{} | {pipelines}", self.stage)),
-            None => line(&self.stage),
+        with_device(&self.stage_line())
+    }
+}
+
+/// Отметка с шагом прогрева и собираемыми конвейерами.
+fn stage_text(stage: &str, prewarm: Option<&str>, pipelines: Option<&str>) -> String {
+    [Some(stage), prewarm, pipelines].into_iter().flatten().collect::<Vec<_>>().join(" | ")
+}
+
+/// Видеокарта, драйвер и версия Vulkan — в конце строки, после обрезки длинной причины.
+fn with_device(text: &str) -> String {
+    #[cfg(target_os = "android")]
+    {
+        let device = crate::android::device();
+        if !device.driver.is_empty() {
+            return format!("{text} · {} · {}", device.gpu, device.driver);
         }
     }
+    text.to_owned()
 }
 
 fn lock() -> std::sync::MutexGuard<'static, Option<Trail>> {
@@ -325,6 +362,16 @@ fn follow_lifecycle(mut lifecycle: MessageReader<AppLifecycle>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn шаг_прогрева_и_конвейеры_в_строке() {
+        assert_eq!(stage_text("menu", None, None), "menu");
+        assert_eq!(
+            stage_text("COMPILING SHADERS", Some("prewarm: compile 134"), Some("pipelines compiling: 3")),
+            "COMPILING SHADERS | prewarm: compile 134 | pipelines compiling: 3"
+        );
+        assert_eq!(stage_text("run", None, Some("pipelines compiling: 1")), "run | pipelines compiling: 1");
+    }
 
     #[test]
     fn первая_причина_с_этапом() {

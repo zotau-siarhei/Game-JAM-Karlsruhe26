@@ -172,6 +172,15 @@ pub struct Prewarm {
     pub wait_limit: f32,
     /// Собирать конвейеры по одному в рендер-потоке.
     pub sync_compile: bool,
+    /// Пока прогрев собирает конвейеры, кадры не рисуются (Android): старые драйверы теряют видеокарту,
+    /// если рисовать вперемешку со сборкой. Собранное рисуется частями (`prewarm.rs`).
+    pub hold_draw: bool,
+    /// Не рисовать и пока собирается поздний конвейер, после прогрева (безопасный запуск).
+    pub hold_late: bool,
+    /// Дольше этого кадры не задерживаются, секунд: дальше игра рисует и при идущей сборке.
+    pub hold_limit: f32,
+    /// Прогревать эффекты частиц. Безопасный запуск (`make_safe`) их не прогревает.
+    pub particles: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -270,6 +279,9 @@ impl PlatformProfile {
         }
         if !finite(self.prewarm.wait_limit) || !(0.1..=120.0).contains(&self.prewarm.wait_limit) {
             return Err(format!("prewarm.wait_limit {}: нужно от 0,1 до 120 с", self.prewarm.wait_limit));
+        }
+        if !finite(self.prewarm.hold_limit) || !(0.0..=300.0).contains(&self.prewarm.hold_limit) {
+            return Err(format!("prewarm.hold_limit {}: нужно от 0 до 300 с", self.prewarm.hold_limit));
         }
         if !finite(self.debris.shadow_min_size) || self.debris.shadow_min_size < 0.0 {
             return Err(format!("debris.shadow_min_size {}: нужно от 0", self.debris.shadow_min_size));
@@ -400,8 +412,22 @@ pub fn get() -> &'static PlatformProfile {
         }
         rejected.extend(resolved.rejected);
         profile.rejected = rejected;
+        #[cfg(target_os = "android")]
+        if crate::android::safe_start() {
+            make_safe(&mut profile);
+        }
         profile
     })
+}
+
+/// Безопасный запуск — после потери видеокарты при загрузке (`android::safe_start`): конвейеры
+/// собираются по одному, частицы не прогреваются, а поздний конвейер кадр дожидается.
+#[cfg_attr(not(any(target_os = "android", test)), allow(dead_code))]
+fn make_safe(profile: &mut PlatformProfile) {
+    profile.threads.async_compute = Some([1, 1]);
+    profile.prewarm.particles = false;
+    profile.prewarm.hold_late = true;
+    profile.overrides.push("безопасный запуск".to_owned());
 }
 
 /// Слой нагрева: устройство горячее или в режиме энергосбережения (на iOS — `ios::watch_thermal`,
@@ -946,6 +972,7 @@ mod tests {
                 (0, false),
                 "{name}"
             );
+            assert!(!p.prewarm.hold_draw && !p.prewarm.hold_late && p.prewarm.particles, "{name}");
             assert!(!p.input.touch_default && p.input.cursor, "{name}");
             assert_eq!(p.menu.quit, name != "web-desktop", "{name}");
         }
@@ -992,6 +1019,10 @@ mod tests {
             (3, true, 2.0)
         );
         assert_eq!(
+            (android.prewarm.hold_draw, android.prewarm.hold_late, android.prewarm.hold_limit, android.prewarm.particles),
+            (true, false, 40.0, true)
+        );
+        assert_eq!(
             (android.threads.compute, android.threads.async_compute),
             (Some(4), Some([2, 6]))
         );
@@ -1002,6 +1033,26 @@ mod tests {
             (android.render.shadow_filter, android.render.gpu_memory),
             (ShadowFilter::Gaussian, GpuMemory::Memory)
         );
+    }
+
+    /// Кадры не рисуются при сборке только на Android, на всех уровнях.
+    #[test]
+    fn без_рисования_при_сборке_только_android() {
+        for name in ALL {
+            assert_eq!(build(name, &[]).prewarm.hold_draw, name.starts_with("android"), "{name}");
+        }
+        // Выключается без пересборки: `setprop debug.spaceguard.prewarm.hold_draw false`.
+        assert!(!build("android-low", &[("prewarm.hold_draw", "false")]).prewarm.hold_draw);
+        assert_eq!(build("android", &[("prewarm.hold_limit", "-1")]).rejected.len(), 1);
+    }
+
+    #[test]
+    fn безопасный_запуск_собирает_по_одному_без_частиц() {
+        let mut profile = build("android-low", &[]);
+        make_safe(&mut profile);
+        assert_eq!(profile.threads.async_compute, Some([1, 1]));
+        assert!(!profile.prewarm.particles && profile.prewarm.hold_late && profile.prewarm.hold_draw);
+        assert!(profile.check().is_ok());
     }
 
     #[test]
