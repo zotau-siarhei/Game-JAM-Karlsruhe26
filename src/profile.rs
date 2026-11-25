@@ -552,9 +552,9 @@ pub fn android_tier(gpu: &str, memory: u64, low_ram: bool) -> DeviceTier {
         digits.parse().ok()
     };
     let weak_gpu = model("Adreno (TM) ").is_some_and(|n| n < 700)
-        // Mali-G31…G78 — Bifrost и ранний Valhall; G310 и новее — трёхзначные; с 2025 года —
-        // Mali-G1-Ultra/Premium/Pro (Arm Lumex), номер 1. Mali-T — ещё старее.
-        || model("Mali-G").is_some_and(|n| (30..100).contains(&n))
+        // Mali-G31…G78 — Bifrost и ранний Valhall; новее — трёхзначные, из них G310 — самый слабый; с 2025
+        // года — Mali-G1-Ultra/Premium/Pro (Arm Lumex), номер 1. Mali-T — ещё старее.
+        || model("Mali-G").is_some_and(|n| (30..100).contains(&n) || n == 310)
         || gpu.contains("Mali-T")
         || gpu.contains("PowerVR");
     let strong_gpu = model("Adreno (TM) ").is_some_and(|n| (700..900).contains(&n) && n / 10 % 10 >= 3)
@@ -1117,6 +1117,9 @@ mod tests {
         // Mali Bifrost и ранний Valhall — слабые, новые — средние, Immortalis — сильный.
         assert_eq!(tier("Mali-G57 MC2"), DeviceTier::Low);
         assert_eq!(tier("Mali-G78 MP14"), DeviceTier::Low);
+        assert_eq!(tier("Mali-G310"), DeviceTier::Low);
+        assert_eq!(tier("Mali-G310 MC2"), DeviceTier::Low);
+        assert_eq!(tier("Mali-G510 MC4"), DeviceTier::Mid);
         assert_eq!(tier("Mali-G715 MC7"), DeviceTier::Mid);
         assert_eq!(tier("Immortalis-G720 MC12"), DeviceTier::High);
         // Arm Lumex (Dimensity 9500 и новее): Ultra — сильный, Premium и Pro — средние.

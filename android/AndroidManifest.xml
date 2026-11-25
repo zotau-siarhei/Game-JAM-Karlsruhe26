@@ -10,6 +10,9 @@
         android:label="Space Guard"
         android:icon="@mipmap/ic_launcher"
         android:appCategory="game"
+        android:allowBackup="true"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:hasCode="false"
         android:extractNativeLibs="false">
         <!-- Профилирование simpleperf без root (ключ app у simpleperf record). -->

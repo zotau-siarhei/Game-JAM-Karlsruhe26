@@ -7,9 +7,15 @@ import bevy_pbr::render::mesh_view_bindings::globals;
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> flame: vec4<f32>;
 
+// Случайное число ячейки шума: целые умножения и сдвиги. Прежний `fract(sin(…))` рос со временем игры,
+// а точность `sin` больших чисел на телефонных видеокартах не гарантирована.
 fn hash(p: vec2<f32>) -> f32 {
-    let h = dot(p, vec2<f32>(127.1, 311.7));
-    return fract(sin(h) * 43758.5453);
+    let cell = vec2<u32>(vec2<i32>(p));
+    var h = (cell.x * 0x9E3779B1u) ^ (cell.y * 0x85EBCA77u);
+    h = (h ^ (h >> 15u)) * 0x2C1B3C6Du;
+    h = (h ^ (h >> 12u)) * 0x297A2D39u;
+    h = h ^ (h >> 15u);
+    return f32(h >> 8u) / 16777216.0;
 }
 
 fn value_noise(p: vec2<f32>) -> f32 {

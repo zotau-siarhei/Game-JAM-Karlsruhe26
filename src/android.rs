@@ -44,6 +44,7 @@ impl Plugin for AndroidPlugin {
         app.add_systems(Last, drop_point_shadow_sampling)
             .init_resource::<Load>()
             .add_systems(PreUpdate, (keep_immersive, watch_audio, watch_display))
+            .add_systems(Last, watch_edge_gestures)
             .add_systems(
                 Update,
                 back_to_background
@@ -869,6 +870,50 @@ fn keep_immersive(
     }
 }
 
+/// В забеге жест «назад» у краёв экрана выключен: там большие пальцы держат стики, и второй свайп подряд
+/// от края (первый показывает системные панели) ставил бы паузу посреди боя. В меню и на паузе жест работает.
+/// Полосы ставятся заново, когда меняется размер окна (поворот, разделённый экран).
+fn watch_edge_gestures(
+    state: Res<State<crate::run::GameState>>,
+    mut resized: MessageReader<bevy::window::WindowResized>,
+    mut applied: Local<bool>,
+) {
+    let wanted = *state.get() == crate::run::GameState::Playing;
+    let resized = resized.read().count() > 0;
+    if wanted != *applied || (wanted && resized) {
+        *applied = wanted;
+        exclude_edge_gestures(wanted);
+    }
+}
+
+/// `View.setSystemGestureExclusionRects` у вида окна: полосы [`crate::touch::edge_zones`] или ничего.
+fn exclude_edge_gestures(exclude: bool) {
+    use jni::objects::JValue;
+    on_java_main_thread(move |env, activity| {
+        let window = env.call_method(activity, "getWindow", "()Landroid/view/Window;", &[])?.l()?;
+        if window.is_null() {
+            return Ok(());
+        }
+        let decor = env.call_method(&window, "getDecorView", "()Landroid/view/View;", &[])?.l()?;
+        let list = env.new_object("java/util/ArrayList", "()V", &[])?;
+        if exclude {
+            let width = env.call_method(&decor, "getWidth", "()I", &[])?.i()?;
+            let height = env.call_method(&decor, "getHeight", "()I", &[])?.i()?;
+            let resources = env.call_method(&decor, "getResources", "()Landroid/content/res/Resources;", &[])?.l()?;
+            let metrics =
+                env.call_method(&resources, "getDisplayMetrics", "()Landroid/util/DisplayMetrics;", &[])?.l()?;
+            let density = env.get_field(&metrics, "density", "F")?.f()?;
+            for zone in crate::touch::edge_zones(width, height, density) {
+                let rect = env.new_object("android/graphics/Rect", "(IIII)V", &zone.map(JValue::Int))?;
+                env.call_method(&list, "add", "(Ljava/lang/Object;)Z", &[JValue::Object(&rect)])?;
+            }
+        }
+        env.call_method(&decor, "setSystemGestureExclusionRects", "(Ljava/util/List;)V", &[JValue::Object(&list)])?;
+        info!("Android: жест «назад» у краёв {}", if exclude { "выключен" } else { "включён" });
+        Ok(())
+    });
+}
+
 /// Отступы окна в dp из `View.getRootWindowInsets()`: вырез камеры и видимые системные панели там, где
 /// они заходят на окно (в разделённом экране вырез может быть у соседнего окна). Спрятанные панели
 /// дают 0. Только поток интерфейса. `Ok(None)` — окно ещё не прикреплено.
@@ -957,23 +1002,28 @@ fn move_task_to_back() {
 /// Аудиофокус и звонки. Раз в секунду — режим `AudioManager`: звонит телефон или идёт разговор — звук
 /// игры молчит (`sound::SystemSilence`). Пока окно на экране и звонка нет, игра просит фокус раз в
 /// секунду, пока система его не даст (чужая музыка встаёт на паузу); из фона система просьбу отклоняет,
-/// поэтому после возврата и после звонка — снова. Уходя в фон, игра фокус отдаёт. Слушатель потери
-/// фокуса — Java-интерфейс, без своего класса его нет.
+/// поэтому после возврата и после звонка — снова. Уходя в фон, игра фокус отдаёт. Музыка игры выключена в
+/// настройках — фокус отдан и не просится: игрок слушает свою. Слушатель потери фокуса — Java-интерфейс, без
+/// своего класса его нет.
 fn watch_audio(
     time: Res<Time<Real>>,
     mut lifecycle: MessageReader<bevy::window::AppLifecycle>,
     mut focus: MessageReader<bevy::window::WindowFocused>,
     mut granted: Local<bool>,
+    // Просьба фокуса сейчас у системы: её надо отдать.
+    mut held: Local<bool>,
     mut away: Local<bool>,
     mut next: Local<f32>,
     mut silence: ResMut<crate::sound::SystemSilence>,
     mut pause: MessageWriter<crate::run::SystemPause>,
+    settings: Res<crate::settings::Settings>,
 ) {
     use bevy::window::AppLifecycle;
+    let music = settings.gain(crate::settings::SoundGroup::Music) > 0.0;
     for event in lifecycle.read() {
         match event {
             AppLifecycle::WillSuspend | AppLifecycle::Suspended => {
-                if !*away && *granted && audio_focus("abandonAudioFocusRequest").is_some() {
+                if !*away && std::mem::take(&mut *held) && audio_focus("abandonAudioFocusRequest").is_some() {
                     info!("Android: аудиофокус отдан");
                 }
                 (*away, *granted) = (true, false);
@@ -1011,8 +1061,15 @@ fn watch_audio(
     }
     /// `AudioManager.AUDIOFOCUS_REQUEST_GRANTED`.
     const GRANTED: i32 = 1;
-    if !*away && !call && !*granted && audio_focus("requestAudioFocus") == Some(GRANTED) {
-        *granted = true;
+    if !music {
+        // Возврат фокуса окна сбрасывает `granted`, но просьба игры у системы остаётся, поэтому отдать её надо
+        // и тогда: `held` помнит, что просьба была.
+        if std::mem::take(&mut *held) && audio_focus("abandonAudioFocusRequest").is_some() {
+            info!("Android: музыка игры выключена — аудиофокус отдан");
+        }
+        *granted = false;
+    } else if !*away && !call && !*granted && audio_focus("requestAudioFocus") == Some(GRANTED) {
+        (*granted, *held) = (true, true);
         info!("Android: аудиофокус получен");
     }
 }

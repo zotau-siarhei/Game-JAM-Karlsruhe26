@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Автокопия и перенос на новый телефон, Android 12+: то же, что в backup_rules.xml. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <include domain="file" path="records.json" />
+        <include domain="file" path="records-easy.json" />
+        <include domain="file" path="records-hard.json" />
+    </cloud-backup>
+    <device-transfer>
+        <include domain="file" path="records.json" />
+        <include domain="file" path="records-easy.json" />
+        <include domain="file" path="records-hard.json" />
+    </device-transfer>
+</data-extraction-rules>

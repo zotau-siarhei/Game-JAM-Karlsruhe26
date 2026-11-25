@@ -349,6 +349,18 @@ impl Layout {
     }
 }
 
+/// Ширина полосы у края экрана, где система ловит жест «назад», с запасом, dp.
+const EDGE_GESTURE: f32 = 48.0;
+
+/// Полосы у левого и правого края в зонах стиков, где жест «назад» в забеге выключен
+/// (`android::exclude_edge_gestures`): слева, сверху, справа, снизу, пиксели окна. `density` — пикселей в dp.
+#[cfg_attr(not(any(target_os = "android", test)), allow(dead_code))]
+pub fn edge_zones(width: i32, height: i32, density: f32) -> [[i32; 4]; 2] {
+    let strip = ((EDGE_GESTURE * density).ceil() as i32).min(width / 2);
+    let top = (height as f32 * ZONE_TOP) as i32;
+    [[0, top, strip, height], [width - strip, top, width, height]]
+}
+
 /// Оружие, которое бьёт в указанную пальцем точку, а не по стику прицела.
 pub fn points_at(weapon: CurrentWeapon) -> bool {
     matches!(
@@ -1321,5 +1333,13 @@ mod tests {
             base.x >= MARGIN + 60.0 && base.y <= 360.0 - MARGIN - 60.0,
             "{base}"
         );
+    }
+
+    #[test]
+    fn полосы_жеста_назад_у_краёв_в_зонах_стиков() {
+        let zones = edge_zones(2400, 1080, 2.625);
+        assert_eq!(zones, [[0, 270, 126, 1080], [2274, 270, 2400, 1080]]);
+        // Узкое окно: полосы не заходят друг на друга.
+        assert_eq!(edge_zones(100, 400, 3.0), [[0, 100, 50, 400], [50, 100, 100, 400]]);
     }
 }

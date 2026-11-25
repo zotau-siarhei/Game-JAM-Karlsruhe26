@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Автокопия Android 11 и старше: только таблицы рекордов (src/records.rs). Настройки (ступень качества)
+     и след запуска (src/trail.rs) относятся к этому телефону и этой установке. -->
+<full-backup-content>
+    <include domain="file" path="records.json" />
+    <include domain="file" path="records-easy.json" />
+    <include domain="file" path="records-hard.json" />
+</full-backup-content>
