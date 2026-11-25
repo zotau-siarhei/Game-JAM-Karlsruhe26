@@ -17,6 +17,9 @@
 //!   в тесте `lava::tests::pit_on_slope`): шесть выстрелов мортиры пробивают кору, два выстрела
 //!   в стенку ниже по склону опускают край ниже уровня лавы. Снимки сверху и сбоку после
 //!   наполнения, в лог — замер `lava::Overhang`: сколько лавы за краем ямы и как высоко она там.
+//! - `boss_dig` — босс в 20 м от лунохода получает восемь обычных ракет подряд, потом два снаряда мортиры
+//!   под ноги. В лог — насколько босс опустился, зазор под ступнями и под туловищем (меньше нуля —
+//!   ушли в землю) и глубина ямы под центром, потом гибель и кратер на её месте; снимки сбоку.
 
 use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
@@ -57,7 +60,7 @@ impl Plugin for DebugChecksPlugin {
         })
         .add_systems(
             Update,
-            (tick, check_ruins, check_trees, check_alarm, check_paths, check_lava_slope)
+            (tick, check_ruins, check_trees, check_alarm, check_paths, check_lava_slope, check_boss_dig)
                 .chain()
                 .after(crate::camera::follow_focus)
                 .in_set(GameSet::Presentation),
@@ -936,5 +939,123 @@ fn check_lava_slope(
     }
     if check.at(15, 123.0) {
         exit.write(AppExit::Success);
+    }
+}
+
+/// Сцена `boss_dig`: босс под обстрелом не зарывается.
+#[allow(clippy::too_many_arguments)]
+fn check_boss_dig(
+    mut commands: Commands,
+    mut check: ResMut<Check>,
+    terrain: Res<Terrain>,
+    mut rover: Query<&mut Transform, With<Rover>>,
+    mut bosses: Query<
+        (Entity, &Transform, &mut Health, &crate::vehicle::GroundVehicle),
+        (With<crate::boss::Boss>, Without<Rover>),
+    >,
+    mut camera: Query<&mut Transform, (With<crate::camera::GameCamera>, Without<Rover>, Without<crate::boss::Boss>)>,
+    mut spawn: MessageWriter<crate::boss::SpawnBoss>,
+    mut rockets: MessageWriter<crate::rockets::FireRocket>,
+    mut explosions: MessageWriter<Explosion>,
+    mut damage: MessageWriter<Damage>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    if check.scene != "boss_dig" {
+        return;
+    }
+    let Ok(mut rover) = rover.single_mut() else {
+        return;
+    };
+    if check.at(0, 1.0) {
+        spawn.write(crate::boss::SpawnBoss);
+    }
+    if check.at(18, 15.0) {
+        let p = check.anchor;
+        let dug = terrain.original_height(p.x.round() as i32, p.z.round() as i32) - terrain.height_at(p.x, p.z);
+        info!("Проверка boss_dig: после гибели на её месте вырыто {dug:.2} м");
+        check.shot(&mut commands, "death");
+    }
+    if check.at(19, 16.0) {
+        exit.write(AppExit::Success);
+    }
+    let Ok((entity, boss, mut health, vehicle)) = bosses.single_mut() else {
+        return;
+    };
+    let at = boss.translation;
+    let report = |name: &str, anchor: Vec3| {
+        let ground = |x: f32, z: f32| terrain.height_at(x, z);
+        let (feet, hull) = crate::boss::STANCE.gaps(ground, at, boss.rotation, vehicle.ride_height);
+        let dug = terrain.original_height(at.x.round() as i32, at.z.round() as i32) - ground(at.x, at.z);
+        info!(
+            "Проверка boss_dig [{name}]: босс опустился на {:.2} м, зазор ступней {feet:.2} м, туловища {hull:.2} м, \
+             под центром вырыто {dug:.2} м, ушёл от места на {:.1} м, здоровье {:.0}",
+            anchor.y - at.y,
+            anchor.xz().distance(at.xz()),
+            health.current,
+        );
+    };
+    // Свежее место в стороне от кратера высадки: там босс и стоит, пока луноход ближе 24 м.
+    if check.at(1, 5.0) {
+        health.max = 1.0e5;
+        health.current = 1.0e5;
+        let place = at + Vec3::new(30.0, 0.0, 0.0);
+        commands.queue(move |world: &mut World| {
+            let height = world.resource::<Terrain>().height_at(place.x, place.z);
+            let mut query = world.query_filtered::<&mut Transform, With<crate::boss::Boss>>();
+            for mut transform in query.iter_mut(world) {
+                transform.translation = place.with_y(height + 3.4);
+            }
+        });
+        place_rover(&mut rover, &terrain, place + Vec3::new(0.0, 0.0, 20.0), place);
+        return;
+    }
+    if check.at(2, 5.5) {
+        check.anchor = at;
+        report("до стрельбы", at);
+        check.shot(&mut commands, "before");
+    }
+    let anchor = check.anchor;
+    for i in 0..8 {
+        if check.at(3 + i, 5.8 + 0.25 * i as f32) {
+            rockets.write(crate::rockets::FireRocket {
+                origin: rover.translation + Vec3::Y,
+                target: at,
+                team: Team::Player,
+            });
+        }
+    }
+    if check.at(11, 8.4) {
+        report("восемь ракет", anchor);
+    }
+    if check.at(12, 9.4) {
+        check.shot(&mut commands, "rockets");
+    }
+    for i in 0..2 {
+        if check.at(13 + i, 9.8 + 0.3 * i as f32) {
+            blast(&mut explosions, &terrain, at, crate::mortar::EXPLOSION_RADIUS, crate::mortar::EXPLOSION_POWER);
+        }
+    }
+    if check.at(15, 10.4) {
+        report("ещё два снаряда мортиры", anchor);
+    }
+    if check.at(16, 11.2) {
+        check.shot(&mut commands, "mortar");
+    }
+    if check.at(17, 11.6) {
+        check.anchor = at;
+        let dug = terrain.original_height(at.x.round() as i32, at.z.round() as i32) - terrain.height_at(at.x, at.z);
+        info!("Проверка boss_dig: перед гибелью под боссом вырыто {dug:.2} м");
+        health.current = 0.1;
+        damage.write(Damage {
+            target: entity,
+            amount: 1.0e5,
+            source_team: Team::Player,
+        });
+    }
+    if check.step >= 2
+        && let Ok(mut cam) = camera.single_mut()
+    {
+        let look = Vec3::new(at.x, anchor.y, at.z);
+        *cam = Transform::from_translation(look + Vec3::new(17.0, 7.0, 6.0)).looking_at(look - Vec3::Y, Vec3::Y);
     }
 }

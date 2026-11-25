@@ -46,6 +46,8 @@
   и команда убившего. Читатель, которому нужны компоненты погибшего, стоит в `GameSet::Death`;
   удаляй погибшую сущность в `GameSet::Cleanup`, как враги, чтобы её застали все читатели.
   Читателю в `GameSet::Presentation` доступны только поля сообщения. Время забега — ресурс `SurvivalTime`.
+- Кратер роет взрыв у земли: в воздухе он мельче, от 0,85 радиуса над землёй рельеф цел (`craters::dig_share`).
+  Взрыв, который должен оставить кратер, ставь на землю (`terrain.height_at`).
 - Рельеф меняй и сразу после этого шли `TerrainChanged { center, radius }` из `src/subsidence.rs`:
   так делает `craters::dig_craters`. Читатель, которому нужен рельеф этого кадра, стоит в
   `GameSet::Damage` с `.after(craters::dig_craters)`.
@@ -56,7 +58,8 @@
   мира при каждом `WorldRebuilt`. `Dice` из `src/sound_list.rs` — только для звука, штаба
   и комикс-надписей.
 - Всё, что ездит по рельефу, кроме лунохода, получает `GroundVehicle` из `src/vehicle.rs`: управление
-  пишет скорость и курс, посадку и наклон делает общая система. Враги — `src/enemy.rs`.
+  пишет скорость и курс, посадку и наклон делает общая система. Шагающей машине (боссу) добавь
+  `LegStance`: высота и наклон — по ступням, иначе воронка под центром её зарывает. Враги — `src/enemy.rs`.
 - Геймпад — `src/gamepad.rs`: кнопки нажимают виртуальные клавиши в `ButtonInput` (в забеге
   R2 — левая кнопка мыши, крест — пробел), поэтому новой команде с клавиатуры достаточно добавить
   строку в `virtual_for`; аналоговое — ресурс `PadInput`, устройство — `InputDevice`, подсказка
@@ -156,7 +159,7 @@ cargo test                                  # тесты
   SPACE_GUARD_SHOT=/путь/кадр.png CARGO_MANIFEST_DIR=$PWD ./target/debug/space_guard` — забег
   начинается сам, перед луноходом встают огни, через 8 с кадр сохраняется и игра закрывается
   (`src/debug_shot.rs`).
-- Проверка сценой без рук: `SPACE_GUARD_AUTOSTART=1 SPACE_GUARD_CHECK=ruins|ruins_all|trees|alarm|paths
+- Проверка сценой без рук: `SPACE_GUARD_AUTOSTART=1 SPACE_GUARD_CHECK=ruins|ruins_all|trees|alarm|paths|boss_dig
   SPACE_GUARD_SHOT_DIR=/папка CARGO_MANIFEST_DIR=$PWD ./target/release/space_guard --immortal` — итог
   в лог строками «Проверка», снимки в папку, игра закрывается сама (`src/debug_checks.rs`).
 - Прогрев шейдеров — `src/prewarm.rs`: при запуске и смене качества каждый класс меша рисуется с каждым

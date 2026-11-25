@@ -25,7 +25,7 @@ use crate::rockets::FireRocket;
 use crate::rover::Rover;
 use crate::run::RunScoped;
 use crate::terrain::Terrain;
-use crate::vehicle::{self, GroundVehicle};
+use crate::vehicle::{self, GroundVehicle, LegStance};
 use crate::waves::{Threat, enemy_damage};
 use crate::weapons::CurrentWeapon;
 
@@ -39,6 +39,13 @@ const FALL_HEIGHT: f32 = 60.0;
 const LANDING_DISTANCE: f32 = 28.0;
 /// Взрыв высадки: радиус, мощность. Мощность как у бомбы авиаудара.
 const LANDING_BLAST: (f32, f32) = (6.0, 1.6);
+
+/// Опора босса: ступни стоят под бёдрами, туловище модели висит на ногах в 3 м над землёй.
+pub const STANCE: LegStance = LegStance {
+    feet: Vec2::new(MODEL_HIPS.x, MODEL_HIPS.z),
+    hull: Vec2::new(2.5, 3.3),
+    hull_bottom: -0.4,
+};
 
 /// Размер корпуса: ширина, высота, длина, м.
 const BODY: Vec3 = Vec3::new(5.0, 3.0, 7.0);
@@ -522,10 +529,9 @@ fn fall(
         });
         let heading = vehicle::heading_towards(rover.translation - transform.translation);
         transform.rotation = Quat::from_rotation_y(heading);
-        commands.entity(entity).try_insert(GroundVehicle::new(
-            heading,
-            RIDE_HEIGHT,
-            Vec2::new(BODY.x, BODY.z) * 0.4,
+        commands.entity(entity).try_insert((
+            GroundVehicle::new(heading, RIDE_HEIGHT, Vec2::new(BODY.x, BODY.z) * 0.4),
+            STANCE,
         ));
         boss.phase = BossPhase::Walking(WALK_TIME);
     }
@@ -690,10 +696,12 @@ fn start_dying(
 }
 
 /// Взрывы по корпусу, затем огромный взрыв, кратер, ящики и уборка.
+#[allow(clippy::too_many_arguments)]
 fn run_dying(
     mut commands: Commands,
     time: Res<Time>,
     mut dice: ResMut<GameRng>,
+    terrain: Res<Terrain>,
     mut bosses: Query<(Entity, &Transform, &mut Boss)>,
     mut explosions: MessageWriter<Explosion>,
     mut crates: MessageWriter<SpawnCrate>,
@@ -725,7 +733,10 @@ fn run_dying(
             boss.phase = BossPhase::Dying(t, done);
             continue;
         }
-        let feet = transform.translation - Vec3::Y * RIDE_HEIGHT;
+        // Взрыв гибели — на земле, а не под ступнями: над воронкой ноги могут висеть, а взрыв в воздухе
+        // кратера не роет.
+        let at = transform.translation;
+        let feet = at.with_y(terrain.height_at(at.x, at.z));
         explosions.write(Explosion {
             position: feet,
             radius: DEATH_BLAST.0,
@@ -970,5 +981,71 @@ mod tests {
     fn здоровье_босса_растёт_с_угрозой() {
         assert!(boss_health(3.0) > boss_health(0.0));
         assert!(boss_health(0.0) > 1000.0);
+    }
+
+    /// Тридцать ракет в корпус и три снаряда мортиры под ноги стоящему боссу: в землю он не уходит.
+    #[test]
+    fn босс_под_обстрелом_не_зарывается() {
+        let mut app = App::new();
+        app.insert_resource(Terrain::new(7))
+            .init_resource::<Time>()
+            .init_resource::<crate::terrain::VisibleChunks>()
+            .add_message::<Explosion>()
+            .add_message::<crate::subsidence::TerrainChanged>()
+            .add_systems(Update, (vehicle::move_ground_vehicles, crate::craters::dig_craters).chain());
+        let boss = app
+            .world_mut()
+            .spawn((
+                Transform::from_xyz(40.0, 0.0, 40.0),
+                GroundVehicle::new(0.0, RIDE_HEIGHT, Vec2::new(BODY.x, BODY.z) * 0.4),
+                STANCE,
+            ))
+            .id();
+        let step = |app: &mut App| {
+            app.world_mut().resource_mut::<Time>().advance_by(std::time::Duration::from_millis(100));
+            app.update();
+        };
+        let transform = |app: &App| *app.world().get::<Transform>(boss).unwrap();
+        let gaps = |app: &App| {
+            let terrain = app.world().resource::<Terrain>();
+            let t = transform(app);
+            STANCE.gaps(|x, z| terrain.height_at(x, z), t.translation, t.rotation, RIDE_HEIGHT)
+        };
+        for _ in 0..20 {
+            step(&mut app);
+        }
+        let start = transform(&app).translation.y;
+        let feet_at_start = gaps(&app).0;
+        for _ in 0..30 {
+            // Прямое попадание ракеты взрывается в центре босса.
+            let position = transform(&app).translation;
+            app.world_mut().write_message(Explosion {
+                position,
+                radius: crate::rockets::ROCKET_RADIUS,
+                power: crate::rockets::ROCKET_POWER,
+                source_team: Team::Player,
+            });
+            step(&mut app);
+        }
+        step(&mut app);
+        let sunk = start - transform(&app).translation.y;
+        assert!(sunk < 0.5, "ракеты опустили босса на {sunk} м");
+        for _ in 0..3 {
+            let p = transform(&app).translation;
+            let ground = app.world().resource::<Terrain>().height_at(p.x, p.z);
+            app.world_mut().write_message(Explosion {
+                position: p.with_y(ground),
+                radius: crate::mortar::EXPLOSION_RADIUS,
+                power: crate::mortar::EXPLOSION_POWER,
+                source_team: Team::Player,
+            });
+            step(&mut app);
+        }
+        for _ in 0..10 {
+            step(&mut app);
+        }
+        let (feet, hull) = gaps(&app);
+        assert!(hull > 0.0, "туловище ушло в землю: {hull} м");
+        assert!(feet > feet_at_start.min(0.0) - 0.5, "ступни ушли в землю: {feet} м, было {feet_at_start} м");
     }
 }

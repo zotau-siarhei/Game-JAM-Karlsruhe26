@@ -16,6 +16,7 @@ use bevy::prelude::*;
 use crate::explosion::Explosion;
 use crate::frame::{GameSet, RunMessages};
 use crate::rover::Rover;
+use crate::vehicle::LegStance;
 
 /// Здоровье лунохода.
 pub const ROVER_MAX_HEALTH: f32 = 1500.0;
@@ -311,19 +312,29 @@ pub fn explosion_damage_to(source: Team, target: Team, power: f32, radius: f32, 
     base * share
 }
 
+/// Расстояние от взрыва до цели. Машина на ногах может висеть над ямой: взрыв под её корпусом
+/// считается по горизонтали, иначе снаряд на дне глубокой ямы её бы не доставал.
+fn blast_distance(target: Vec3, blast: Vec3, on_legs: bool) -> f32 {
+    if on_legs && blast.y < target.y {
+        target.xz().distance(blast.xz())
+    } else {
+        target.distance(blast)
+    }
+}
+
 /// Взрыв ранит всех со здоровьем в своём радиусе: свою команду слабо, союзников — никак
 /// ([`Team::damage_share`]). Взрывы лунохода бьют врагов полным уроном во всей воронке.
 fn explosion_damage(
     mut explosions: MessageReader<Explosion>,
-    targets: Query<(Entity, &GlobalTransform, &Team, &Health, Option<&BlastArmor>)>,
+    targets: Query<(Entity, &GlobalTransform, &Team, &Health, Option<&BlastArmor>, Has<LegStance>)>,
     mut damage: MessageWriter<Damage>,
 ) {
     for explosion in explosions.read() {
-        for (target, transform, team, health, armor) in &targets {
+        for (target, transform, team, health, armor, on_legs) in &targets {
             if health.is_dead() {
                 continue;
             }
-            let distance = transform.translation().distance(explosion.position);
+            let distance = blast_distance(transform.translation(), explosion.position, on_legs);
             let amount =
                 explosion_damage_to(explosion.source_team, *team, explosion.power, explosion.radius, distance)
                     * armor.map_or(1.0, |armor| armor.share(explosion.power));
@@ -460,6 +471,16 @@ fn count_survival_time(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn взрыв_под_машиной_на_ногах_считается_по_горизонтали() {
+        let body = Vec3::new(0.0, 10.0, 0.0);
+        let under = Vec3::new(3.0, 0.0, 0.0);
+        assert_eq!(blast_distance(body, under, true), 3.0);
+        assert!(blast_distance(body, under, false) > 10.0);
+        // Сверху — как у всех.
+        assert_eq!(blast_distance(body, Vec3::new(0.0, 14.0, 0.0), true), 4.0);
+    }
+
     #[test]
     fn бессмертие_включается_параметром_запуска() {
         let args = |list: &[&str]| list.iter().map(|a| a.to_string()).collect::<Vec<_>>();
