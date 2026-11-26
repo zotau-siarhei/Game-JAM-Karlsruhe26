@@ -60,6 +60,17 @@ Made at Game Jam Karlsruhe 2026 by Nidzhat Guseynov, Ivan Tsarev and Sergei Zoto
 Requires Android 10 or newer, a 64-bit (ARM64) device and a GPU with Vulkan 1.1.
 ```
 
+## Release notes 0.4.1 (до 500 символов)
+
+```text
+<en-US>
+What's new in 0.4.1:
+• The boss no longer digs itself into the ground under fire: it stands firmly on all four feet
+• Explosions in the air dig shallower craters the higher they go off
+Please report crashes, freezes and stutters.
+</en-US>
+```
+
 ## Release notes 0.4.0 (до 500 символов)
 
 ```text
