@@ -12,7 +12,7 @@ Android-сборка выбирает профиль по возможностя
 средним. Переопределение `profile` SHALL выбирать любой профиль.
 
 #### Scenario: Слабый телефон
-- **WHEN** у телефона меньше 5 ГБ памяти или GPU Adreno 6xx, Mali Bifrost или PowerVR
+- **WHEN** у телефона меньше 5 ГБ памяти или GPU Adreno 6xx, Mali Bifrost, Mali-G310 или PowerVR
 - **THEN** выбран профиль `android-low`
 
 #### Scenario: Тестовый телефон
