@@ -102,6 +102,6 @@
 
 1. Собрать AAB из `main`: `scripts/build-aab.sh`; сверить отпечаток сертификата в выводе.
 2. Closed testing (а позже Production) → Create new release → загрузить `target/android/space-guard.aab`.
-3. Release name — версия (например, `0.4.1 (477)`), release notes — из `listing.md`.
+3. Release name — версия (например, `0.4.1 (482)`), release notes — из `listing.md`.
 4. Review release → Start rollout. Отчёт pre-launch (автотест на устройствах Firebase) приходит через ~час:
    проверить падения и ANR.
