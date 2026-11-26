@@ -68,7 +68,7 @@ What's new in 0.4.1:
 • The boss no longer digs itself into the ground under fire: it stands firmly on all four feet
 • Explosions in the air dig shallower craters the higher they go off
 • More reliable loading: no GPU crashes while shaders compile
-• Edge swipes during a run no longer pause the game by accident
+• Edge swipes in a run no longer pause the game
 • With game music off, your own music keeps playing
 • Google backup keeps only high scores, not settings
 • Lighter graphics on Mali-G310 phones
