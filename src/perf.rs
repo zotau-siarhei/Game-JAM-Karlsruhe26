@@ -69,7 +69,7 @@ const RENDER_PARTS: usize = RENDER_SETS.len();
 /// Выключенные для замера части картинки: `adb shell setprop debug.spaceguard.off shadows,bloom`
 /// на Android, `SPACE_GUARD_OFF=shadows,bloom` на компьютере и iOS, `?off=shadows` в браузере;
 /// читается при запуске.
-/// Части: `shadows`, `bloom`, `hdr`, `grass`, `particles`, `lights`, `proxies`, `msaa`, `model:<id>`.
+/// Части: `shadows`, `bloom`, `hdr`, `grass`, `particles`, `lights`, `proxies`, `msaa`, `fxaa`, `model:<id>`.
 /// Звёздочка в конце — начало имени: `model:tree*` — все деревья, `model:*` — все модели.
 pub fn off(part: &str) -> bool {
     static LIST: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();

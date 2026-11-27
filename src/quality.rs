@@ -16,6 +16,7 @@
 //! На всех ступенях камера в HDR с тональной коррекцией: огонь, вспышки и лазер ярче единицы
 //! и сияют с ореолом через свечение. Рассеянный свет — голубоватый от неба.
 
+use bevy::anti_alias::fxaa::Fxaa;
 use bevy::light::{CascadeShadowConfigBuilder, DirectionalLightShadowMap};
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
@@ -172,6 +173,7 @@ pub fn apply_quality(
     let q = *quality;
     let profile = crate::profile::get();
     let bloom = profile.render.bloom.at(q) && !crate::perf::off("bloom");
+    let fxaa = profile.render.fxaa.at(q) && !crate::perf::off("fxaa");
     // MSAA только на высокой ступени и сколько разрешает профиль (на Android — нет), но не больше,
     // чем умеет видеокарта: 8 выборок у iPhone до A17 нет, и Bevy упал бы при создании цели.
     let wanted = if q != Quality::High || crate::perf::off("msaa") { 1 } else { profile.render.msaa_high };
@@ -199,6 +201,12 @@ pub fn apply_quality(
             c.insert(Bloom::NATURAL);
         } else {
             c.remove::<Bloom>();
+        }
+        // FXAA — где нет MSAA: на Low и Medium и на телефонах, края листвы без лесенки.
+        if fxaa && msaa == Msaa::Off {
+            c.insert(Fxaa::default());
+        } else {
+            c.remove::<Fxaa>();
         }
         c.insert(msaa);
     }
@@ -300,3 +308,4 @@ mod tests {
         }
     }
 }
+

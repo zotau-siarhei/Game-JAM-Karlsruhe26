@@ -71,6 +71,10 @@ pub struct ModelEntry {
     /// (`src/lod.rs`). Без поля тень отбрасывает сама модель.
     #[serde(default)]
     pub mobile_shadow: f32,
+    /// Доля, с которой нормали кроны поворачиваются к эллипсоиду вокруг неё (`soften_crown`):
+    /// крона освещается как объём, а не россыпью пластин. Без поля — нормали модели как есть.
+    #[serde(default)]
+    pub soft_crown: f32,
     /// Главные цвета нижних 70 % высоты модели, sRGB `#rrggbb`, по убыванию площади: для обломков.
     /// Считает `scripts/model_colors.py`.
     #[serde(default)]
@@ -428,6 +432,7 @@ fn track_loading(
     gltfs: Res<Assets<Gltf>>,
     gltf_meshes: Res<Assets<GltfMesh>>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     if !bank.models.values().any(|model| matches!(model.state, ModelState::Loading(_))) {
         return;
@@ -509,8 +514,60 @@ fn track_loading(
             }
             info!("Модели: «{id}» упрощена для телефона: треугольников {before} → {after}");
         }
+        let soft = model.entry.soft_crown;
+        if soft > 0.0 && let Some(gltf) = gltfs.get(&handles.gltf) {
+            for primitive in gltf.meshes.iter().filter_map(|m| gltf_meshes.get(m)).flat_map(|m| &m.primitives) {
+                if let Some(mesh) = meshes.get_mut(&primitive.mesh) {
+                    soften_crown(&mut mesh.into_inner(), soft);
+                }
+            }
+            // Материал glTF — подписанный ресурс `Material{i}/std` файла. Обе стороны пластины
+            // рисуются, но обратная не разворачивает нормаль: иначе пластина от солнца темнеет пятном.
+            let path = asset_server.get_path(&handles.gltf).map(|path| path.into_owned());
+            for i in 0..gltf.materials.len() {
+                let Some(handle) = path.clone().and_then(|path| {
+                    asset_server.get_handle::<StandardMaterial>(path.with_label(format!("Material{i}/std")))
+                }) else {
+                    continue;
+                };
+                if let Some(mut material) = materials.get_mut(&handle) {
+                    material.double_sided = false;
+                    material.cull_mode = None;
+                }
+            }
+        }
         crate::trail::mark(format!("model {id}: ready"));
         model.state = ModelState::Ready(handles);
+    }
+}
+
+/// Поворачивает нормали кроны к нормалям эллипсоида вокруг неё на долю `share`; ствол — у оси
+/// и ниже центра кроны — остаётся как был. Центр — середина рамки меша по горизонтали и 0,62 высоты.
+fn soften_crown(mesh: &mut Mesh, share: f32) {
+    use bevy::mesh::VertexAttributeValues;
+    let Some(VertexAttributeValues::Float32x3(positions)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else {
+        return;
+    };
+    let positions: Vec<Vec3> = positions.iter().map(|p| Vec3::from_array(*p)).collect();
+    let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+    for p in &positions {
+        lo = lo.min(*p);
+        hi = hi.max(*p);
+    }
+    let height = hi.y - lo.y;
+    let center = Vec3::new((lo.x + hi.x) * 0.5, lo.y + height * 0.62, (lo.z + hi.z) * 0.5);
+    let radii = Vec3::new((hi.x - lo.x) * 0.5, height * 0.45, (hi.z - lo.z) * 0.5).max(Vec3::splat(1e-3));
+    let Some(VertexAttributeValues::Float32x3(normals)) = mesh.attribute_mut(Mesh::ATTRIBUTE_NORMAL) else {
+        return;
+    };
+    for (normal, p) in normals.iter_mut().zip(&positions) {
+        let d = *p - center;
+        let ellipsoid = (d / (radii * radii)).normalize_or(Vec3::Y);
+        let axis = Vec2::new(d.x / radii.x, d.z / radii.z).length();
+        let below = ((center.y - p.y) / radii.y).clamp(0.0, 1.0);
+        let trunk = (1.0 - (axis / 0.18).clamp(0.0, 1.0)) * (below * 2.0).clamp(0.0, 1.0);
+        let old = Vec3::from_array(*normal);
+        *normal = old.lerp(ellipsoid, share * (1.0 - trunk)).normalize_or(old).to_array();
     }
 }
 
@@ -805,5 +862,24 @@ mod tests {
             .map(|entry| entry.id.as_str())
             .collect();
         assert!(missing.is_empty(), "нет файлов моделей у записей {missing:?}");
+    }
+
+    #[test]
+    fn мягкая_крона_смотрит_наружу_а_ствол_как_был() {
+        let positions = vec![[0.0, 0.0, 0.0], [0.0, 10.0, 0.0], [2.0, 6.2, 0.0], [-2.0, 6.2, 0.0], [0.0, 6.2, 2.0], [0.0, 6.2, -2.0]];
+        let normals = vec![[1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 1.0, 0.0], [0.0, 1.0, 0.0], [0.0, 1.0, 0.0]];
+        let mut mesh = Mesh::new(bevy::mesh::PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+        soften_crown(&mut mesh, 1.0);
+        let Some(bevy::mesh::VertexAttributeValues::Float32x3(n)) = mesh.attribute(Mesh::ATTRIBUTE_NORMAL) else {
+            panic!("нет нормалей");
+        };
+        assert_eq!(n[0], [1.0, 0.0, 0.0], "низ ствола не меняется");
+        assert!(n[1][1] > 0.99, "верхушка смотрит вверх: {:?}", n[1]);
+        assert!(n[2][0] > 0.99, "бок кроны смотрит вбок: {:?}", n[2]);
+        for v in n {
+            assert!((Vec3::from_array(*v).length() - 1.0).abs() < 1e-4);
+        }
     }
 }
