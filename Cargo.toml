@@ -37,6 +37,11 @@ js-sys = "0.3"
 wasm-bindgen = "0.2"
 web-sys = { version = "0.3", features = ["AudioContext", "BaseAudioContext", "AudioNode", "AudioParam", "GainNode", "AudioDestinationNode", "MediaElementAudioSourceNode", "HtmlAudioElement", "HtmlMediaElement", "HtmlElement", "Element", "Document", "Window", "EventTarget"] }
 
+# Linux: токен активации Wayland для браузера при входе Google (`src/google_auth.rs`), иначе KDE не
+# переключается к окну браузера. Та же версия, что у Bevy: новой сборки winit нет.
+[target.'cfg(target_os = "linux")'.dependencies]
+winit = { version = "0.30", default-features = false }
+
 # Вибрация и световая панель геймпада на macOS (`src/haptics.rs`): gilrs там вибрацию не умеет,
 # а системный GameController с CoreHaptics умеет (DualShock 4, DualSense, Xbox).
 [target.'cfg(target_os = "macos")'.dependencies]

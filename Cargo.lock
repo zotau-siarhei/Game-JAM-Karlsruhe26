@@ -5240,6 +5240,7 @@ dependencies = [
  "ureq",
  "wasm-bindgen",
  "web-sys",
+ "winit",
 ]
 
 [[package]]

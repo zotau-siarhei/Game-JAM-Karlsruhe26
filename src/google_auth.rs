@@ -42,8 +42,9 @@ impl Plugin for GoogleAuthPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(initial_state())
             .init_resource::<Worker>()
+            .init_resource::<PageToOpen>()
             .add_message::<AuthRequest>()
-            .add_systems(Update, (handle_requests, pump).chain().in_set(GameSet::Presentation));
+            .add_systems(Update, (handle_requests, pump, open_page).chain().in_set(GameSet::Presentation));
     }
 }
 
@@ -156,6 +157,11 @@ impl Worker {
     }
 }
 
+/// Страница Google, которую надо открыть в браузере: открывает главный поток ([`open_page`]), потому что
+/// на Linux ему нужен токен активации от окна игры.
+#[derive(Resource, Default)]
+struct PageToOpen(Option<String>);
+
 /// Клиент OAuth Google.
 struct Client {
     id: String,
@@ -251,14 +257,19 @@ fn sign_out() {
 }
 
 /// Выполняет действия меню.
-fn handle_requests(mut requests: MessageReader<AuthRequest>, mut state: ResMut<SignIn>, mut worker: ResMut<Worker>) {
+fn handle_requests(
+    mut requests: MessageReader<AuthRequest>,
+    mut state: ResMut<SignIn>,
+    mut worker: ResMut<Worker>,
+    mut page: ResMut<PageToOpen>,
+) {
     for request in requests.read() {
         match request {
             AuthRequest::SignIn => start(&mut state, &mut worker),
             AuthRequest::OpenPage => {
                 if let SignIn::Waiting { code, url, .. } = &*state {
                     copy_text(code);
-                    open_url(url);
+                    page.0 = Some(url.clone());
                 }
             }
             AuthRequest::Cancel => {
@@ -334,11 +345,91 @@ fn check(state: &SignIn, worker: &mut Worker) {
     }
 }
 
-/// Переносит новое состояние из потока входа в ресурс.
-fn pump(worker: Res<Worker>, mut state: ResMut<SignIn>) {
+/// Переносит новое состояние из потока входа в ресурс; код только что показан — открыть страницу.
+fn pump(worker: Res<Worker>, mut state: ResMut<SignIn>, mut page: ResMut<PageToOpen>) {
     let next = worker.slot.lock().ok().and_then(|mut slot| slot.take());
     if let Some(next) = next {
+        if let SignIn::Waiting { url, .. } = &next
+            && !matches!(*state, SignIn::Waiting { .. })
+        {
+            page.0 = Some(url.clone());
+        }
         state.set_if_neq(next);
+    }
+}
+
+/// Открывает страницу Google в браузере.
+#[cfg(not(target_os = "linux"))]
+fn open_page(mut page: ResMut<PageToOpen>) {
+    if let Some(url) = page.0.take() {
+        open_url(&url);
+    }
+}
+
+#[cfg(target_os = "linux")]
+use activation::open_page;
+
+/// Linux: браузер с токеном активации от окна игры. Без него KDE и другие оболочки Wayland не
+/// переключаются к уже запущенному браузеру (тот лишь просит внимания на панели, часто на другом
+/// рабочем столе). Токен просит winit (`xdg_activation_v1`), ответ приходит событием окна.
+#[cfg(target_os = "linux")]
+mod activation {
+    use std::time::Duration;
+
+    use bevy::ecs::system::NonSendMarker;
+    use bevy::platform::time::Instant;
+    use bevy::prelude::*;
+    use bevy::window::PrimaryWindow;
+    use bevy::winit::{RawWinitWindowEvent, WINIT_WINDOWS};
+    use winit::event::WindowEvent;
+    use winit::event_loop::AsyncRequestSerial;
+    use winit::platform::startup_notify::WindowExtStartupNotify;
+
+    /// Ждём токен не дольше этого, потом открываем без него.
+    const TOKEN_WAIT: Duration = Duration::from_millis(500);
+
+    /// Страница, ждущая токена: адрес, номер запроса, когда попросили.
+    type Pending = Option<(String, AsyncRequestSerial, Instant)>;
+
+    /// Просит токен у окна игры и открывает страницу, когда он пришёл. Главный поток: окна winit
+    /// живут только там.
+    pub fn open_page(
+        mut page: ResMut<super::PageToOpen>,
+        mut pending: Local<Pending>,
+        mut events: MessageReader<RawWinitWindowEvent>,
+        primary: Query<Entity, With<PrimaryWindow>>,
+        _main_thread: NonSendMarker,
+    ) {
+        if let Some(url) = page.0.take() {
+            if let Some((earlier, ..)) = pending.take() {
+                super::desktop::open_url(&earlier, None);
+            }
+            let serial = primary.single().ok().and_then(|entity| {
+                WINIT_WINDOWS.with_borrow(|windows| {
+                    windows
+                        .get_window(entity)
+                        .and_then(|window| window.request_activation_token().ok())
+                })
+            });
+            match serial {
+                Some(serial) => *pending = Some((url, serial, Instant::now())),
+                None => super::desktop::open_url(&url, None),
+            }
+        }
+        for event in events.read() {
+            if let WindowEvent::ActivationTokenDone { serial, token } = &event.event
+                && pending.as_ref().is_some_and(|(_, wanted, _)| wanted == serial)
+                && let Some((url, ..)) = pending.take()
+            {
+                super::desktop::open_url(&url, Some(token.clone().into_raw()));
+            }
+        }
+        if pending.as_ref().is_some_and(|(_, _, since)| since.elapsed() > TOKEN_WAIT)
+            && let Some((url, ..)) = pending.take()
+        {
+            warn!("Вход Google: токен активации не пришёл, браузер открывается без него");
+            super::desktop::open_url(&url, None);
+        }
     }
 }
 
@@ -400,11 +491,12 @@ fn copy_text(text: &str) -> bool {
 }
 
 /// Открывает адрес в браузере. На iOS и в браузере — ничего: адрес виден на экране.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn open_url(url: &str) {
     #[cfg(target_os = "android")]
     crate::android::open_url(url);
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-    desktop::open_url(url);
+    desktop::open_url(url, None);
     #[cfg(not(any(target_os = "android", target_os = "macos", target_os = "windows", target_os = "linux")))]
     let _ = url;
 }
@@ -490,7 +582,9 @@ mod desktop {
             || pipe_to("xsel", &["--clipboard", "--input"], text)
     }
 
-    pub fn open_url(url: &str) {
+    /// Открывает адрес браузером по умолчанию. `activation` — токен активации Wayland (Linux): с ним
+    /// оболочка переключается к окну браузера.
+    pub fn open_url(url: &str, activation: Option<String>) {
         let mut command = if cfg!(target_os = "macos") {
             Command::new("open")
         } else if cfg!(target_os = "windows") {
@@ -500,6 +594,11 @@ mod desktop {
         } else {
             Command::new("xdg-open")
         };
+        if let Some(token) = &activation {
+            // Wayland читает XDG_ACTIVATION_TOKEN, X11 — DESKTOP_STARTUP_ID.
+            command.env("XDG_ACTIVATION_TOKEN", token).env("DESKTOP_STARTUP_ID", token);
+        }
+        bevy::log::info!("Вход Google: браузер открывается (токен активации: {})", activation.is_some());
         match command.arg(url).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
             // Ждём в стороне, чтобы не оставлять зомби-процесс.
             Ok(mut child) => {
@@ -600,7 +699,6 @@ mod net {
         let mut interval = code["interval"].as_u64().unwrap_or(5).max(1);
         let copied = super::copy_text(&user_code);
         info!("Вход Google: код {user_code}, ждём подтверждения на {url} (в буфере обмена: {copied})");
-        super::open_url(&url);
         send(SignIn::Waiting {
             code: user_code,
             url,
