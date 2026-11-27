@@ -91,9 +91,16 @@
   сообщение `AuthRequest`): вход по коду устройства (OAuth device flow), игра копирует код и открывает
   `google.com/device`, поток входа сам опрашивает Google. Идентификатор игрока — `sub` из `id_token`; вход, имя,
   почта и токен обновления — `account.json` рядом с настройками (в автокопию Android не входит). Клиент Google
-  типа «TVs and Limited Input devices»: `SPACE_GUARD_GOOGLE_CLIENT_ID` и `SPACE_GUARD_GOOGLE_CLIENT_SECRET` при
-  сборке (на компьютере — и при запуске), в репозиторий не класть; без них экран пишет «не настроено». Снимок
-  экрана — `SPACE_GUARD_MENU=online`.
+  типа «TVs and Limited Input devices»: `SPACE_GUARD_GOOGLE_CLIENT_ID` и `SPACE_GUARD_GOOGLE_CLIENT_SECRET`.
+  **Для отладки входа на любом компьютере** — файл `google-auth.txt` в корне основной копии (в `.gitignore`, в
+  репозиторий не класть): две строки `export SPACE_GUARD_GOOGLE_CLIENT_ID='…'` и
+  `export SPACE_GUARD_GOOGLE_CLIENT_SECRET='…'`. На новом компьютере файл создать заново: значения — у владельца
+  проекта или в Google Cloud Console (Google Auth Platform → Clients). Игра на компьютере находит файл сама: ищет
+  от `CARGO_MANIFEST_DIR` и текущего каталога вверх, поэтому worktree в `.worktrees/` видит файл основной копии;
+  откуда взят клиент — строка «Вход Google: клиент из …» в логе. Переменные окружения при запуске важнее файла.
+  Сборкам для телефона значения вшиваются при сборке: перед `scripts/build-android.sh` или `build-ios.sh` —
+  `source google-auth.txt`. Без клиента экран мультиплеера пишет «не настроено». Ход входа — строки
+  «Вход Google: …» в логе. Снимок экрана — `SPACE_GUARD_MENU=online`.
 - Мини-карта — `src/minimap.rs`: новой сущности с меткой добавь запрос в `update_markers`.
 - Меню — `src/menu.rs` (главное меню и подэкраны: сложность, настройки, рекорды, авторы). Настройки
   (качество, громкости, субтитры, вибрация, выбранная сложность) — ресурс `Settings` из `src/settings.rs`,

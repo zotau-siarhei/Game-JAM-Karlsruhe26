@@ -12,8 +12,9 @@
 //! при запуске файл читается без запросов. В браузерной сборке сети нет: [`SignIn::Unsupported`].
 //!
 //! Клиент Google — типа «TVs and Limited Input devices»: ID и секрет задаются при сборке
-//! переменными `SPACE_GUARD_GOOGLE_CLIENT_ID` и `SPACE_GUARD_GOOGLE_CLIENT_SECRET` (на компьютере —
-//! и при запуске). Без них вход не настроен: [`SignIn::NotConfigured`].
+//! переменными `SPACE_GUARD_GOOGLE_CLIENT_ID` и `SPACE_GUARD_GOOGLE_CLIENT_SECRET`. На компьютере их
+//! можно задать и при запуске, а без переменных игра берёт их из `google-auth.txt` в корне репозитория
+//! (вне git: строки `export ИМЯ='значение'`). Без них вход не настроен: [`SignIn::NotConfigured`].
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -127,18 +128,26 @@ struct Client {
     secret: String,
 }
 
-/// Клиент из переменных сборки; на компьютере переменные окружения при запуске важнее.
+/// Клиент Google. На компьютере по порядку: переменные окружения при запуске, файл
+/// `google-auth.txt` ([`desktop::client_file`]), переменные сборки; на телефоне — только сборки.
 fn client() -> Option<Client> {
-    fn pick(name: &str, built: Option<&'static str>) -> Option<String> {
-        #[cfg(not(any(target_os = "android", target_os = "ios", target_arch = "wasm32")))]
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    let file = desktop::client_file();
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    let file: Vec<(String, String)> = Vec::new();
+    let pick = |name: &str, built: Option<&'static str>| -> Option<String> {
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         if let Ok(value) = std::env::var(name)
             && !value.is_empty()
         {
             return Some(value);
         }
-        let _ = name;
-        built.filter(|value| !value.is_empty()).map(str::to_string)
-    }
+        file.iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.clone())
+            .or_else(|| built.map(str::to_string))
+            .filter(|value| !value.is_empty())
+    };
     Some(Client {
         id: pick("SPACE_GUARD_GOOGLE_CLIENT_ID", option_env!("SPACE_GUARD_GOOGLE_CLIENT_ID"))?,
         secret: pick("SPACE_GUARD_GOOGLE_CLIENT_SECRET", option_env!("SPACE_GUARD_GOOGLE_CLIENT_SECRET"))?,
@@ -340,7 +349,53 @@ fn open_url(url: &str) {
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod desktop {
     use std::io::Write;
+    use std::path::{Path, PathBuf};
     use std::process::{Command, Stdio};
+
+    /// Файл клиента Google для разработки и отладки: в `.gitignore`, у каждого компьютера свой.
+    const CLIENT_FILE: &str = "google-auth.txt";
+
+    /// Пары «имя — значение» из `google-auth.txt`. Файл ищется от `CARGO_MANIFEST_DIR` и текущего
+    /// каталога вверх: worktree в `.worktrees/` находит его в корне основной копии.
+    pub fn client_file() -> Vec<(String, String)> {
+        let starts = [std::env::var_os("CARGO_MANIFEST_DIR").map(PathBuf::from), std::env::current_dir().ok()];
+        for start in starts.into_iter().flatten() {
+            for directory in start.ancestors() {
+                let path = directory.join(CLIENT_FILE);
+                if let Ok(text) = std::fs::read_to_string(&path) {
+                    log_found(&path);
+                    return parse_client_file(&text);
+                }
+            }
+        }
+        Vec::new()
+    }
+
+    /// Пишет в лог, откуда взят клиент, один раз за запуск.
+    fn log_found(path: &Path) {
+        static LOGGED: std::sync::Once = std::sync::Once::new();
+        LOGGED.call_once(|| bevy::log::info!("Вход Google: клиент из {}", path.display()));
+    }
+
+    /// Строки `export ИМЯ='значение'`, `ИМЯ="значение"` или `ИМЯ=значение`; `#` — комментарий.
+    pub fn parse_client_file(text: &str) -> Vec<(String, String)> {
+        text.lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    return None;
+                }
+                let line = line.strip_prefix("export ").unwrap_or(line);
+                let (name, value) = line.split_once('=')?;
+                let value = value.trim();
+                let unquoted = [('\'', '\''), ('"', '"')]
+                    .iter()
+                    .find_map(|(open, close)| value.strip_prefix(*open)?.strip_suffix(*close))
+                    .unwrap_or(value);
+                Some((name.trim().to_string(), unquoted.to_string()))
+            })
+            .collect()
+    }
 
     /// Передаёт текст команде на вход; `true` — команда нашлась и завершилась успешно.
     fn pipe_to(program: &str, args: &[&str], text: &str) -> bool {
@@ -398,7 +453,7 @@ mod net {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use bevy::log::warn;
+    use bevy::log::{info, warn};
     use bevy::platform::time::Instant;
     use serde_json::Value;
 
@@ -477,6 +532,7 @@ mod net {
         let deadline = Instant::now() + Duration::from_secs(code["expires_in"].as_u64().unwrap_or(1800));
         let mut interval = code["interval"].as_u64().unwrap_or(5).max(1);
         let copied = super::copy_text(&user_code);
+        info!("Вход Google: код {user_code}, ждём подтверждения на {url} (в буфере обмена: {copied})");
         super::open_url(&url);
         send(SignIn::Waiting {
             code: user_code,
@@ -510,6 +566,7 @@ mod net {
                 }
             };
             if status == 200 {
+                info!("Вход Google: вход подтверждён");
                 return finish(&reply).map(Some);
             }
             match reply["error"].as_str().unwrap_or_default() {
@@ -576,5 +633,21 @@ mod tests {
         assert!(account_from_id_token("без точек").is_none());
         // Без sub идентификатора нет.
         assert!(account_from_id_token("a.eyJuYW1lIjoieCJ9.b").is_none());
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn файл_клиента_google() {
+        let pairs = desktop::parse_client_file(
+            "# клиент\nexport SPACE_GUARD_GOOGLE_CLIENT_ID='1-a.apps.googleusercontent.com'\n\nSPACE_GUARD_GOOGLE_CLIENT_SECRET=\"GOCSPX-x=y\"\nOTHER=plain\n",
+        );
+        assert_eq!(
+            pairs,
+            [
+                ("SPACE_GUARD_GOOGLE_CLIENT_ID".to_string(), "1-a.apps.googleusercontent.com".to_string()),
+                ("SPACE_GUARD_GOOGLE_CLIENT_SECRET".to_string(), "GOCSPX-x=y".to_string()),
+                ("OTHER".to_string(), "plain".to_string()),
+            ]
+        );
     }
 }
