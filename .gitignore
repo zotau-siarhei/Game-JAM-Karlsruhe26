@@ -6,3 +6,5 @@ assets/voice/raw/
 .worktrees/
 .env
 Folder.DotSettings.user
+# Клиент Google для входа в мультиплеер (ветка uplink): секрет, у каждого компьютера свой.
+google-auth.txt
