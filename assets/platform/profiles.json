@@ -6,6 +6,7 @@
       "density": null,
       "msaa_high": 4,
       "bloom": [false, true, true],
+      "fxaa": [true, true, true],
       "shadows": [
         { "map": 512, "cascades": 1, "far": 40.0 },
         { "map": 1024, "cascades": 2, "far": 70.0 },
