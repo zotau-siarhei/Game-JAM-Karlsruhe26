@@ -1,0 +1,14 @@
+# Сервер Space Guard (`openspec/changes/room-server`): служба комнат и ретранслятор. Отдельный пакет:
+# в сборку игры и APK не входит, свой `target/`. Пока здесь только проверка игрока — аккаунта Google.
+[package]
+name = "space_guard_server"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+# Подпись RS256 у `id_token` Google: открытый ключ из `n` и `e` JWK.
+ring = "0.17"
+# Ключи Google (JWKS) и токены по HTTPS; те же настройки, что в игре.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+serde_json = "1"
