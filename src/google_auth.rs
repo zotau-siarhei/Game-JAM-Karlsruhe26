@@ -488,7 +488,10 @@ mod net {
 
     /// Строка для экрана по ошибке Google.
     fn google_error(reply: &Value) -> String {
+        let description = reply["error_description"].as_str().unwrap_or_default();
         match reply["error"].as_str().unwrap_or_default() {
+            // Код устройства Google выдаёт только клиенту «TVs and Limited Input devices».
+            "invalid_client" if description.contains("client type") => "WRONG GOOGLE CLIENT TYPE: NEED \"TVS AND LIMITED INPUT\"".into(),
             "invalid_client" | "unauthorized_client" => "GOOGLE REJECTED THIS BUILD'S CLIENT".into(),
             "" => BAD_REPLY.into(),
             other => format!("GOOGLE ERROR: {}", other.to_uppercase()),
