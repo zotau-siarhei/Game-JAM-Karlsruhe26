@@ -62,6 +62,13 @@ SDK Google на Java (Credential Manager, Play Games Services) недоступ�
 `backup_rules.xml` перечисляет только рекорды. При запуске файл читается без сети: игрок сразу
 «вошёл». «Выйти» — `POST https://oauth2.googleapis.com/revoke` в фоне и удаление файла.
 
+### Свежий `id_token` для сервера
+`id_token` живёт час, поэтому хранится не он, а токен обновления. `google_auth::fresh_id_token`
+(блокирующий, для сетевого потока) меняет его на свежий `id_token` у `oauth2.googleapis.com/token`
+(`grant_type=refresh_token`). Сервер комнат (`room-server`) проверяет этот токен сам. При открытии
+«Мультиплеера» вошедшим игроком игра делает то же в фоне: `invalid_grant` (отозван, истёк — у приложения
+в режиме «Testing» через 7 дней) стирает `account.json` и просит войти снова; ошибка сети вход не трогает.
+
 ### Открыть адрес и скопировать код
 - Android: JNI в потоке интерфейса Java — `ClipboardManager.setPrimaryClip` и
   `Intent.ACTION_VIEW` с `FLAG_ACTIVITY_NEW_TASK`.
