@@ -90,7 +90,8 @@ pub enum AuthRequest {
     OpenPage,
     /// Прервать вход.
     Cancel,
-    /// Выйти: отозвать токен и стереть файл.
+    /// Выйти на этом устройстве: стереть файл. Доступ у Google не отзывается: отзыв снял бы вход игры
+    /// с аккаунта на всех устройствах сразу.
     SignOut,
     /// Проверить в фоне, что вход ещё действителен: получить свежий `id_token`.
     Check,
@@ -243,14 +244,10 @@ fn save(stored: &Stored) -> std::io::Result<()> {
     std::fs::rename(&temporary, &path)
 }
 
-/// Выход: токен отзывается в фоне, файл стирается.
+/// Выход на этом устройстве: файл стирается. Токен у Google не отзывается — отзыв снимает доступ игры к
+/// аккаунту целиком, и игрок вышел бы и на других своих устройствах. Отозвать совсем — в настройках
+/// аккаунта Google («Сторонние приложения»).
 fn sign_out() {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(stored) = load()
-        && !stored.refresh_token.is_empty()
-    {
-        net::revoke(stored.refresh_token);
-    }
     if let Some(path) = account_path() {
         let _ = std::fs::remove_file(path);
     }
@@ -609,7 +606,7 @@ mod desktop {
     }
 }
 
-/// Запросы к Google: код устройства, ожидание подтверждения, отзыв токена.
+/// Запросы к Google: код устройства, ожидание подтверждения, свежий `id_token`.
 #[cfg(not(target_arch = "wasm32"))]
 mod net {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -624,7 +621,6 @@ mod net {
 
     const DEVICE_URL: &str = "https://oauth2.googleapis.com/device/code";
     const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
-    const REVOKE_URL: &str = "https://oauth2.googleapis.com/revoke";
     const SCOPE: &str = "openid email profile";
     const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 
@@ -784,15 +780,6 @@ mod net {
             Some("invalid_grant") => Err(TokenError::SignInRequired),
             _ => Err(TokenError::Unavailable(format!("{status}: {reply}"))),
         }
-    }
-
-    /// Отзывает токен в фоне; ответ не важен: файл стирается в любом случае.
-    pub fn revoke(token: String) {
-        std::thread::spawn(move || {
-            if let Err(error) = agent().post(REVOKE_URL).send_form([("token", token.as_str())]) {
-                warn!("Вход Google: токен не отозван: {error}");
-            }
-        });
     }
 }
 

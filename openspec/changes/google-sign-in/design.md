@@ -60,7 +60,9 @@ SDK Google на Java (Credential Manager, Play Games Services) недоступ�
 `account.json` рядом с `settings.json` (каталог `records::records_path()`): `id`, `name`, `email`,
 `refresh_token`. Запись через временный файл, на Unix — права 0600. В автокопию Android не входит:
 `backup_rules.xml` перечисляет только рекорды. При запуске файл читается без сети: игрок сразу
-«вошёл». «Выйти» — `POST https://oauth2.googleapis.com/revoke` в фоне и удаление файла.
+«вошёл». «Выйти» — только удаление файла на этом устройстве. Отзыв токена (`oauth2.googleapis.com/revoke`)
+снимает доступ игры к аккаунту целиком, и игрок вышел бы на всех своих устройствах; отозвать доступ
+совсем можно в настройках аккаунта Google.
 
 ### Свежий `id_token` для сервера
 `id_token` живёт час, поэтому хранится не он, а токен обновления. `google_auth::fresh_id_token`
