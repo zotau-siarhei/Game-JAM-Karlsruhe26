@@ -80,6 +80,8 @@ pub struct Render {
     /// Отсчётов MSAA на высокой ступени; 1 — без MSAA.
     pub msaa_high: u32,
     pub bloom: Tiered<bool>,
+    /// FXAA на ступени, где нет MSAA (`quality::apply_quality`): края листвы без лесенки.
+    pub fxaa: Tiered<bool>,
     pub shadows: Tiered<Shadows>,
     /// Предел кадров в секунду; `None` — сколько даёт развёртка экрана.
     pub frame_limit: Option<f32>,
@@ -952,6 +954,7 @@ mod tests {
             assert_eq!(tiers.map(|q| p.density(q)), [None; 3], "{name}");
             assert_eq!(p.render.msaa_high, 4, "{name}");
             assert_eq!(p.render.bloom.0, [false, true, true], "{name}");
+            assert_eq!(p.render.fxaa.0, [true; 3], "{name}");
             assert_eq!(shadows(&p), desktop_shadows, "{name}");
             assert_eq!(
                 (p.debris.max_resting, p.debris.shadow_min_size),
@@ -1004,6 +1007,9 @@ mod tests {
             (android.render.msaa_high, shadows(&android)),
             (1, phone_shadows)
         );
+        for name in ["web-mobile", "android", "android-low", "android-high", "ios-phone", "ios-tablet-low"] {
+            assert_eq!(build(name, &[]).render.fxaa.0, [true; 3], "{name}");
+        }
         assert_eq!(
             (android.debris.max_resting, android.debris.shadow_min_size),
             (600, 1.2)
