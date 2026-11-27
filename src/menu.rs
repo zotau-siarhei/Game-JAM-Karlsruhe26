@@ -293,10 +293,21 @@ fn menu_input(
     mut run_difficulty: ResMut<RunDifficulty>,
     mut world: RunWorld,
     (mut sounds, mut exit, mut auth): (MessageWriter<PlaySound>, MessageWriter<AppExit>, MessageWriter<AuthRequest>),
-    (online, mut last_online): (Res<SignIn>, Local<Option<std::mem::Discriminant<SignIn>>>),
+    (online, mut last_online, mut last_page): (
+        Res<SignIn>,
+        Local<Option<std::mem::Discriminant<SignIn>>>,
+        Local<Option<MenuPage>>,
+    ),
 ) {
     if world.busy() {
         return;
+    }
+    // Экран мультиплеера открылся у вошедшего игрока: вход проверяется в фоне свежим id_token.
+    if last_page.replace(menu.page) != Some(MenuPage::Online)
+        && menu.page == MenuPage::Online
+        && matches!(*online, SignIn::SignedIn(_))
+    {
+        auth.write(AuthRequest::Check);
     }
     // Состояние входа сменилось: на экране мультиплеера другие строки, выделяется подходящая.
     let kind = std::mem::discriminant(&*online);

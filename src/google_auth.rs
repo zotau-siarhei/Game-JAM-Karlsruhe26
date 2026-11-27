@@ -33,6 +33,7 @@ pub(crate) const NO_CONNECTION: &str = "NO CONNECTION TO GOOGLE";
 const EXPIRED: &str = "THE CODE HAS EXPIRED";
 const DECLINED: &str = "SIGN-IN WAS DECLINED";
 const BAD_REPLY: &str = "UNEXPECTED REPLY FROM GOOGLE";
+const SIGN_IN_EXPIRED: &str = "GOOGLE SIGN-IN EXPIRED - SIGN IN AGAIN";
 
 /// Плагин входа через Google.
 pub struct GoogleAuthPlugin;
@@ -90,6 +91,28 @@ pub enum AuthRequest {
     Cancel,
     /// Выйти: отозвать токен и стереть файл.
     SignOut,
+    /// Проверить в фоне, что вход ещё действителен: получить свежий `id_token`.
+    Check,
+}
+
+/// Почему свежий `id_token` не получен.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TokenError {
+    /// Не вошёл, вход отозван или истёк: нужно войти снова.
+    SignInRequired,
+    /// Нет связи, нет клиента или Google ответил ошибкой: вход остаётся.
+    Unavailable(String),
+}
+
+/// Свежий `id_token` для сервера по токену обновления из `account.json`. Блокирует поток на запрос к
+/// Google: звать из сетевого потока, не из системы Bevy.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn fresh_id_token() -> Result<String, TokenError> {
+    let stored = load()
+        .filter(|stored| !stored.refresh_token.is_empty())
+        .ok_or(TokenError::SignInRequired)?;
+    let client = client().ok_or_else(|| TokenError::Unavailable("нет клиента Google".into()))?;
+    net::refresh(&client, &stored.refresh_token)
 }
 
 /// Содержимое `account.json`.
@@ -120,6 +143,17 @@ impl Stored {
 struct Worker {
     slot: Arc<Mutex<Option<SignIn>>>,
     cancel: Arc<AtomicBool>,
+}
+
+impl Worker {
+    /// Отменяет прежний поток и заводит новые слот и флаг: прежний пишет уже в свой, никому не нужный.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn renew(&mut self) -> (Arc<AtomicBool>, Arc<Mutex<Option<SignIn>>>) {
+        self.cancel.store(true, Ordering::Relaxed);
+        self.cancel = Arc::new(AtomicBool::new(false));
+        self.slot = Arc::new(Mutex::new(None));
+        (self.cancel.clone(), self.slot.clone())
+    }
 }
 
 /// Клиент OAuth Google.
@@ -238,6 +272,7 @@ fn handle_requests(mut requests: MessageReader<AuthRequest>, mut state: ResMut<S
                 sign_out();
                 *state = signed_out();
             }
+            AuthRequest::Check => check(&state, &mut worker),
         }
     }
 }
@@ -255,17 +290,46 @@ fn start(state: &mut SignIn, worker: &mut Worker) {
             *state = SignIn::NotConfigured;
             return;
         };
-        worker.cancel.store(true, Ordering::Relaxed);
-        let cancel = Arc::new(AtomicBool::new(false));
-        let slot = Arc::new(Mutex::new(None));
-        worker.cancel = cancel.clone();
-        worker.slot = slot.clone();
+        let (cancel, slot) = worker.renew();
         *state = SignIn::Requesting;
         let spawned = std::thread::Builder::new()
             .name("google-sign-in".into())
             .spawn(move || net::sign_in(&client, &cancel, &slot));
         if spawned.is_err() {
             *state = SignIn::Failed(NO_CONNECTION.into());
+        }
+    }
+}
+
+/// Проверяет в фоне, что вход действителен. Отозванный или истёкший вход стирается, и экран просит
+/// войти снова; без связи вход остаётся.
+fn check(state: &SignIn, worker: &mut Worker) {
+    if !matches!(state, SignIn::SignedIn(_)) {
+        return;
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = worker;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let (cancel, slot) = worker.renew();
+        let spawned = std::thread::Builder::new().name("google-check".into()).spawn(move || match fresh_id_token() {
+            Ok(_) => info!("Вход Google: id_token обновлён"),
+            Err(TokenError::SignInRequired) => {
+                if cancel.load(Ordering::Relaxed) {
+                    return;
+                }
+                warn!("Вход Google: вход отозван или истёк");
+                if let Some(path) = account_path() {
+                    let _ = std::fs::remove_file(path);
+                }
+                if let Ok(mut slot) = slot.lock() {
+                    *slot = Some(SignIn::Failed(SIGN_IN_EXPIRED.into()));
+                }
+            }
+            Err(TokenError::Unavailable(error)) => warn!("Вход Google: id_token не обновлён: {error}"),
+        });
+        if let Err(error) = spawned {
+            warn!("Вход Google: проверка не запущена: {error}");
         }
     }
 }
@@ -457,7 +521,7 @@ mod net {
     use bevy::platform::time::Instant;
     use serde_json::Value;
 
-    use super::{Account, BAD_REPLY, Client, DECLINED, EXPIRED, NO_CONNECTION, SignIn, Stored};
+    use super::{Account, BAD_REPLY, Client, DECLINED, EXPIRED, NO_CONNECTION, SignIn, Stored, TokenError};
 
     const DEVICE_URL: &str = "https://oauth2.googleapis.com/device/code";
     const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
@@ -601,6 +665,27 @@ mod net {
             warn!("Вход Google: {} не записан: {error}", super::FILE_NAME);
         }
         Ok(account)
+    }
+
+    /// Свежий `id_token` по токену обновления. `invalid_grant` — вход отозван или истёк.
+    pub fn refresh(client: &Client, refresh_token: &str) -> Result<String, TokenError> {
+        let form = [
+            ("client_id", client.id.as_str()),
+            ("client_secret", client.secret.as_str()),
+            ("refresh_token", refresh_token),
+            ("grant_type", "refresh_token"),
+        ];
+        let (status, reply) = post(&agent(), TOKEN_URL, &form).map_err(TokenError::Unavailable)?;
+        if status == 200 {
+            return reply["id_token"]
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| TokenError::Unavailable(BAD_REPLY.into()));
+        }
+        match reply["error"].as_str() {
+            Some("invalid_grant") => Err(TokenError::SignInRequired),
+            _ => Err(TokenError::Unavailable(format!("{status}: {reply}"))),
+        }
     }
 
     /// Отзывает токен в фоне; ответ не важен: файл стирается в любом случае.
