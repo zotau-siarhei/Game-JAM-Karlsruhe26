@@ -28,7 +28,7 @@ use crate::frame::GameSet;
 const FILE_NAME: &str = "account.json";
 
 /// Строки ошибок на экране мультиплеера.
-const NO_CONNECTION: &str = "NO CONNECTION TO GOOGLE";
+pub(crate) const NO_CONNECTION: &str = "NO CONNECTION TO GOOGLE";
 const EXPIRED: &str = "THE CODE HAS EXPIRED";
 const DECLINED: &str = "SIGN-IN WAS DECLINED";
 const BAD_REPLY: &str = "UNEXPECTED REPLY FROM GOOGLE";

@@ -816,7 +816,9 @@ fn draw_online(screen: &mut ChildSpawnerCommands, online: &SignIn, list: &[Item]
         }
         SignIn::Failed(reason) => {
             line(screen, reason, 26.0, TITLE_COLOR);
-            line(screen, "CHECK THE INTERNET AND TRY AGAIN", 18.0, HINT_COLOR);
+            if reason == crate::google_auth::NO_CONNECTION {
+                line(screen, "CHECK THE INTERNET AND TRY AGAIN", 18.0, HINT_COLOR);
+            }
         }
     }
     spacer(screen, 4.0);
