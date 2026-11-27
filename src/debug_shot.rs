@@ -42,7 +42,7 @@
 //!   и гибнет: куски корпуса и ноги.
 //! - `SPACE_GUARD_SCENE=gameover` — на 2-й секунде забега луноход гибнет: экран конца забега, ввод
 //!   имени рекорда (с `--touch` или на телефоне — экранная клавиатура).
-//! - `SPACE_GUARD_MENU=difficulty|settings|records|records-hard|authors` — меню сразу открывает
+//! - `SPACE_GUARD_MENU=difficulty|settings|records|records-hard|authors|online` — меню сразу открывает
 //!   этот подэкран (`menu`): снять его без рук.
 //! - `SPACE_GUARD_KEYS=down,down,enter,left` — через секунду после входа в меню клавиши нажимаются
 //!   по одной раз в 0,4 с (`up`, `down`, `left`, `right`, `enter`, `space`, `esc`, `q`): пройти
@@ -139,6 +139,7 @@ fn open_menu_page(
         Some("records") => MenuPage::Records(Difficulty::Normal),
         Some("records-hard") => MenuPage::Records(Difficulty::Hard),
         Some("authors") => MenuPage::Authors,
+        Some("online") => MenuPage::Online,
         _ => return,
     };
     menu.page = page;

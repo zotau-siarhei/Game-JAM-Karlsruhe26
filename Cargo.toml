@@ -23,6 +23,9 @@ serde_json = "1"
 # поэтому не в браузерной сборке.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 meshopt = "0.7"
+# Вход через Google в мультиплеере (`src/google_auth.rs`): HTTPS на rustls с ring и корнями webpki —
+# одинаково на всех нативных платформах. В браузере сети нет.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
 
 # Браузерная сборка (`scripts/build-web.sh`): частицы bevy_hanabi считаются вычислительными
 # шейдерами, поэтому нужен WebGPU, а не WebGL2. На нативную сборку секция не влияет.

@@ -1,5 +1,5 @@
-//! Главное меню и его подэкраны: «Играть», «Сложность», «Настройки», «Рекорды», «Авторы»,
-//! «Выход» (в браузере его нет).
+//! Главное меню и его подэкраны: «Одиночная игра», «Мультиплеер» (вход через Google,
+//! `google_auth`), «Сложность», «Настройки», «Рекорды», «Авторы», «Выход» (в браузере его нет).
 //!
 //! Меню — текст на затемнении поверх пролёта над планетой (`run::fly_over_planet`). Страница и
 //! выделенная строка — ресурс [`Menu`]; экран перерисовывается целиком, когда меняется страница
@@ -18,6 +18,7 @@ use bevy::ui::UiGlobalTransform;
 use crate::difficulty::{Difficulty, RunDifficulty};
 use crate::fade::Appear;
 use crate::gamepad::InputDevice;
+use crate::google_auth::{AuthRequest, SignIn};
 use crate::touch::{TouchSwipe, TouchTap, nearest_row, node_contains};
 use crate::frame::GameSet;
 use crate::quality::Quality;
@@ -69,6 +70,8 @@ pub enum MenuPage {
     /// Таблица рекордов этого уровня: переключается стрелками, уровень для игры не меняет.
     Records(Difficulty),
     Authors,
+    /// Мультиплеер: вход через Google.
+    Online,
 }
 
 /// Ввод, отрисовка и подсветка меню.
@@ -99,7 +102,12 @@ enum Setting {
 /// Выбираемая строка меню.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Item {
-    Play,
+    /// Одиночная игра: прежний забег.
+    Single,
+    /// Мультиплеер: экран входа.
+    Online,
+    /// Действие входа на экране мультиплеера.
+    Auth(AuthRequest),
     OpenDifficulty,
     OpenSettings,
     OpenRecords,
@@ -115,7 +123,7 @@ enum Item {
 /// Пункты главного меню. «Выход» — по профилю платформы (`menu.quit`): в браузере закрыть вкладку
 /// может только сама страница, а на iPhone и iPad приложения не закрывают сами (правила Apple).
 fn main_items() -> Vec<Item> {
-    let mut items = vec![Item::Play, Item::OpenDifficulty, Item::OpenSettings, Item::OpenRecords, Item::OpenAuthors];
+    let mut items = vec![Item::Single, Item::Online, Item::OpenDifficulty, Item::OpenSettings, Item::OpenRecords, Item::OpenAuthors];
     if crate::profile::get().menu.quit {
         items.push(Item::Quit);
     }
@@ -123,9 +131,11 @@ fn main_items() -> Vec<Item> {
 }
 
 /// Строки страницы по порядку выделения. `pad` — подключён геймпад: без него строки вибрации нет;
-/// `touch` — игрок пользуется касаниями: тогда есть строки сенсорных элементов.
-fn items(page: MenuPage, pad: bool, touch: bool) -> Vec<Item> {
+/// `touch` — игрок пользуется касаниями: тогда есть строки сенсорных элементов; `online` — состояние
+/// входа для экрана мультиплеера.
+fn items(page: MenuPage, pad: bool, touch: bool, online: &SignIn) -> Vec<Item> {
     match page {
+        MenuPage::Online => online_items(online),
         MenuPage::Main => main_items(),
         MenuPage::Difficulty => {
             let mut items: Vec<Item> = Difficulty::ALL.iter().map(|d| Item::Choose(*d)).collect();
@@ -157,6 +167,27 @@ fn items(page: MenuPage, pad: bool, touch: bool) -> Vec<Item> {
         }
         MenuPage::Records(_) => vec![Item::RecordsTable, Item::Back],
         MenuPage::Authors => vec![Item::Back],
+    }
+}
+
+/// Строки экрана мультиплеера по состоянию входа.
+fn online_items(online: &SignIn) -> Vec<Item> {
+    match online {
+        SignIn::Unsupported | SignIn::NotConfigured => vec![Item::Back],
+        SignIn::SignedOut | SignIn::Failed(_) => vec![Item::Auth(AuthRequest::SignIn), Item::Back],
+        SignIn::Requesting => vec![Item::Auth(AuthRequest::Cancel)],
+        SignIn::Waiting { .. } => vec![Item::Auth(AuthRequest::OpenPage), Item::Auth(AuthRequest::Cancel)],
+        SignIn::SignedIn(_) => vec![Item::Auth(AuthRequest::SignOut), Item::Back],
+    }
+}
+
+/// Строка, которая выделяется, когда сменилось состояние входа. После входа — «Назад», а не «Выйти»:
+/// иначе Enter, нажатый в этот миг, сразу вышел бы из аккаунта.
+fn online_default(online: &SignIn) -> usize {
+    let list = online_items(online);
+    match online {
+        SignIn::SignedIn(_) => list.iter().position(|item| *item == Item::Back).unwrap_or(0),
+        _ => 0,
     }
 }
 
@@ -201,7 +232,8 @@ fn stepped_opacity(opacity: u8, step: i32, wrap: bool) -> u8 {
 /// Главное меню после возврата с подэкрана: выделен пункт этого подэкрана.
 fn back_to_main(from: MenuPage) -> Menu {
     let item = match from {
-        MenuPage::Main => Item::Play,
+        MenuPage::Main => Item::Single,
+        MenuPage::Online => Item::Online,
         MenuPage::Difficulty => Item::OpenDifficulty,
         MenuPage::Settings => Item::OpenSettings,
         MenuPage::Records(_) => Item::OpenRecords,
@@ -233,7 +265,7 @@ struct RowMarker(usize);
 #[derive(Component)]
 struct RowValue(usize);
 
-/// Вход в меню: главная страница, выделено «Играть».
+/// Вход в меню: главная страница, выделена «Одиночная игра».
 fn open_main(mut menu: ResMut<Menu>) {
     *menu = Menu::default();
 }
@@ -260,20 +292,28 @@ fn menu_input(
     mut quality: ResMut<Quality>,
     mut run_difficulty: ResMut<RunDifficulty>,
     mut world: RunWorld,
-    mut sounds: MessageWriter<PlaySound>,
-    mut exit: MessageWriter<AppExit>,
+    (mut sounds, mut exit, mut auth): (MessageWriter<PlaySound>, MessageWriter<AppExit>, MessageWriter<AuthRequest>),
+    (online, mut last_online): (Res<SignIn>, Local<Option<std::mem::Discriminant<SignIn>>>),
 ) {
     if world.busy() {
         return;
+    }
+    // Состояние входа сменилось: на экране мультиплеера другие строки, выделяется подходящая.
+    let kind = std::mem::discriminant(&*online);
+    if last_online.replace(kind).is_some_and(|last| last != kind) && menu.page == MenuPage::Online {
+        menu.set_if_neq(Menu {
+            selected: online_default(&online),
+            ..*menu
+        });
     }
     // Геймпад подключили или отключили: строка вибрации появилась или исчезла, выделение
     // остаётся на той же строке, а с исчезнувшей встаёт на соседнюю выше.
     let pad = !gamepads.is_empty();
     let touch = *device == InputDevice::Touch;
     let was_pad = last_pad.replace(pad).unwrap_or(pad);
-    let list = items(menu.page, pad, touch);
+    let list = items(menu.page, pad, touch, &online);
     if was_pad != pad {
-        let old = items(menu.page, was_pad, touch);
+        let old = items(menu.page, was_pad, touch, &online);
         let item = old.get(menu.selected).copied();
         let selected = item
             .and_then(|item| list.iter().position(|i| *i == item))
@@ -359,7 +399,7 @@ fn menu_input(
     let chosen = keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter, KeyCode::Space]) || by_mouse || by_tap;
     let bench_start = bench.is_some_and(|b| b.on) && real.elapsed_secs() > 1.0 && menu.page == MenuPage::Main;
     let activated = if bench_start {
-        Some(Item::Play)
+        Some(Item::Single)
     } else if chosen {
         list.get(next.selected).copied()
     } else {
@@ -368,10 +408,19 @@ fn menu_input(
     if let Some(item) = activated {
         click = true;
         match item {
-            Item::Play => {
+            Item::Single => {
                 // Забег идёт на уровне, выбранном сейчас; рестарт возьмёт тот же.
                 run_difficulty.set_if_neq(RunDifficulty(settings.difficulty));
                 world.start_run();
+            }
+            Item::Online => {
+                next = Menu {
+                    page: MenuPage::Online,
+                    selected: online_default(&online),
+                };
+            }
+            Item::Auth(request) => {
+                auth.write(request);
             }
             Item::OpenDifficulty => {
                 next = Menu {
@@ -412,8 +461,13 @@ fn menu_input(
 
     // Esc и «назад» геймпада: из подэкрана — в главное меню, в главном меню — ничего (на Android
     // «назад» там сворачивает игру: `android::back_to_background`).
+    // Во время входа Esc сначала отменяет вход, а экран мультиплеера остаётся.
     if keys.just_pressed(KeyCode::Escape) && menu.page != MenuPage::Main {
-        next = back_to_main(menu.page);
+        if menu.page == MenuPage::Online && online.in_progress() {
+            auth.write(AuthRequest::Cancel);
+        } else {
+            next = back_to_main(menu.page);
+        }
         click = true;
     }
 
@@ -572,12 +626,13 @@ fn draw_menu(
     records: Res<RecordsTable>,
     gamepads: Query<(), With<Gamepad>>,
     device: Res<InputDevice>,
+    online: Res<SignIn>,
     old: Query<Entity, With<MenuScreen>>,
-    mut shown: Local<Option<(MenuPage, Settings, bool, bool)>>,
+    mut shown: Local<Option<(MenuPage, Settings, bool, bool, SignIn)>>,
 ) {
     let pad = !gamepads.is_empty();
     let touch = *device == InputDevice::Touch;
-    let wanted = Some((menu.page, settings.clone(), pad, touch));
+    let wanted = Some((menu.page, settings.clone(), pad, touch, online.clone()));
     if !old.is_empty() && *shown == wanted && !records.is_changed() {
         return;
     }
@@ -588,7 +643,7 @@ fn draw_menu(
     }
     *shown = wanted;
 
-    let list = items(menu.page, pad, touch);
+    let list = items(menu.page, pad, touch, &online);
     let index_of = |item: Item| list.iter().position(|i| *i == item).unwrap_or(0);
     commands
         .spawn((MenuScreen, run::screen_root(0.45), appear))
@@ -601,7 +656,8 @@ fn draw_menu(
                 spacer(screen, 4.0);
                 for (row, item) in list.iter().enumerate() {
                     let (label, value) = match item {
-                        Item::Play => ("PLAY", None),
+                        Item::Single => ("SINGLE PLAYER", None),
+                        Item::Online => ("MULTIPLAYER", None),
                         Item::OpenDifficulty => ("DIFFICULTY", Some(settings.difficulty.title().to_string())),
                         Item::OpenSettings => ("SETTINGS", None),
                         Item::OpenRecords => ("RECORDS", None),
@@ -703,6 +759,7 @@ fn draw_menu(
                     "SWIPE OR TAP THE TITLE - DIFFICULTY",
                 );
             }
+            MenuPage::Online => draw_online(screen, &online, &list),
             MenuPage::Authors => {
                 screen.spawn(run::screen_line("AUTHORS", 56.0, TITLE_COLOR));
                 spacer(screen, 4.0);
@@ -715,6 +772,71 @@ fn draw_menu(
                 back_hint(screen, "ENTER, ESC - BACK", "{A}, {B} - BACK", "TAP BACK");
             }
         });
+}
+
+/// Экран мультиплеера: состояние входа и его строки.
+fn draw_online(screen: &mut ChildSpawnerCommands, online: &SignIn, list: &[Item]) {
+    screen.spawn(run::screen_line("MULTIPLAYER", 56.0, TITLE_COLOR));
+    spacer(screen, 4.0);
+    let line = |screen: &mut ChildSpawnerCommands, text: &str, size: f32, color: Color| {
+        screen.spawn(run::screen_line(text.to_string(), size, color));
+    };
+    match online {
+        SignIn::Unsupported => {
+            line(screen, "ONLINE PLAY IS ONLY IN THE APP", 26.0, Color::WHITE);
+            line(screen, "ANDROID, IPHONE, IPAD OR COMPUTER", 18.0, HINT_COLOR);
+        }
+        SignIn::NotConfigured => {
+            line(screen, "GOOGLE SIGN-IN IS NOT SET UP IN THIS BUILD", 26.0, Color::WHITE);
+            line(screen, "SINGLE PLAYER WORKS AS USUAL", 18.0, HINT_COLOR);
+        }
+        SignIn::SignedOut => {
+            line(screen, "SIGN IN WITH GOOGLE TO PLAY ONLINE", 26.0, Color::WHITE);
+            line(screen, "SINGLE PLAYER NEEDS NO ACCOUNT", 18.0, HINT_COLOR);
+        }
+        SignIn::Requesting => line(screen, "CONTACTING GOOGLE...", 26.0, Color::WHITE),
+        SignIn::Waiting { code, url, copied } => {
+            let page = url.trim_start_matches("https://").trim_start_matches("www.");
+            line(screen, &format!("OPEN {page} AND ENTER THE CODE"), 26.0, Color::WHITE);
+            line(screen, code, 64.0, TITLE_COLOR);
+            if *copied {
+                line(screen, "THE CODE IS COPIED - PASTE IT ON THE PAGE", 18.0, HINT_COLOR);
+            }
+            line(screen, "THE GAME NOTICES BY ITSELF WHEN YOU CONFIRM", 18.0, HINT_COLOR);
+        }
+        SignIn::SignedIn(account) => {
+            line(screen, "SIGNED IN AS", 18.0, HINT_COLOR);
+            let name = if account.name.is_empty() { &account.email } else { &account.name };
+            line(screen, name, 32.0, Color::WHITE);
+            if !account.name.is_empty() && !account.email.is_empty() {
+                line(screen, &account.email, 20.0, HINT_COLOR);
+            }
+            spacer(screen, 4.0);
+            line(screen, "ONLINE PLAY IS COMING SOON", 22.0, TITLE_COLOR);
+        }
+        SignIn::Failed(reason) => {
+            line(screen, reason, 26.0, TITLE_COLOR);
+            line(screen, "CHECK THE INTERNET AND TRY AGAIN", 18.0, HINT_COLOR);
+        }
+    }
+    spacer(screen, 4.0);
+    for (row, item) in list.iter().enumerate() {
+        let label = match item {
+            Item::Auth(AuthRequest::SignIn) if matches!(online, SignIn::Failed(_)) => "TRY AGAIN",
+            Item::Auth(AuthRequest::SignIn) => "SIGN IN WITH GOOGLE",
+            Item::Auth(AuthRequest::OpenPage) => "OPEN THE PAGE AGAIN",
+            Item::Auth(AuthRequest::Cancel) => "CANCEL",
+            Item::Auth(AuthRequest::SignOut) => "SIGN OUT",
+            _ => "BACK",
+        };
+        spawn_row(screen, row, label, None, None);
+    }
+    back_hint(
+        screen,
+        "UP, DOWN - SELECT     ENTER - CHOOSE     ESC - BACK",
+        "D-PAD - SELECT     {A} - CHOOSE     {B} - BACK",
+        "TAP A LINE - CHOOSE",
+    );
 }
 
 /// Подсказка внизу подэкрана.
@@ -749,16 +871,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn дважды_вниз_и_enter_открывают_настройки() {
-        let list = items(MenuPage::Main, false, false);
-        let selected = moved(moved(0, 1, list.len()), 1, list.len());
+    fn трижды_вниз_и_enter_открывают_настройки() {
+        let list = items(MenuPage::Main, false, false, &SignIn::SignedOut);
+        let selected = moved(moved(moved(0, 1, list.len()), 1, list.len()), 1, list.len());
         assert_eq!(list[selected], Item::OpenSettings);
     }
 
     #[test]
+    fn режимы_первыми_строками() {
+        assert_eq!(main_items()[..2], [Item::Single, Item::Online]);
+        assert_eq!(back_to_main(MenuPage::Online).selected, 1);
+    }
+
+    #[test]
+    fn после_входа_выделено_назад() {
+        let account = SignIn::SignedIn(crate::google_auth::Account {
+            id: "1".into(),
+            name: "ROVER".into(),
+            email: String::new(),
+        });
+        assert_eq!(online_items(&account)[online_default(&account)], Item::Back);
+        assert_eq!(online_items(&SignIn::NotConfigured), [Item::Back]);
+        assert!(!online_items(&SignIn::Requesting).contains(&Item::Back));
+    }
+
+    #[test]
     fn список_пунктов_замкнут_в_кольцо() {
-        let count = items(MenuPage::Main, false, false).len();
-        assert_eq!(count, 6);
+        let count = items(MenuPage::Main, false, false, &SignIn::SignedOut).len();
+        assert_eq!(count, 7);
         assert_eq!(moved(0, -1, count), count - 1);
         assert_eq!(moved(count - 1, 1, count), 0);
     }
@@ -780,9 +920,9 @@ mod tests {
     #[test]
     fn без_геймпада_строки_вибрации_нет() {
         let vibration = Item::Setting(Setting::Vibration);
-        assert!(items(MenuPage::Settings, true, false).contains(&vibration));
-        assert!(!items(MenuPage::Settings, false, false).contains(&vibration));
-        assert_eq!(items(MenuPage::Settings, false, false).last(), Some(&Item::Back));
+        assert!(items(MenuPage::Settings, true, false, &SignIn::SignedOut).contains(&vibration));
+        assert!(!items(MenuPage::Settings, false, false, &SignIn::SignedOut).contains(&vibration));
+        assert_eq!(items(MenuPage::Settings, false, false, &SignIn::SignedOut).last(), Some(&Item::Back));
     }
 
     #[test]

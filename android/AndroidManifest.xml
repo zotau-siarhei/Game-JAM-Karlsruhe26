@@ -6,6 +6,9 @@
     <uses-feature android:name="android.hardware.vulkan.version"
         android:version="0x401000" android:required="true" />
 
+    <!-- Только для входа через Google в мультиплеере (src/google_auth.rs): одиночная игра в сеть не ходит. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <application
         android:label="Space Guard"
         android:icon="@mipmap/ic_launcher"

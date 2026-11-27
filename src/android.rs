@@ -823,6 +823,56 @@ fn on_java_main_thread(
     }));
 }
 
+/// Кладёт текст в буфер обмена (`ClipboardManager.setPrimaryClip`) в потоке интерфейса. Не ждёт;
+/// с Android 13 система сама показывает, что текст скопирован.
+pub fn copy_text(text: &str) {
+    use jni::objects::JValue;
+    let text = text.to_string();
+    on_java_main_thread(move |env, activity| {
+        let service = env.new_string("clipboard")?;
+        let manager = env
+            .call_method(activity, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;", &[JValue::Object(&service)])?
+            .l()?;
+        if manager.is_null() {
+            return Ok(());
+        }
+        let label = env.new_string("Space Guard")?;
+        let value = env.new_string(&text)?;
+        let clip = env
+            .call_static_method(
+                "android/content/ClipData",
+                "newPlainText",
+                "(Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Landroid/content/ClipData;",
+                &[JValue::Object(&label), JValue::Object(&value)],
+            )?
+            .l()?;
+        env.call_method(&manager, "setPrimaryClip", "(Landroid/content/ClipData;)V", &[JValue::Object(&clip)])?;
+        Ok(())
+    });
+}
+
+/// Открывает адрес в браузере (`Intent.ACTION_VIEW`) в потоке интерфейса. Не ждёт.
+pub fn open_url(url: &str) {
+    use jni::objects::JValue;
+    let url = url.to_string();
+    on_java_main_thread(move |env, activity| {
+        let text = env.new_string(&url)?;
+        let uri = env
+            .call_static_method("android/net/Uri", "parse", "(Ljava/lang/String;)Landroid/net/Uri;", &[JValue::Object(&text)])?
+            .l()?;
+        let action = env.new_string("android.intent.action.VIEW")?;
+        let intent = env.new_object(
+            "android/content/Intent",
+            "(Ljava/lang/String;Landroid/net/Uri;)V",
+            &[JValue::Object(&action), JValue::Object(&uri)],
+        )?;
+        // FLAG_ACTIVITY_NEW_TASK: браузер в своей задаче, игра остаётся в своей.
+        env.call_method(&intent, "addFlags", "(I)Landroid/content/Intent;", &[JValue::Int(0x1000_0000)])?;
+        env.call_method(activity, "startActivity", "(Landroid/content/Intent;)V", &[JValue::Object(&intent)])?;
+        Ok(())
+    });
+}
+
 /// Прячет строку состояния и панель навигации (immersive): панель появляется по свайпу от края и уходит
 /// сама. API 30+ — `WindowInsetsController`, API 29 — флаги `setSystemUiVisibility`.
 fn hide_system_bars() {

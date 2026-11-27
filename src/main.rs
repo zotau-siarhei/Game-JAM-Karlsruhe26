@@ -38,6 +38,7 @@ mod explosion_fx;
 mod fire;
 mod frame;
 mod gamepad;
+mod google_auth;
 mod haptics;
 mod hq;
 mod grass;
@@ -288,7 +289,7 @@ fn game_plugins(app: &mut App) {
     // Профиль платформы — первым: из него берут значения настройки, качество и меню.
     app.add_plugins(profile::ProfilePlugin);
     // Настройки игрока и сложность: из них берут начальные значения качество и меню.
-    app.add_plugins((settings::SettingsPlugin, difficulty::DifficultyPlugin, menu::MenuPlugin));
+    app.add_plugins((settings::SettingsPlugin, difficulty::DifficultyPlugin, menu::MenuPlugin, google_auth::GoogleAuthPlugin));
     // Порядок кадра и игровой генератор случайных чисел.
     app.add_plugins((
         frame::FramePlugin,
